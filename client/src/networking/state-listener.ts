@@ -16,8 +16,9 @@ export function setupStateListener(room: Room, scene: THREE.Scene): void {
   ballMesh = createBallMesh();
   scene.add(ballMesh);
 
-  // Listen for player add
-  room.state.players.onAdd((player: any, sessionId: string) => {
+  // Helper to add a car (idempotent — skips if already added)
+  function addCar(player: any, sessionId: string) {
+    if (carMeshes.has(sessionId)) return; // Already added
     const carMesh = createCarMesh(player.team);
     carMesh.position.set(player.x, player.y, player.z);
     carMesh.quaternion.set(player.qx, player.qy, player.qz, player.qw);
@@ -33,6 +34,16 @@ export function setupStateListener(room: Room, scene: THREE.Scene): void {
         mesh.quaternion.set(player.qx, player.qy, player.qz, player.qw);
       }
     });
+  }
+
+  // Listen for future player adds
+  room.state.players.onAdd((player: any, sessionId: string) => {
+    addCar(player, sessionId);
+  });
+
+  // Handle players that already exist in state (race condition fix)
+  room.state.players.forEach((player: any, sessionId: string) => {
+    addCar(player, sessionId);
   });
 
   // Listen for player remove
@@ -53,6 +64,13 @@ export function setupStateListener(room: Room, scene: THREE.Scene): void {
       ballMesh.quaternion.set(ball.qx, ball.qy, ball.qz, ball.qw);
     }
   });
+
+  // Also update ball position immediately from current state
+  if (room.state.ball) {
+    const ball = room.state.ball;
+    ballMesh.position.set(ball.x, ball.y, ball.z);
+    ballMesh.quaternion.set(ball.qx, ball.qy, ball.qz, ball.qw);
+  }
 }
 
 export function getCarMeshes(): ReadonlyMap<string, THREE.Group> {

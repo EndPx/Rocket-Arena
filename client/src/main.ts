@@ -37,6 +37,17 @@ createLobby((room: Room) => {
   createDevPanel(room);
   gameEnded = false;
 
+  // Debug: log initial state to verify timer/phase sync
+  setTimeout(() => {
+    const state = room.state as any;
+    console.log('[Debug] Room state:', {
+      phase: state.phase,
+      timeRemaining: state.timeRemaining,
+      players: state.players?.size,
+      ballY: state.ball?.y,
+    });
+  }, 1000);
+
   // Listen for match end
   (room.state as any).listen('phase', (phase: string) => {
     if (phase === 'ended' && !gameEnded) {

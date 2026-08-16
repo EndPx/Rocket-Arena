@@ -9,6 +9,12 @@ export default defineConfig({
   },
   server: {
     port: 3000,
-    open: true,
+    fs: {
+      // Allow serving files from the parent directory (monorepo root)
+      // This is needed because shared/ is outside client/
+      allow: [
+        resolve(__dirname, '..'),
+      ],
+    },
   },
 });
