@@ -8,11 +8,13 @@ import { initScene } from './renderer/scene.js';
 import { createLighting } from './renderer/lighting.js';
 import { createArena } from './renderer/arena.js';
 import { getRoom } from './networking/client.js';
-import { setupStateListener } from './networking/state-listener.js';
+import { setupStateListener, getCarMeshes } from './networking/state-listener.js';
 import { sendInput } from './input/keyboard-handler.js';
 import { createHUD, updateHUD } from './hud/hud.js';
 import { createDevPanel } from './dev-panel/dev-panel.js';
 import { createLobby } from './ui/lobby.js';
+import { showGameOver } from './ui/game-over.js';
+import { updateCamera } from './renderer/camera-controller.js';
 import type { Room } from 'colyseus.js';
 
 const app = document.getElementById('app')!;
@@ -25,11 +27,24 @@ createArena(scene);
 // Create HUD (hidden until game starts)
 createHUD();
 
+// Track game-over state
+let gameEnded = false;
+
 // Show lobby
 createLobby((room: Room) => {
   // On successful join
   setupStateListener(room, scene);
   createDevPanel(room);
+  gameEnded = false;
+
+  // Listen for match end
+  (room.state as any).listen('phase', (phase: string) => {
+    if (phase === 'ended' && !gameEnded) {
+      gameEnded = true;
+      setTimeout(() => showGameOver(room), 2000);
+    }
+  });
+
   console.log('[Rocket Arena] Connected and playing');
 });
 
@@ -41,6 +56,18 @@ function animate() {
   if (room) {
     sendInput(room);
     updateHUD(room);
+
+    // Camera follows local player's car
+    const localCar = getCarMeshes().get(room.sessionId) || null;
+    updateCamera(camera, localCar);
+
+    // Fallback: check phase in render loop if listen() doesn't work
+    if (!gameEnded && (room.state as any).phase === 'ended') {
+      gameEnded = true;
+      setTimeout(() => showGameOver(room), 2000);
+    }
+  } else {
+    updateCamera(camera, null);
   }
 
   renderer.render(scene, camera);
