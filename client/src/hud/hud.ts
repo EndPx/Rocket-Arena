@@ -1,4 +1,5 @@
 import type { Room } from 'colyseus.js';
+import { getLocalState } from '../networking/state-listener.js';
 
 let hudEl: HTMLElement;
 let blueScoreEl: HTMLElement;
@@ -49,7 +50,8 @@ export function createHUD(): void {
 }
 
 export function updateHUD(room: Room): void {
-  const state = room.state as any;
+  const state = getLocalState();
+  if (!state) return;
 
   // Scores
   blueScoreEl.textContent = String(state.blueScore || 0);
@@ -68,7 +70,7 @@ export function updateHUD(room: Room): void {
   }
 
   // Boost (use local player's boost value)
-  const localPlayer = getLocalPlayer(room);
+  const localPlayer = state.players?.[room.sessionId];
   const boost = localPlayer?.boost ?? 33;
   boostBarEl.style.width = `${boost}%`;
 
@@ -84,7 +86,7 @@ export function updateHUD(room: Room): void {
       centerTextEl.textContent = 'GOAL!';
       break;
     case 'overtime':
-      centerTextEl.textContent = ''; // Just show +OT in timer
+      centerTextEl.textContent = '';
       break;
     case 'ended': {
       const winner = (state.blueScore || 0) > (state.orangeScore || 0) ? 'BLUE' : 'ORANGE';
@@ -94,8 +96,4 @@ export function updateHUD(room: Room): void {
     default:
       centerTextEl.textContent = '';
   }
-}
-
-function getLocalPlayer(room: Room): any {
-  return (room.state as any).players?.get(room.sessionId);
 }

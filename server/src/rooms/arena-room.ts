@@ -19,6 +19,7 @@ interface CarEntry {
 
 /**
  * Quick Match room — auto-assigns teams, starts when 4/4 players.
+ * Uses manual broadcast-based state sync instead of Colyseus auto-patching.
  */
 export class ArenaRoom extends Room<GameState> {
   private inputs: Map<string, InputPayload> = new Map();
@@ -34,18 +35,16 @@ export class ArenaRoom extends Room<GameState> {
   onCreate(options: any) {
     this.setState(new GameState());
     this.maxClients = getConstant('MATCH.MAX_PLAYERS');
-    this.setPatchRate(getConstant('NETCODE.PATCH_RATE_MS'));
 
     // Handle input messages
     this.onMessage('input', (client, payload: InputPayload) => {
       this.inputs.set(client.sessionId, payload);
     });
 
-    // Handle dev-tune messages (dev only)
+    // Handle dev-tune messages
     this.onMessage('dev-tune', (_client, data: { path: string; value: number }) => {
       try {
         setOverride(data.path, data.value);
-        console.log(`[Dev] Override: ${data.path} = ${data.value}`);
       } catch (e: any) {
         console.warn(`[Dev] Failed to override: ${e.message}`);
       }
@@ -53,13 +52,21 @@ export class ArenaRoom extends Room<GameState> {
 
     this.onMessage('dev-reset', () => {
       clearOverrides();
-      console.log('[Dev] All overrides cleared');
     });
 
     // Initialize physics
     this.initializePhysics();
 
-    console.log(`[ArenaRoom] Created (max ${this.maxClients} players, patch rate ${getConstant('NETCODE.PATCH_RATE_MS')}ms)`);
+    // Single simulation interval running from the start at 30Hz.
+    // During active play, physics steps at 60Hz (we'll switch interval rate).
+    this.setSimulationInterval(() => {
+      if (this.physicsReady && (this.state.phase === 'playing' || this.state.phase === 'overtime' || this.state.phase === 'goal-scored')) {
+        this.tick();
+      }
+      this.broadcastState();
+    }, 1000 / 30);
+
+    console.log(`[ArenaRoom] Created (max ${this.maxClients} players)`);
   }
 
   private async initializePhysics() {
@@ -69,8 +76,7 @@ export class ArenaRoom extends Room<GameState> {
     this.ballBody = createBall(this.world);
     createGoalSensors(this.world);
     this.physicsReady = true;
-
-    console.log('[ArenaRoom] Physics initialized (waiting for players)');
+    console.log('[ArenaRoom] Physics initialized');
   }
 
   onJoin(client: colyseus.Client, options: any) {
@@ -139,10 +145,15 @@ export class ArenaRoom extends Room<GameState> {
     this.state.phase = 'playing';
     this.state.timeRemaining = getConstant('MATCH.DURATION_SECONDS');
 
-    // Start 60Hz physics loop
-    this.setSimulationInterval((dt) => this.tick(dt), 1000 / 60);
+    // Switch to 60Hz for physics
+    this.setSimulationInterval(() => {
+      if (this.physicsReady) {
+        this.tick();
+      }
+      this.broadcastState();
+    }, 1000 / 60);
 
-    console.log('[ArenaRoom] Match started! Physics loop running at 60Hz');
+    console.log('[ArenaRoom] Match started at 60Hz');
   }
 
   private spawnCar(sessionId: string, team: string) {
@@ -214,9 +225,7 @@ export class ArenaRoom extends Room<GameState> {
     }
   }
 
-  private tick(dt: number) {
-    if (!this.physicsReady) return;
-
+  private tick() {
     // 1. Apply car physics from player inputs (only during active play phases)
     if (this.state.phase === 'playing' || this.state.phase === 'overtime') {
       for (const [sessionId, carEntry] of this.carBodies) {
@@ -228,11 +237,11 @@ export class ArenaRoom extends Room<GameState> {
     // 2. Step the Rapier world
     this.world.step();
 
-    // 3. Sync physics state to Colyseus schema
+    // 3. Sync physics state to schema (for internal tracking)
     this.syncBallState();
     this.syncPlayerStates();
 
-    // 4. Check for goals (only during 'playing' or 'overtime')
+    // 4. Check for goals
     if (this.state.phase === 'playing' || this.state.phase === 'overtime') {
       const scored = checkGoal(this.ballBody);
       if (scored) {
@@ -284,6 +293,32 @@ export class ArenaRoom extends Room<GameState> {
       }
       console.log(`[ArenaRoom] Kickoff reset. Resuming: ${this.state.phase}`);
     }
+  }
+
+  private broadcastState() {
+    const players: Record<string, any> = {};
+    this.state.players.forEach((p, k) => {
+      players[k] = {
+        x: p.x, y: p.y, z: p.z,
+        qx: p.qx, qy: p.qy, qz: p.qz, qw: p.qw,
+        vx: p.vx, vy: p.vy, vz: p.vz,
+        boost: p.boost, team: p.team, name: p.name, isHost: p.isHost,
+      };
+    });
+
+    const ball = this.state.ball;
+    this.broadcast('state-sync', {
+      players,
+      ball: {
+        x: ball.x, y: ball.y, z: ball.z,
+        qx: ball.qx, qy: ball.qy, qz: ball.qz, qw: ball.qw,
+        vx: ball.vx, vy: ball.vy, vz: ball.vz,
+      },
+      blueScore: this.state.blueScore,
+      orangeScore: this.state.orangeScore,
+      timeRemaining: this.state.timeRemaining,
+      phase: this.state.phase,
+    });
   }
 
   private syncBallState() {

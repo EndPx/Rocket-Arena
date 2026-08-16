@@ -1,12 +1,16 @@
 import { joinArena, createCustomRoom, joinCustomRoom, getClient } from '../networking/client.js';
+import { setupStateListener } from '../networking/state-listener.js';
 import type { Room } from 'colyseus.js';
+import * as THREE from 'three';
 
 let lobbyEl: HTMLElement;
 let onJoinCallback: ((room: Room) => void) | null = null;
 let currentRoom: Room | null = null;
+let scene: THREE.Scene | null = null;
 
-export function createLobby(onJoin: (room: Room) => void): void {
+export function createLobby(onJoin: (room: Room) => void, sceneRef: THREE.Scene): void {
   onJoinCallback = onJoin;
+  scene = sceneRef;
 
   lobbyEl = document.createElement('div');
   lobbyEl.id = 'lobby';
@@ -60,6 +64,8 @@ async function handleQuickMatch(): Promise<void> {
   try {
     const room = await joinArena(name);
     currentRoom = room;
+    // Setup state listener immediately so we receive state-sync during lobby
+    if (scene) setupStateListener(room, scene);
     showWaitingRoom(room);
   } catch (e: any) {
     status.textContent = `Error: ${e.message || 'Connection failed'}`;
@@ -74,6 +80,8 @@ async function handleCreateRoom(): Promise<void> {
   try {
     const room = await createCustomRoom(name);
     currentRoom = room;
+    // Setup state listener immediately so we receive state-sync during lobby
+    if (scene) setupStateListener(room, scene);
     showCustomLobby(room);
   } catch (e: any) {
     status.textContent = `Error: ${e.message || 'Failed to create room'}`;
@@ -94,6 +102,8 @@ async function handleJoinByCode(): Promise<void> {
   try {
     const room = await joinCustomRoom(code, name);
     currentRoom = room;
+    // Setup state listener immediately so we receive state-sync during lobby
+    if (scene) setupStateListener(room, scene);
     showCustomLobby(room);
   } catch (e: any) {
     status.textContent = `Error: ${e.message || 'Room not found'}`;
@@ -111,50 +121,50 @@ function showWaitingRoom(room: Room): void {
       <p class="waiting-text" id="waiting-text">Waiting for players...</p>
       <p class="player-count" id="player-count">1/4</p>
       <ul class="player-list" id="player-list"></ul>
+      <button class="btn-secondary" id="leave-room">Leave Room</button>
       <p class="lobby-status" id="lobby-status">Camera orbiting arena</p>
     </div>
   `;
 
-  const state = room.state as any;
+  // Leave room handler
+  document.getElementById('leave-room')!.addEventListener('click', () => {
+    room.leave();
+    currentRoom = null;
+    showMainMenu();
+  });
 
-  // Update player list on state changes
-  const updatePlayerList = () => {
-    const listEl = document.getElementById('player-list');
-    const countEl = document.getElementById('player-count');
-    if (!listEl || !countEl) return;
+  let joined = false;
 
-    let html = '';
-    let count = 0;
-    state.players.forEach((player: any) => {
-      count++;
-      const teamColor = player.team === 'blue' ? '#4488ff' : '#ff8844';
-      html += `<li style="color:${teamColor}">${player.name} (${player.team})</li>`;
-    });
-    listEl.innerHTML = html;
-    countEl.textContent = `${count}/4`;
-  };
+  // Listen for state-sync to update player list and detect phase transitions
+  room.onMessage('state-sync', (data: any) => {
+    updatePlayerList(data);
 
-  state.players.onAdd(() => updatePlayerList());
-  state.players.onRemove(() => updatePlayerList());
-  updatePlayerList();
-
-  // Listen for phase changes — when match starts, transition to game
-  state.listen('phase', (phase: string) => {
-    if (phase === 'countdown') {
+    if (data.phase === 'countdown') {
       const waitText = document.getElementById('waiting-text');
-      if (waitText) waitText.textContent = 'Match starting soon...';
+      if (waitText) waitText.textContent = 'Match starting...';
     }
-    if (phase === 'playing') {
+    if ((data.phase === 'playing' || data.phase === 'overtime') && !joined) {
+      joined = true;
       hideLobby();
       onJoinCallback?.(room);
     }
   });
+}
 
-  // Fallback: if phase is already 'playing' when we render
-  if (state.phase === 'playing') {
-    hideLobby();
-    onJoinCallback?.(room);
+function updatePlayerList(data: any): void {
+  const listEl = document.getElementById('player-list');
+  const countEl = document.getElementById('player-count');
+  if (!listEl || !countEl || !data?.players) return;
+
+  let html = '';
+  let count = 0;
+  for (const [, player] of Object.entries(data.players) as [string, any][]) {
+    count++;
+    const teamColor = player.team === 'blue' ? '#4488ff' : '#ff8844';
+    html += `<li style="color:${teamColor}">${player.name} (${player.team})</li>`;
   }
+  listEl.innerHTML = html;
+  countEl.textContent = `${count}/4`;
 }
 
 // ============================================================
@@ -162,11 +172,6 @@ function showWaitingRoom(room: Room): void {
 // ============================================================
 
 function showCustomLobby(room: Room): void {
-  const state = room.state as any;
-  const metadata = (room as any).metadata || {};
-  // The room code may not be immediately available; we try to get it from metadata
-  // For the host, it's set on the server. We can also read it from room listing.
-
   lobbyEl.innerHTML = `
     <div class="lobby-card custom-card">
       <h2>Custom Room</h2>
@@ -188,6 +193,7 @@ function showCustomLobby(room: Room): void {
       </div>
       <p class="player-count" id="player-count">1/4</p>
       <button class="btn-primary btn-start hidden" id="start-match">Start Match</button>
+      <button class="btn-secondary" id="leave-room">Leave Room</button>
       <p class="lobby-status" id="lobby-status"></p>
     </div>
   `;
@@ -208,67 +214,70 @@ function showCustomLobby(room: Room): void {
     room.send('start-match');
   });
 
-  const updateTeamLists = () => {
-    const blueList = document.getElementById('blue-list');
-    const orangeList = document.getElementById('orange-list');
-    const countEl = document.getElementById('player-count');
-    const startBtn = document.getElementById('start-match');
-    if (!blueList || !orangeList || !countEl || !startBtn) return;
-
-    let blueHtml = '';
-    let orangeHtml = '';
-    let count = 0;
-    let localIsHost = false;
-
-    state.players.forEach((player: any, sessionId: string) => {
-      count++;
-      const isLocal = sessionId === room.sessionId;
-      const hostBadge = player.isHost ? ' <span class="host-badge">HOST</span>' : '';
-      const nameHtml = `<li class="${isLocal ? 'local-player' : ''}">${player.name}${hostBadge}</li>`;
-
-      if (player.team === 'blue') {
-        blueHtml += nameHtml;
-      } else {
-        orangeHtml += nameHtml;
-      }
-
-      if (isLocal && player.isHost) {
-        localIsHost = true;
-      }
-    });
-
-    blueList.innerHTML = blueHtml;
-    orangeList.innerHTML = orangeHtml;
-    countEl.textContent = `${count}/4`;
-
-    // Show start button only for host
-    if (localIsHost) {
-      startBtn.classList.remove('hidden');
-    } else {
-      startBtn.classList.add('hidden');
-    }
-  };
-
-  state.players.onAdd(() => updateTeamLists());
-  state.players.onRemove(() => updateTeamLists());
-  // Also listen for property changes on players (team changes)
-  state.players.onAdd((player: any) => {
-    player.listen('team', () => updateTeamLists());
-    player.listen('isHost', () => updateTeamLists());
+  // Leave room handler
+  document.getElementById('leave-room')!.addEventListener('click', () => {
+    room.leave();
+    currentRoom = null;
+    showMainMenu();
   });
-  updateTeamLists();
 
-  // Listen for phase changes
-  state.listen('phase', (phase: string) => {
+  let joined = false;
+
+  // Listen for state-sync to update team lists and detect phase transitions
+  room.onMessage('state-sync', (data: any) => {
+    updateTeamLists(data, room);
+
     const statusEl = document.getElementById('lobby-status');
-    if (phase === 'countdown') {
-      if (statusEl) statusEl.textContent = 'Match starting soon...';
+    if (data.phase === 'countdown') {
+      if (statusEl) statusEl.textContent = 'Match starting...';
     }
-    if (phase === 'playing') {
+    if ((data.phase === 'playing' || data.phase === 'overtime') && !joined) {
+      joined = true;
       hideLobby();
       onJoinCallback?.(room);
     }
   });
+}
+
+function updateTeamLists(data: any, room: Room): void {
+  const blueList = document.getElementById('blue-list');
+  const orangeList = document.getElementById('orange-list');
+  const countEl = document.getElementById('player-count');
+  const startBtn = document.getElementById('start-match');
+  if (!blueList || !orangeList || !countEl || !startBtn || !data?.players) return;
+
+  let blueHtml = '';
+  let orangeHtml = '';
+  let count = 0;
+  let localIsHost = false;
+
+  for (const [sessionId, player] of Object.entries(data.players) as [string, any][]) {
+    count++;
+    const isLocal = sessionId === room.sessionId;
+    const hostBadge = player.isHost ? ' <span class="host-badge">HOST</span>' : '';
+    const nameHtml = `<li class="${isLocal ? 'local-player' : ''}">${player.name}${hostBadge}</li>`;
+
+    if (player.team === 'blue') {
+      blueHtml += nameHtml;
+    } else {
+      orangeHtml += nameHtml;
+    }
+
+    if (isLocal && player.isHost) {
+      localIsHost = true;
+    }
+  }
+
+  blueList.innerHTML = blueHtml;
+  orangeList.innerHTML = orangeHtml;
+  countEl.textContent = `${count}/4`;
+
+  // Show start button only for host
+  if (localIsHost) {
+    startBtn.classList.remove('hidden');
+  } else {
+    startBtn.classList.add('hidden');
+  }
 }
 
 async function fetchRoomCode(room: Room): Promise<void> {

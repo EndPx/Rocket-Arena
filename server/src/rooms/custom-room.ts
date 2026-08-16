@@ -98,6 +98,11 @@ export class CustomRoom extends Room<GameState> {
     this.initializePhysics();
 
     console.log(`[CustomRoom] Created with code: ${code}`);
+
+    // Broadcast state at 30Hz from the start (lobby phase needs state-sync too)
+    this.setSimulationInterval(() => {
+      this.broadcastState();
+    }, 1000 / 30);
   }
 
   private async initializePhysics() {
@@ -191,8 +196,11 @@ export class CustomRoom extends Room<GameState> {
     this.state.phase = 'playing';
     this.state.timeRemaining = getConstant('MATCH.DURATION_SECONDS');
 
-    // Start 60Hz physics loop
-    this.setSimulationInterval((dt) => this.tick(dt), 1000 / 60);
+    // Start 60Hz physics loop with broadcast
+    this.setSimulationInterval((dt) => {
+      this.tick(dt);
+      this.broadcastState();
+    }, 1000 / 60);
 
     console.log('[CustomRoom] Match started! Physics loop running at 60Hz');
   }
@@ -375,6 +383,32 @@ export class CustomRoom extends Room<GameState> {
       player.vy = vel.y;
       player.vz = vel.z;
     }
+  }
+
+  private broadcastState() {
+    const players: Record<string, any> = {};
+    this.state.players.forEach((p, k) => {
+      players[k] = {
+        x: p.x, y: p.y, z: p.z,
+        qx: p.qx, qy: p.qy, qz: p.qz, qw: p.qw,
+        vx: p.vx, vy: p.vy, vz: p.vz,
+        boost: p.boost, team: p.team, name: p.name, isHost: p.isHost,
+      };
+    });
+
+    const ball = this.state.ball;
+    this.broadcast('state-sync', {
+      players,
+      ball: {
+        x: ball.x, y: ball.y, z: ball.z,
+        qx: ball.qx, qy: ball.qy, qz: ball.qz, qw: ball.qw,
+        vx: ball.vx, vy: ball.vy, vz: ball.vz,
+      },
+      blueScore: this.state.blueScore,
+      orangeScore: this.state.orangeScore,
+      timeRemaining: this.state.timeRemaining,
+      phase: this.state.phase,
+    });
   }
 
   getInput(sessionId: string): InputPayload {

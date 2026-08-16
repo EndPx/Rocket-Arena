@@ -1,12 +1,13 @@
 import { showLobby } from './lobby.js';
+import { getLocalState } from '../networking/state-listener.js';
 import type { Room } from 'colyseus.js';
 
 let gameOverEl: HTMLElement | null = null;
 
 export function showGameOver(room: Room): void {
-  const state = room.state as any;
-  const blueScore = state.blueScore || 0;
-  const orangeScore = state.orangeScore || 0;
+  const state = getLocalState();
+  const blueScore = state?.blueScore || 0;
+  const orangeScore = state?.orangeScore || 0;
   const winner = blueScore > orangeScore ? 'BLUE' : 'ORANGE';
   const winColor = blueScore > orangeScore ? '#3366ff' : '#ff6633';
 
