@@ -7,6 +7,8 @@ import { initPhysics, createWorld } from '../physics/world.js';
 import { createArenaColliders } from '../physics/arena.js';
 import { createBall } from '../physics/ball.js';
 import { createCar, applyCarPhysics } from '../physics/car.js';
+import { createGoalSensors, checkGoal, resetToKickoff } from '../systems/scoring.js';
+import { updateTimer, resolveTimeUp, getGoalResetDelay } from '../systems/match-timer.js';
 
 const { Room } = colyseus;
 
@@ -26,6 +28,8 @@ export class SandboxRoom extends Room<GameState> {
   private ballBody!: RAPIER.RigidBody;
   private carBodies: Map<string, CarEntry> = new Map();
   private physicsReady: boolean = false;
+  private goalResetTimer: number = 0;
+  private wasOvertime: boolean = false;
 
   onCreate(options: any) {
     this.setState(new GameState());
@@ -59,6 +63,7 @@ export class SandboxRoom extends Room<GameState> {
     this.world = createWorld();
     createArenaColliders(this.world);
     this.ballBody = createBall(this.world);
+    createGoalSensors(this.world);
     this.physicsReady = true;
 
     // Start 60Hz physics loop
@@ -176,10 +181,12 @@ export class SandboxRoom extends Room<GameState> {
   private tick(dt: number) {
     if (!this.physicsReady) return;
 
-    // 1. Apply car physics from player inputs
-    for (const [sessionId, carEntry] of this.carBodies) {
-      const input = this.inputs.get(sessionId) || { throttle: 0, steer: 0, jump: false, boost: false };
-      applyCarPhysics(this.world, carEntry.body, input, carEntry.jumpState);
+    // 1. Apply car physics from player inputs (only during active play phases)
+    if (this.state.phase === 'playing' || this.state.phase === 'overtime') {
+      for (const [sessionId, carEntry] of this.carBodies) {
+        const input = this.inputs.get(sessionId) || { throttle: 0, steer: 0, jump: false, boost: false };
+        applyCarPhysics(this.world, carEntry.body, input, carEntry.jumpState);
+      }
     }
 
     // 2. Step the Rapier world
@@ -188,6 +195,62 @@ export class SandboxRoom extends Room<GameState> {
     // 3. Sync physics state to Colyseus schema
     this.syncBallState();
     this.syncPlayerStates();
+
+    // 4. Check for goals (only during 'playing' or 'overtime')
+    if (this.state.phase === 'playing' || this.state.phase === 'overtime') {
+      const scored = checkGoal(this.ballBody);
+      if (scored) {
+        if (scored === 'blue') this.state.blueScore++;
+        else this.state.orangeScore++;
+
+        // In overtime, any goal ends the match immediately
+        if (this.state.phase === 'overtime') {
+          this.wasOvertime = true;
+        }
+
+        this.state.phase = 'goal-scored';
+        this.goalResetTimer = getGoalResetDelay();
+        console.log(`[Sandbox] GOAL! ${scored} scores! (${this.state.blueScore}-${this.state.orangeScore})`);
+      }
+    }
+
+    // 5. Update timer
+    const timerState = {
+      timeRemaining: this.state.timeRemaining,
+      phase: this.state.phase,
+      goalResetTimer: this.goalResetTimer,
+    };
+    const timerResult = updateTimer(timerState, 1 / 60);
+    this.state.timeRemaining = timerState.timeRemaining;
+    this.goalResetTimer = timerState.goalResetTimer;
+
+    if (timerResult === 'time-up') {
+      const result = resolveTimeUp(this.state.blueScore, this.state.orangeScore);
+      if (result === 'overtime') {
+        this.state.phase = 'overtime';
+        this.state.timeRemaining = -1; // Indicates overtime (no countdown)
+        this.wasOvertime = true;
+        console.log('[Sandbox] OVERTIME! Next goal wins.');
+      } else {
+        this.state.phase = 'ended';
+        console.log(`[Sandbox] Match ended! Blue ${this.state.blueScore} - ${this.state.orangeScore} Orange`);
+      }
+    } else if (timerResult === 'reset-complete') {
+      // Reset positions and resume play
+      const playerTeams = new Map<string, { team: string }>();
+      for (const [sessionId, player] of this.state.players) {
+        playerTeams.set(sessionId, { team: player.team });
+      }
+      resetToKickoff(this.ballBody, this.carBodies, playerTeams, this.getKickoffPosition.bind(this));
+
+      // Resume appropriate phase
+      if (this.wasOvertime) {
+        this.state.phase = 'overtime';
+      } else {
+        this.state.phase = 'playing';
+      }
+      console.log(`[Sandbox] Kickoff reset. Resuming: ${this.state.phase}`);
+    }
   }
 
   private syncBallState() {
