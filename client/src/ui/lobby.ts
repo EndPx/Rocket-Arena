@@ -4,15 +4,25 @@ import type { Room } from 'colyseus.js';
 import * as THREE from 'three';
 import logoUrl from '../assets/generated/rocket-arena-logo.png';
 import markUrl from '../assets/generated/rocket-arena-mark.png';
+import {
+  isCompleteRoomCode,
+  normalizePlayerName,
+  normalizeRoomCode,
+  ROOM_CODE_ALPHABET,
+} from './lobby-input.js';
+
+const PLAYER_NAME_STORAGE_KEY = 'rocket-arena-name';
 
 let lobbyEl: HTMLElement;
 let onJoinCallback: ((room: Room) => void) | null = null;
 let currentRoom: Room | null = null;
 let scene: THREE.Scene | null = null;
+let currentPlayerName = 'Player';
 
 export function createLobby(onJoin: (room: Room) => void, sceneRef: THREE.Scene): void {
   onJoinCallback = onJoin;
   scene = sceneRef;
+  currentPlayerName = getSavedName();
 
   lobbyEl = document.createElement('div');
   lobbyEl.id = 'lobby';
@@ -56,40 +66,109 @@ function showMainMenu(): void {
           </span>
         </span>
       </h1>
-      <input type="text" id="lobby-name" placeholder="Your name" maxlength="16" value="${getSavedName()}">
-      <button id="lobby-quick" class="btn-primary">Quick Match</button>
-      <button id="lobby-custom-toggle" class="btn-secondary">Custom Room</button>
-      <p class="lobby-status" id="lobby-status"></p>
+      <div class="lobby-action-stack" id="lobby-main-actions">
+        <label class="sr-only" for="lobby-name">Player name</label>
+        <input
+          type="text"
+          id="lobby-name"
+          placeholder="Your name"
+          maxlength="16"
+          autocomplete="nickname"
+          aria-describedby="lobby-status"
+        >
+        <button id="lobby-quick" class="btn-primary" type="button">Quick Match</button>
+        <button id="lobby-custom-toggle" class="btn-secondary" type="button">Custom Room</button>
+      </div>
+      <p class="lobby-status" id="lobby-status" role="status" aria-live="polite" aria-atomic="true"></p>
     </div>
   `;
 
+  const nameInput = document.getElementById('lobby-name') as HTMLInputElement;
+  nameInput.value = currentPlayerName;
+
   document.getElementById('lobby-quick')!.addEventListener('click', handleQuickMatch);
-  document.getElementById('lobby-custom-toggle')!.addEventListener('click', showCustomScreen);
+  document.getElementById('lobby-custom-toggle')!.addEventListener('click', () => {
+    getPlayerName();
+    showCustomScreen();
+  });
 }
+
+// ============================================================
+// Screen 2: Custom Room Selection
+// ============================================================
 
 function showCustomScreen(): void {
   lobbyEl.innerHTML = `
     <div class="lobby-card">
       <h2>Custom Room</h2>
-      <button id="lobby-create" class="btn-accent">Create Room</button>
-      <div class="join-row">
-        <input type="text" id="lobby-code" placeholder="Room code" maxlength="6">
-        <button id="lobby-join-code" class="btn-accent">Join</button>
+      <div class="lobby-action-stack" id="lobby-custom-actions">
+        <button id="lobby-create" class="btn-accent" type="button">Create Room</button>
+        <button id="lobby-open-code" class="btn-accent" type="button">Join Code</button>
+        <button id="lobby-back" class="btn-danger" type="button">Back</button>
       </div>
-      <button id="lobby-back" class="btn-danger">Back</button>
-      <p class="lobby-status" id="lobby-status"></p>
+      <p class="lobby-status" id="lobby-status" role="status" aria-live="polite" aria-atomic="true"></p>
     </div>
   `;
 
   document.getElementById('lobby-create')!.addEventListener('click', handleCreateRoom);
-  document.getElementById('lobby-join-code')!.addEventListener('click', handleJoinByCode);
+  document.getElementById('lobby-open-code')!.addEventListener('click', showJoinCodeScreen);
   document.getElementById('lobby-back')!.addEventListener('click', showMainMenu);
 }
 
+// ============================================================
+// Screen 3: Join Custom Room
+// ============================================================
+
+function showJoinCodeScreen(): void {
+  lobbyEl.innerHTML = `
+    <div class="lobby-card">
+      <h2>Join Custom Room</h2>
+      <form class="lobby-action-stack" id="lobby-code-form" novalidate>
+        <label class="lobby-field-label" for="lobby-code">Room code</label>
+        <input
+          class="room-code-input"
+          type="text"
+          id="lobby-code"
+          name="roomCode"
+          placeholder="ABC234"
+          maxlength="6"
+          minlength="6"
+          pattern="[${ROOM_CODE_ALPHABET}]{6}"
+          inputmode="text"
+          autocapitalize="characters"
+          autocomplete="off"
+          spellcheck="false"
+          aria-describedby="lobby-status"
+        >
+        <button id="lobby-join-code" class="btn-accent" type="submit">Join</button>
+        <button id="lobby-code-back" class="btn-danger" type="button">Back</button>
+      </form>
+      <p class="lobby-status" id="lobby-status" role="status" aria-live="polite" aria-atomic="true"></p>
+    </div>
+  `;
+
+  const codeInput = document.getElementById('lobby-code') as HTMLInputElement;
+  const form = document.getElementById('lobby-code-form') as HTMLFormElement;
+
+  codeInput.addEventListener('input', () => {
+    codeInput.value = normalizeRoomCode(codeInput.value);
+    codeInput.removeAttribute('aria-invalid');
+    setStatus(document.getElementById('lobby-status')!, '');
+  });
+  form.addEventListener('submit', handleJoinByCode);
+  document.getElementById('lobby-code-back')!.addEventListener('click', showCustomScreen);
+  codeInput.focus();
+}
+
 async function handleQuickMatch(): Promise<void> {
+  const button = document.getElementById('lobby-quick') as HTMLButtonElement;
+  if (button.disabled) return;
+
   const name = getPlayerName();
   const status = document.getElementById('lobby-status')!;
-  status.textContent = 'Finding match...';
+  const actions = document.getElementById('lobby-main-actions')!;
+  setStatus(status, 'Finding match...');
+  setActionPending(actions, button, true, 'Finding...');
 
   try {
     const room = await joinArena(name);
@@ -97,15 +176,22 @@ async function handleQuickMatch(): Promise<void> {
     // Setup state listener immediately so we receive state-sync during lobby
     if (scene) setupStateListener(room, scene);
     showWaitingRoom(room);
-  } catch (e: any) {
-    status.textContent = `Error: ${e.message || 'Connection failed'}`;
+  } catch (error: unknown) {
+    setStatus(status, `Error: ${getErrorMessage(error, 'Connection failed')}`, true);
+  } finally {
+    setActionPending(actions, button, false, '');
   }
 }
 
 async function handleCreateRoom(): Promise<void> {
+  const button = document.getElementById('lobby-create') as HTMLButtonElement;
+  if (button.disabled) return;
+
   const name = getPlayerName();
   const status = document.getElementById('lobby-status')!;
-  status.textContent = 'Creating room...';
+  const actions = document.getElementById('lobby-custom-actions')!;
+  setStatus(status, 'Creating room...');
+  setActionPending(actions, button, true, 'Creating...');
 
   try {
     const room = await createCustomRoom(name);
@@ -113,35 +199,51 @@ async function handleCreateRoom(): Promise<void> {
     // Setup state listener immediately so we receive state-sync during lobby
     if (scene) setupStateListener(room, scene);
     showCustomLobby(room);
-  } catch (e: any) {
-    status.textContent = `Error: ${e.message || 'Failed to create room'}`;
+  } catch (error: unknown) {
+    setStatus(status, `Error: ${getErrorMessage(error, 'Failed to create room')}`, true);
+  } finally {
+    setActionPending(actions, button, false, '');
   }
 }
 
-async function handleJoinByCode(): Promise<void> {
-  const code = (document.getElementById('lobby-code') as HTMLInputElement).value.trim().toUpperCase();
-  const name = getPlayerName();
-  const status = document.getElementById('lobby-status')!;
+async function handleJoinByCode(event: SubmitEvent): Promise<void> {
+  event.preventDefault();
 
-  if (!code) {
-    status.textContent = 'Enter a room code';
+  const form = document.getElementById('lobby-code-form') as HTMLFormElement;
+  const input = document.getElementById('lobby-code') as HTMLInputElement;
+  const button = document.getElementById('lobby-join-code') as HTMLButtonElement;
+  const status = document.getElementById('lobby-status')!;
+  if (button.disabled) return;
+
+  const code = normalizeRoomCode(input.value);
+  input.value = code;
+
+  if (!isCompleteRoomCode(code)) {
+    input.setAttribute('aria-invalid', 'true');
+    setStatus(status, 'Enter a complete 6-character room code.', true);
+    input.focus();
     return;
   }
 
-  status.textContent = 'Joining...';
+  input.removeAttribute('aria-invalid');
+  setStatus(status, 'Joining...');
+  setActionPending(form, button, true, 'Joining...');
+
   try {
-    const room = await joinCustomRoom(code, name);
+    const room = await joinCustomRoom(code, getPlayerName());
     currentRoom = room;
     // Setup state listener immediately so we receive state-sync during lobby
     if (scene) setupStateListener(room, scene);
     showCustomLobby(room);
-  } catch (e: any) {
-    status.textContent = `Error: ${e.message || 'Room not found'}`;
+  } catch (error: unknown) {
+    setStatus(status, `Error: ${getErrorMessage(error, 'Room not found')}`, true);
+  } finally {
+    setActionPending(form, button, false, '');
   }
 }
 
 // ============================================================
-// Screen 2: Waiting Room (Quick Match)
+// Screen 4: Waiting Room (Quick Match)
 // ============================================================
 
 function showWaitingRoom(room: Room): void {
@@ -152,7 +254,7 @@ function showWaitingRoom(room: Room): void {
       <p class="player-count" id="player-count">1/4</p>
       <ul class="player-list" id="player-list"></ul>
       <button class="btn-danger" id="leave-room">Leave Room</button>
-      <p class="lobby-status" id="lobby-status"></p>
+      <p class="lobby-status" id="lobby-status" role="status" aria-live="polite" aria-atomic="true"></p>
     </div>
   `;
 
@@ -186,19 +288,20 @@ function updatePlayerList(data: any): void {
   const countEl = document.getElementById('player-count');
   if (!listEl || !countEl || !data?.players) return;
 
-  let html = '';
-  let count = 0;
+  const items: HTMLLIElement[] = [];
   for (const [, player] of Object.entries(data.players) as [string, any][]) {
-    count++;
-    const teamColor = player.team === 'blue' ? '#4488ff' : '#ff8844';
-    html += `<li style="color:${teamColor}">${player.name} (${player.team})</li>`;
+    const item = document.createElement('li');
+    item.style.color = player.team === 'blue' ? '#4488ff' : '#ff8844';
+    item.textContent = `${player.name} (${player.team})`;
+    items.push(item);
   }
-  listEl.innerHTML = html;
-  countEl.textContent = `${count}/4`;
+
+  listEl.replaceChildren(...items);
+  countEl.textContent = `${items.length}/4`;
 }
 
 // ============================================================
-// Screen 3: Custom Room Lobby
+// Screen 5: Custom Room Lobby
 // ============================================================
 
 function showCustomLobby(room: Room): void {
@@ -224,7 +327,7 @@ function showCustomLobby(room: Room): void {
       <p class="player-count" id="player-count">1/4</p>
       <button class="btn-primary btn-start hidden" id="start-match">Start Match</button>
       <button class="btn-danger" id="leave-room">Leave Room</button>
-      <p class="lobby-status" id="lobby-status"></p>
+      <p class="lobby-status" id="lobby-status" role="status" aria-live="polite" aria-atomic="true"></p>
     </div>
   `;
 
@@ -276,21 +379,27 @@ function updateTeamLists(data: any, room: Room): void {
   const startBtn = document.getElementById('start-match');
   if (!blueList || !orangeList || !countEl || !startBtn || !data?.players) return;
 
-  let blueHtml = '';
-  let orangeHtml = '';
-  let count = 0;
+  const blueItems: HTMLLIElement[] = [];
+  const orangeItems: HTMLLIElement[] = [];
   let localIsHost = false;
 
   for (const [sessionId, player] of Object.entries(data.players) as [string, any][]) {
-    count++;
     const isLocal = sessionId === room.sessionId;
-    const hostBadge = player.isHost ? ' <span class="host-badge">HOST</span>' : '';
-    const nameHtml = `<li class="${isLocal ? 'local-player' : ''}">${player.name}${hostBadge}</li>`;
+    const item = document.createElement('li');
+    if (isLocal) item.classList.add('local-player');
+    item.append(document.createTextNode(String(player.name)));
+
+    if (player.isHost) {
+      const hostBadge = document.createElement('span');
+      hostBadge.className = 'host-badge';
+      hostBadge.textContent = 'HOST';
+      item.append(' ', hostBadge);
+    }
 
     if (player.team === 'blue') {
-      blueHtml += nameHtml;
+      blueItems.push(item);
     } else {
-      orangeHtml += nameHtml;
+      orangeItems.push(item);
     }
 
     if (isLocal && player.isHost) {
@@ -298,9 +407,9 @@ function updateTeamLists(data: any, room: Room): void {
     }
   }
 
-  blueList.innerHTML = blueHtml;
-  orangeList.innerHTML = orangeHtml;
-  countEl.textContent = `${count}/4`;
+  blueList.replaceChildren(...blueItems);
+  orangeList.replaceChildren(...orangeItems);
+  countEl.textContent = `${blueItems.length + orangeItems.length}/4`;
 
   // Show start button only for host
   if (localIsHost) {
@@ -328,8 +437,8 @@ async function fetchRoomCode(room: Room): Promise<void> {
         }
       }, 1000);
     }
-  } catch (e) {
-    console.warn('[Lobby] Could not fetch room code:', e);
+  } catch (error) {
+    console.warn('[Lobby] Could not fetch room code:', error);
   }
 }
 
@@ -339,14 +448,48 @@ async function fetchRoomCode(room: Room): Promise<void> {
 
 function getPlayerName(): string {
   const input = document.getElementById('lobby-name') as HTMLInputElement | null;
-  const name = input?.value?.trim() || 'Player';
-  // Cache for next session
-  localStorage.setItem('rocket-arena-name', name);
-  return name;
+
+  // An unmounted main-menu input must never erase a captured or cached name.
+  if (!input) return currentPlayerName;
+
+  currentPlayerName = normalizePlayerName(input.value);
+  input.value = currentPlayerName;
+  localStorage.setItem(PLAYER_NAME_STORAGE_KEY, currentPlayerName);
+  return currentPlayerName;
 }
 
 function getSavedName(): string {
-  return localStorage.getItem('rocket-arena-name') || 'Player';
+  return normalizePlayerName(localStorage.getItem(PLAYER_NAME_STORAGE_KEY));
+}
+
+function setStatus(element: HTMLElement, message: string, isError = false): void {
+  element.textContent = message;
+  element.classList.toggle('is-error', isError);
+}
+
+function setActionPending(
+  container: HTMLElement,
+  activeButton: HTMLButtonElement,
+  pending: boolean,
+  pendingLabel: string,
+): void {
+  if (pending) {
+    activeButton.dataset.idleLabel = activeButton.textContent ?? '';
+    activeButton.textContent = pendingLabel;
+    container.setAttribute('aria-busy', 'true');
+  } else {
+    activeButton.textContent = activeButton.dataset.idleLabel ?? activeButton.textContent;
+    delete activeButton.dataset.idleLabel;
+    container.removeAttribute('aria-busy');
+  }
+
+  container.querySelectorAll<HTMLButtonElement>('button').forEach((button) => {
+    button.disabled = pending;
+  });
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback;
 }
 
 export function hideLobby(): void {
@@ -367,27 +510,63 @@ export function showLobby(): void {
 function getLobbyStyles(): string {
   return `
     #lobby {
-      position: fixed; inset: 0;
-      display: flex; align-items: center; justify-content: center;
-      background: rgba(0,0,0,0.85);
+      position: fixed;
+      inset: 0;
       z-index: 50;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-sizing: border-box;
+      padding: 1rem;
+      overflow: hidden;
+      background: rgba(0, 0, 0, 0.85);
       font-family: monospace;
     }
     .lobby-card {
-      background: #1a1a2e;
+      box-sizing: border-box;
+      width: min(500px, 100%);
+      min-width: 0;
+      max-height: calc(100vh - 2rem);
+      max-height: calc(100dvh - 2rem);
       padding: 2rem;
+      overflow-y: auto;
+      background: #1a1a2e;
       border-radius: 12px;
       text-align: center;
-      min-width: 320px;
-      max-width: 500px;
     }
     .lobby-card h1 { color: #fff; margin-bottom: 1.5rem; font-size: 1.8rem; }
-    .lobby-card h2 { color: #fff; margin-bottom: 1rem; font-size: 1.4rem; }
+    .lobby-card h2 { color: #fff; margin: 0 0 1rem; font-size: 1.4rem; }
+    .lobby-action-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      width: 100%;
+    }
     .lobby-card input {
-      display: block; width: 100%; padding: 0.6rem;
-      margin-bottom: 0.8rem; background: #222; color: #fff;
-      border: 1px solid #444; border-radius: 4px;
-      font-family: monospace; box-sizing: border-box;
+      display: block;
+      box-sizing: border-box;
+      width: 100%;
+      padding: 0.65rem;
+      margin-bottom: 0.8rem;
+      border: 1px solid #555;
+      border-radius: 4px;
+      background: #222;
+      color: #fff;
+      font-family: monospace;
+      font-size: 1rem;
+    }
+    .lobby-action-stack > input,
+    .lobby-action-stack > button { margin: 0; }
+    .lobby-field-label {
+      color: #d8d8e6;
+      font-size: 0.9rem;
+      font-weight: bold;
+      text-align: left;
+    }
+    .room-code-input {
+      letter-spacing: 0.2em;
+      text-align: center;
+      text-transform: uppercase;
     }
     .btn-primary {
       display: block; width: 100%; padding: 0.7rem;
@@ -411,18 +590,40 @@ function getLobbyStyles(): string {
     }
     .btn-danger:hover { background: #dd4444; }
     .btn-accent {
-      display: block; width: 100%; padding: 0.6rem;
+      display: block; width: 100%; padding: 0.7rem;
       margin-bottom: 0.5rem; background: #2a9d8f; color: #fff;
       border: none; border-radius: 4px; font-weight: bold;
-      cursor: pointer; font-family: monospace; font-size: 0.9rem;
+      cursor: pointer; font-family: monospace; font-size: 1rem;
     }
     .btn-accent:hover { background: #3ab8a8; }
-    .custom-options { margin-top: 0.5rem; }
-    .custom-options.hidden { display: none; }
-    .join-row { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
-    .join-row input { flex: 1; margin-bottom: 0; }
-    .join-row button { width: auto; margin-bottom: 0; padding: 0.6rem 1rem; }
-    .lobby-status { color: #aaa; font-size: 0.8rem; margin-top: 1rem; min-height: 1.2rem; }
+    #lobby button:disabled {
+      cursor: wait;
+      opacity: 0.62;
+    }
+    #lobby button:focus-visible,
+    #lobby input:focus-visible {
+      outline: 3px solid #ffcc00;
+      outline-offset: 2px;
+    }
+    .lobby-status {
+      min-height: 2.4rem;
+      margin: 1rem 0 0;
+      color: #aaa;
+      font-size: 0.8rem;
+      line-height: 1.4;
+    }
+    .lobby-status.is-error { color: #ff9292; }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
 
     /* Waiting Room */
     .waiting-text { color: #ccc; font-size: 1.1rem; margin-bottom: 0.5rem; }
@@ -442,14 +643,14 @@ function getLobbyStyles(): string {
     }
     .teams-container { display: flex; gap: 1rem; margin-bottom: 1rem; }
     .team-column {
-      flex: 1; padding: 0.8rem; border-radius: 8px;
+      flex: 1; min-width: 0; padding: 0.8rem; border-radius: 8px;
       min-height: 100px;
     }
     .blue-team { background: rgba(68, 136, 255, 0.15); border: 1px solid #4488ff; }
     .orange-team { background: rgba(255, 136, 68, 0.15); border: 1px solid #ff8844; }
     .team-column h3 { color: #fff; font-size: 0.9rem; margin-bottom: 0.5rem; }
     .team-column ul { list-style: none; padding: 0; margin: 0; text-align: left; }
-    .team-column ul li { color: #ddd; padding: 0.2rem 0; font-size: 0.85rem; }
+    .team-column ul li { color: #ddd; padding: 0.2rem 0; font-size: 0.85rem; overflow-wrap: anywhere; }
     .team-column ul li.local-player { color: #fff; font-weight: bold; }
     .host-badge {
       background: #ffcc00; color: #000; font-size: 0.65rem;
@@ -469,13 +670,6 @@ function getLobbyStyles(): string {
     .btn-start.hidden { display: none; }
 
     /* Responsive brand treatment */
-    #lobby { padding: 1rem; }
-    .lobby-card {
-      width: min(500px, calc(100vw - 2rem));
-      min-width: 0;
-      max-height: calc(100vh - 2rem);
-      overflow-y: auto;
-    }
     .lobby-card .lobby-brand {
       width: min(100%, 420px);
       margin: -0.25rem auto 1.15rem;
