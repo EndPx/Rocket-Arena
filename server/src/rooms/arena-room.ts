@@ -6,7 +6,7 @@ import type { InputPayload } from '@rocket-arena/shared/types';
 import { initPhysics, createWorld } from '../physics/world.js';
 import { createArenaColliders } from '../physics/arena.js';
 import { createBall } from '../physics/ball.js';
-import { createCar, applyCarPhysics } from '../physics/car.js';
+import { createCar, applyCarPhysics, createCarPhysicsState, type CarPhysicsState } from '../physics/car.js';
 import { createGoalSensors, checkGoal, resetToKickoff } from '../systems/scoring.js';
 import { updateTimer, resolveTimeUp, getGoalResetDelay } from '../systems/match-timer.js';
 
@@ -14,7 +14,7 @@ const { Room } = colyseus;
 
 interface CarEntry {
   body: RAPIER.RigidBody;
-  jumpState: { count: number };
+  jumpState: CarPhysicsState;
 }
 
 /**
@@ -35,6 +35,7 @@ export class ArenaRoom extends Room<GameState> {
   onCreate(options: any) {
     this.setState(new GameState());
     this.maxClients = getConstant('MATCH.MAX_PLAYERS');
+    this.setPatchRate(getConstant('NETCODE.PATCH_RATE_MS'));
 
     // Handle input messages
     this.onMessage('input', (client, payload: InputPayload) => {
@@ -64,7 +65,7 @@ export class ArenaRoom extends Room<GameState> {
         this.tick();
       }
       this.broadcastState();
-    }, 1000 / 30);
+    }, getConstant('NETCODE.PATCH_RATE_MS'));
 
     console.log(`[ArenaRoom] Created (max ${this.maxClients} players)`);
   }
@@ -81,6 +82,7 @@ export class ArenaRoom extends Room<GameState> {
 
   onJoin(client: colyseus.Client, options: any) {
     const player = new PlayerState();
+    player.boost = getConstant('CAR.BOOST.START_AMOUNT');
     player.name = options?.name || `Player ${this.clients.length}`;
 
     // Assign team: first 2 = blue, next 2 = orange
@@ -151,7 +153,7 @@ export class ArenaRoom extends Room<GameState> {
         this.tick();
       }
       this.broadcastState();
-    }, 1000 / 60);
+    }, getConstant('PHYSICS.TIMESTEP') * 1000);
 
     console.log('[ArenaRoom] Match started at 60Hz');
   }
@@ -176,7 +178,7 @@ export class ArenaRoom extends Room<GameState> {
       : { x: 0, y: 0, z: 0, w: 1 };
 
     const body = createCar(this.world, pos, rotation);
-    this.carBodies.set(sessionId, { body, jumpState: { count: 0 } });
+    this.carBodies.set(sessionId, { body, jumpState: createCarPhysicsState() });
 
     const player = this.state.players.get(sessionId);
     if (player) {
@@ -192,7 +194,7 @@ export class ArenaRoom extends Room<GameState> {
 
   private getKickoffPosition(sessionId: string, team: string): { x: number; y: number; z: number } {
     const carHeight = getConstant('CAR.BODY.HEIGHT');
-    const y = carHeight / 2 + 0.1;
+    const y = carHeight / 2 + getConstant('ARENA.KICKOFF.SPAWN_CLEARANCE');
 
     const teamPlayers = Array.from(this.state.players.entries())
       .filter(([id, p]) => p.team === team && id !== sessionId);
@@ -264,7 +266,7 @@ export class ArenaRoom extends Room<GameState> {
       phase: this.state.phase,
       goalResetTimer: this.goalResetTimer,
     };
-    const timerResult = updateTimer(timerState, 1 / 60);
+    const timerResult = updateTimer(timerState, getConstant('PHYSICS.TIMESTEP'));
     this.state.timeRemaining = timerState.timeRemaining;
     this.goalResetTimer = timerState.goalResetTimer;
 
@@ -357,6 +359,7 @@ export class ArenaRoom extends Room<GameState> {
       player.vx = vel.x;
       player.vy = vel.y;
       player.vz = vel.z;
+      player.boost = Math.round(carEntry.jumpState.boostAmount);
     }
   }
 

@@ -1,5 +1,6 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import { getConstant } from '@rocket-arena/shared/constants';
+import { resetCarPhysicsState, type CarPhysicsState } from '../physics/car.js';
 
 /**
  * Create goal sensor colliders (Rapier sensors that detect ball entry).
@@ -10,15 +11,16 @@ export function createGoalSensors(world: RAPIER.World): { blueGoalSensor: RAPIER
   const goalW = getConstant('ARENA.GOAL.WIDTH');
   const goalH = getConstant('ARENA.GOAL.HEIGHT');
   const goalD = getConstant('ARENA.GOAL.DEPTH');
+  const sensorInset = getConstant('ARENA.GOAL.SENSOR_INSET');
 
   // Blue goal sensor (negative Z end)
-  const blueDesc = RAPIER.ColliderDesc.cuboid(goalW / 2 - 0.5, goalH / 2 - 0.5, goalD / 2)
+  const blueDesc = RAPIER.ColliderDesc.cuboid(goalW / 2 - sensorInset, goalH / 2 - sensorInset, goalD / 2)
     .setTranslation(0, goalH / 2, -L / 2 - goalD / 2)
     .setSensor(true);
   const blueGoalSensor = world.createCollider(blueDesc);
 
   // Orange goal sensor (positive Z end)
-  const orangeDesc = RAPIER.ColliderDesc.cuboid(goalW / 2 - 0.5, goalH / 2 - 0.5, goalD / 2)
+  const orangeDesc = RAPIER.ColliderDesc.cuboid(goalW / 2 - sensorInset, goalH / 2 - sensorInset, goalD / 2)
     .setTranslation(0, goalH / 2, L / 2 + goalD / 2)
     .setSensor(true);
   const orangeGoalSensor = world.createCollider(orangeDesc);
@@ -61,14 +63,18 @@ export function checkGoal(ballBody: RAPIER.RigidBody): 'blue' | 'orange' | null 
  */
 export function resetToKickoff(
   ballBody: RAPIER.RigidBody,
-  carBodies: Map<string, { body: RAPIER.RigidBody; jumpState: { count: number } }>,
+  carBodies: Map<string, { body: RAPIER.RigidBody; jumpState: CarPhysicsState }>,
   players: Map<string, { team: string }>,
   getKickoffPosition: (sessionId: string, team: string) => { x: number; y: number; z: number }
 ): void {
   const ballRadius = getConstant('BALL.RADIUS');
 
   // Reset ball to center
-  ballBody.setTranslation({ x: 0, y: ballRadius + 0.5, z: 0 }, true);
+  ballBody.setTranslation({
+    x: 0,
+    y: ballRadius + getConstant('BALL.SPAWN_CLEARANCE'),
+    z: 0,
+  }, true);
   ballBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
   ballBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
 
@@ -86,6 +92,6 @@ export function resetToKickoff(
     carEntry.body.setRotation(rotation, true);
     carEntry.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     carEntry.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-    carEntry.jumpState.count = 0;
+    resetCarPhysicsState(carEntry.jumpState);
   }
 }

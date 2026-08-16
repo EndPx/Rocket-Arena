@@ -1,11 +1,14 @@
 /** Ball physics constants.
- *  Mass ratio car:ball is critical for impact feel.
- *  At 150:30 (5:1), a car at full speed launches the ball hard
- *  but doesn't feel like hitting a beach ball. Tune from here. */
+ *  The 120:32 car-to-ball mass ratio keeps taps controlled while preserving punchy hits. */
 export const BALL = {
-  RADIUS: 1.8,            // meters — oversized for readability
-  MASS: 30,               // kg — 1:5 ratio vs car (150kg)
-  RESTITUTION: 0.6,       // bounciness (0-1)
-  LINEAR_DAMPING: 0.3,    // air drag equivalent
-  ANGULAR_DAMPING: 0.1,   // spin decay
+  RADIUS: 1.8,
+  MASS: 32,
+  RESTITUTION: 0.55,
+  FRICTION: 0.32,
+  LINEAR_DAMPING: 0.16,
+  ANGULAR_DAMPING: 0.18,
+  SPAWN_CLEARANCE: 0.08,
+  CONTACT_SKIN: 0,
+  SOFT_CCD_PREDICTION: 0,
+  ADDITIONAL_SOLVER_ITERATIONS: 2,
 } as const;

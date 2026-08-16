@@ -1,98 +1,145 @@
-import { initPhysics, createWorld } from './world.js';
-import { createArenaColliders } from './arena.js';
-import { createBall } from './ball.js';
-import { createCar, applyCarPhysics } from './car.js';
+import assert from 'node:assert/strict';
+import type RAPIER from '@dimforge/rapier3d-compat';
 import { getConstant } from '../../../shared/src/constants/index.js';
 import type { InputPayload } from '../../../shared/src/types/input.js';
+import { createArenaColliders } from './arena.js';
+import { createBall } from './ball.js';
+import {
+  applyCarPhysics,
+  createCar,
+  createCarPhysicsState,
+  getCarMotion,
+  resetCarPhysicsState,
+} from './car.js';
+import { createWorld, initPhysics } from './world.js';
 
-async function runImpactTest(label: string, input: InputPayload, approachFrames: number, startDistance: number = 15) {
-  await initPhysics();
+const IMPACT_DETECTION_SPEED = 0.5;
+const MAX_APPROACH_SECONDS = 5;
+const POST_IMPACT_SECONDS = 0.75;
+const SETTLE_SECONDS = 0.35;
+
+interface ImpactResult {
+  label: string;
+  impactSeconds: number;
+  approachSpeed: number;
+  ballPeakSpeed: number;
+  finalBallZ: number;
+  minimumBallZAfterImpact: number;
+  boostUsed: number;
+}
+
+function runImpact(
+  label: string,
+  startDistance: number,
+  input: InputPayload,
+): ImpactResult {
   const world = createWorld();
   createArenaColliders(world);
+  const car = createCar(world, {
+    x: 0,
+    y: getConstant('CAR.BODY.HEIGHT') / 2
+      + getConstant('ARENA.KICKOFF.SPAWN_CLEARANCE'),
+    z: -startDistance,
+  });
+  const ball = createBall(world);
+  const state = createCarPhysicsState();
+  const timestep = getConstant('PHYSICS.TIMESTEP');
 
-  const carHeight = getConstant('CAR.BODY.HEIGHT');
-  const ballRadius = getConstant('BALL.RADIUS');
+  for (let frame = 0; frame < Math.round(SETTLE_SECONDS / timestep); frame++) world.step();
+  resetCarPhysicsState(state);
+  const startingBoost = state.boostAmount;
 
-  // Car starts at specified distance behind ball
-  const car = createCar(world, { x: 0, y: carHeight / 2 + 0.1, z: -startDistance });
-  const ball = createBall(world, { x: 0, y: ballRadius + 0.1, z: 0 });
-  const jumpState = { count: 0 };
-
-  // Let physics settle for 10 frames before applying input
-  for (let i = 0; i < 10; i++) {
-    world.step();
-  }
-
-  let carSpeedAtImpact = 0;
-  let ballSpeedAfterImpact = 0;
   let impactFrame = -1;
+  let approachSpeed = 0;
+  let ballPeakSpeed = 0;
+  let minimumBallZAfterImpact = Number.POSITIVE_INFINITY;
+  const maxFrames = Math.round(MAX_APPROACH_SECONDS / timestep);
+  const postImpactFrames = Math.round(POST_IMPACT_SECONDS / timestep);
 
-  for (let i = 0; i < approachFrames + 60; i++) {
-    applyCarPhysics(world, car, input, jumpState);
+  for (let frame = 0; frame < maxFrames; frame++) {
+    const preStepSpeed = getCarMotion(car).horizontalSpeed;
+    applyCarPhysics(world, car, input, state);
     world.step();
 
-    const ballVel = ball.linvel();
-    const ballSpeed = Math.sqrt(ballVel.x * ballVel.x + ballVel.y * ballVel.y + ballVel.z * ballVel.z);
-
-    // Detect impact: ball starts moving with significant horizontal velocity
-    // Use Z velocity to detect car-ball contact (car drives along Z axis)
-    if (Math.abs(ballVel.z) > 1.0 && impactFrame === -1) {
-      impactFrame = i;
-      const carVel = car.linvel();
-      carSpeedAtImpact = Math.sqrt(carVel.x * carVel.x + carVel.z * carVel.z);
-      ballSpeedAfterImpact = ballSpeed;
+    const ballVelocity = ball.linvel();
+    const ballSpeed = Math.hypot(ballVelocity.x, ballVelocity.z);
+    if (impactFrame < 0 && ballSpeed >= IMPACT_DETECTION_SPEED) {
+      impactFrame = frame;
+      approachSpeed = preStepSpeed;
     }
 
-    // Record max ball speed after impact
-    if (impactFrame !== -1 && ballSpeed > ballSpeedAfterImpact) {
-      ballSpeedAfterImpact = ballSpeed;
+    if (impactFrame >= 0) {
+      ballPeakSpeed = Math.max(ballPeakSpeed, ballSpeed);
+      minimumBallZAfterImpact = Math.min(minimumBallZAfterImpact, ball.translation().z);
+      if (frame - impactFrame >= postImpactFrames) break;
     }
   }
 
-  const ballPos = ball.translation();
-  const tunneled = ballPos.z < -1; // Ball went backward through car = tunnel
+  const finalBallZ = ball.translation().z;
+  assert.ok(impactFrame >= 0, `${label}: car never contacted the ball`);
+  assert.ok(Number.isFinite(ballPeakSpeed), `${label}: ball speed became non-finite`);
+  assert.ok(ballPeakSpeed > IMPACT_DETECTION_SPEED, `${label}: impact failed to move the ball`);
+  assert.ok(
+    minimumBallZAfterImpact >= -getConstant('BALL.RADIUS') * 0.25,
+    `${label}: ball tunneled backward through the car (${minimumBallZAfterImpact.toFixed(2)}m)`,
+  );
+  assert.ok(
+    ballPeakSpeed < getConstant('CAR.BOOST.MAX_SPEED') * 1.8,
+    `${label}: impact created an unstable speed spike (${ballPeakSpeed.toFixed(2)}m/s)`,
+  );
 
-  console.log(`  ${label}:`);
-  console.log(`    Impact at frame: ${impactFrame}`);
-  console.log(`    Car speed at impact: ${carSpeedAtImpact.toFixed(2)} m/s`);
-  console.log(`    Ball peak speed after impact: ${ballSpeedAfterImpact.toFixed(2)} m/s`);
-  console.log(`    Ball final Z position: ${ballPos.z.toFixed(2)}m`);
-  console.log(`    Tunneling: ${tunneled ? 'YES — BUG!' : 'No (CCD working)'}`);
-  console.log(`    Speed ratio (ball/car): ${(ballSpeedAfterImpact / carSpeedAtImpact).toFixed(2)}x`);
-  console.log('');
+  const result = {
+    label,
+    impactSeconds: impactFrame * timestep,
+    approachSpeed,
+    ballPeakSpeed,
+    finalBallZ,
+    minimumBallZAfterImpact,
+    boostUsed: input.boost ? Math.max(0, startingBoost - state.boostAmount) : 0,
+  };
+  world.free();
+  return result;
 }
 
-async function main() {
-  console.log('=== Car-Ball Impact Test ===');
-  console.log(`Car mass: ${getConstant('CAR.BODY.MASS')}kg, Ball mass: ${getConstant('BALL.MASS')}kg (ratio ${(getConstant('CAR.BODY.MASS') / getConstant('BALL.MASS')).toFixed(1)}:1)`);
-  console.log(`Ball restitution: ${getConstant('BALL.RESTITUTION')}`);
-  console.log('');
+function printResult(result: ImpactResult): void {
+  const ratio = result.ballPeakSpeed / result.approachSpeed;
+  console.log(`${result.label}: impact=${result.impactSeconds.toFixed(2)}s car=${result.approachSpeed.toFixed(2)}m/s ball=${result.ballPeakSpeed.toFixed(2)}m/s ratio=${ratio.toFixed(2)}x finalZ=${result.finalBallZ.toFixed(2)}m boostUsed=${result.boostUsed.toFixed(1)}`);
+}
 
-  // Low speed approach (close start — car hits ball before reaching high speed)
-  await runImpactTest(
-    'LOW SPEED (short approach)',
-    { throttle: 1, steer: 0, jump: false, boost: false },
-    60,
-    5  // Only 5m away — car hits ball at low speed
+async function main(): Promise<void> {
+  await initPhysics();
+
+  const low = runImpact(
+    'low tap',
+    6,
+    { throttle: 0.35, steer: 0, jump: false, boost: false },
   );
-
-  // Max speed approach (long drive to build up speed)
-  await runImpactTest(
-    'MAX SPEED (full throttle)',
+  const normal = runImpact(
+    'normal hit',
+    20,
     { throttle: 1, steer: 0, jump: false, boost: false },
-    180,
-    20  // 20m approach for full speed buildup
   );
-
-  // Boost speed approach
-  await runImpactTest(
-    'BOOST SPEED (throttle + boost)',
+  const boost = runImpact(
+    'boost hit',
+    20,
     { throttle: 1, steer: 0, jump: false, boost: true },
-    120,
-    15  // 15m with boost — reaches high speed quickly
   );
 
-  console.log('=== Impact Test Complete ===');
+  assert.ok(low.approachSpeed < normal.approachSpeed * 0.65, 'low tap approach must remain meaningfully slower');
+  assert.ok(normal.approachSpeed > getConstant('CAR.ENGINE.MAX_SPEED') * 0.7, 'normal approach should reach useful match speed');
+  assert.ok(boost.approachSpeed > normal.approachSpeed * 1.12, 'boost approach must be clearly faster than normal');
+  assert.ok(low.ballPeakSpeed < normal.ballPeakSpeed * 0.7, 'slow taps must launch the ball gently');
+  assert.ok(normal.ballPeakSpeed > low.ballPeakSpeed * 1.5, 'normal hits must feel punchier than taps');
+  assert.ok(boost.ballPeakSpeed > normal.ballPeakSpeed * 1.1, 'boost hits must clearly exceed normal hits');
+
+  console.log('=== IMPACT HARNESS: PASS ===');
+  printResult(low);
+  printResult(normal);
+  printResult(boost);
 }
 
-main().catch(console.error);
+main().catch((error: unknown) => {
+  console.error('=== IMPACT HARNESS: FAIL ===');
+  console.error(error);
+  process.exitCode = 1;
+});

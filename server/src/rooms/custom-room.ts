@@ -6,7 +6,7 @@ import type { InputPayload } from '@rocket-arena/shared/types';
 import { initPhysics, createWorld } from '../physics/world.js';
 import { createArenaColliders } from '../physics/arena.js';
 import { createBall } from '../physics/ball.js';
-import { createCar, applyCarPhysics } from '../physics/car.js';
+import { createCar, applyCarPhysics, createCarPhysicsState, type CarPhysicsState } from '../physics/car.js';
 import { createGoalSensors, checkGoal, resetToKickoff } from '../systems/scoring.js';
 import { updateTimer, resolveTimeUp, getGoalResetDelay } from '../systems/match-timer.js';
 
@@ -14,13 +14,13 @@ const { Room } = colyseus;
 
 interface CarEntry {
   body: RAPIER.RigidBody;
-  jumpState: { count: number };
+  jumpState: CarPhysicsState;
 }
 
 function generateRoomCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Excludes ambiguous: I,O,0,1
   let code = '';
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < getConstant('MATCH.ROOM_CODE_LENGTH'); i++) {
     code += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return code;
@@ -44,7 +44,7 @@ export class CustomRoom extends Room<GameState> {
 
   onCreate(options: any) {
     this.setState(new GameState());
-    this.maxClients = 4;
+    this.maxClients = getConstant('MATCH.MAX_PLAYERS');
     this.setPatchRate(getConstant('NETCODE.PATCH_RATE_MS'));
 
     // Generate room code and set metadata for room discovery
@@ -102,7 +102,7 @@ export class CustomRoom extends Room<GameState> {
     // Broadcast state at 30Hz from the start (lobby phase needs state-sync too)
     this.setSimulationInterval(() => {
       this.broadcastState();
-    }, 1000 / 30);
+    }, getConstant('NETCODE.PATCH_RATE_MS'));
   }
 
   private async initializePhysics() {
@@ -118,6 +118,7 @@ export class CustomRoom extends Room<GameState> {
 
   onJoin(client: colyseus.Client, options: any) {
     const player = new PlayerState();
+    player.boost = getConstant('CAR.BOOST.START_AMOUNT');
     player.name = options?.name || `Player ${this.clients.length}`;
 
     // First player to join is the host
@@ -197,10 +198,10 @@ export class CustomRoom extends Room<GameState> {
     this.state.timeRemaining = getConstant('MATCH.DURATION_SECONDS');
 
     // Start 60Hz physics loop with broadcast
-    this.setSimulationInterval((dt) => {
-      this.tick(dt);
+    this.setSimulationInterval(() => {
+      this.tick();
       this.broadcastState();
-    }, 1000 / 60);
+    }, getConstant('PHYSICS.TIMESTEP') * 1000);
 
     console.log('[CustomRoom] Match started! Physics loop running at 60Hz');
   }
@@ -225,7 +226,7 @@ export class CustomRoom extends Room<GameState> {
       : { x: 0, y: 0, z: 0, w: 1 };
 
     const body = createCar(this.world, pos, rotation);
-    this.carBodies.set(sessionId, { body, jumpState: { count: 0 } });
+    this.carBodies.set(sessionId, { body, jumpState: createCarPhysicsState() });
 
     const player = this.state.players.get(sessionId);
     if (player) {
@@ -241,7 +242,7 @@ export class CustomRoom extends Room<GameState> {
 
   private getKickoffPosition(sessionId: string, team: string): { x: number; y: number; z: number } {
     const carHeight = getConstant('CAR.BODY.HEIGHT');
-    const y = carHeight / 2 + 0.1;
+    const y = carHeight / 2 + getConstant('ARENA.KICKOFF.SPAWN_CLEARANCE');
 
     const teamPlayers = Array.from(this.state.players.entries())
       .filter(([id, p]) => p.team === team && id !== sessionId);
@@ -274,7 +275,7 @@ export class CustomRoom extends Room<GameState> {
     }
   }
 
-  private tick(dt: number) {
+  private tick() {
     if (!this.physicsReady) return;
 
     // 1. Apply car physics from player inputs
@@ -315,7 +316,7 @@ export class CustomRoom extends Room<GameState> {
       phase: this.state.phase,
       goalResetTimer: this.goalResetTimer,
     };
-    const timerResult = updateTimer(timerState, 1 / 60);
+    const timerResult = updateTimer(timerState, getConstant('PHYSICS.TIMESTEP'));
     this.state.timeRemaining = timerState.timeRemaining;
     this.goalResetTimer = timerState.goalResetTimer;
 
@@ -382,6 +383,7 @@ export class CustomRoom extends Room<GameState> {
       player.vx = vel.x;
       player.vy = vel.y;
       player.vz = vel.z;
+      player.boost = Math.round(carEntry.jumpState.boostAmount);
     }
   }
 

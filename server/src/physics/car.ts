@@ -2,224 +2,604 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import { getConstant } from '../../../shared/src/constants/index.js';
 import type { InputPayload } from '../../../shared/src/types/input.js';
 
-/**
- * Create a car rigid body (box collider).
- * No CCD needed — cars are wide enough not to tunnel.
- */
+interface Vec3 {
+  x: number;
+  y: number;
+  z: number;
+}
+
+interface Quaternion extends Vec3 {
+  w: number;
+}
+
+export interface CarPhysicsState {
+  /** Number of jumps used since the last confirmed landing. */
+  count: number;
+  jumpHeld: boolean;
+  grounded: boolean;
+  wasGrounded: boolean;
+  airborneTime: number;
+  landingTime: number;
+  leftGroundSinceJump: boolean;
+  boostAmount: number;
+  boostRechargeDelay: number;
+}
+
+export interface CarMotion {
+  forward: Vec3;
+  right: Vec3;
+  fullForward: Vec3;
+  fullRight: Vec3;
+  up: Vec3;
+  forwardSpeed: number;
+  lateralSpeed: number;
+  horizontalSpeed: number;
+  upAlignment: number;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+function finiteOrZero(value: number): number {
+  return Number.isFinite(value) ? value : 0;
+}
+
+function sanitizeInput(input: InputPayload): InputPayload {
+  return {
+    throttle: clamp(finiteOrZero(input.throttle), -1, 1),
+    steer: clamp(finiteOrZero(input.steer), -1, 1),
+    jump: input.jump === true,
+    boost: input.boost === true,
+  };
+}
+
+function rotateVector(rotation: Quaternion, vector: Vec3): Vec3 {
+  const { x: qx, y: qy, z: qz, w: qw } = rotation;
+  const { x, y, z } = vector;
+  const ix = qw * x + qy * z - qz * y;
+  const iy = qw * y + qz * x - qx * z;
+  const iz = qw * z + qx * y - qy * x;
+  const iw = -qx * x - qy * y - qz * z;
+
+  return {
+    x: ix * qw + iw * -qx + iy * -qz - iz * -qy,
+    y: iy * qw + iw * -qy + iz * -qx - ix * -qz,
+    z: iz * qw + iw * -qz + ix * -qy - iy * -qx,
+  };
+}
+
+function horizontalUnit(vector: Vec3, fallback: Vec3): Vec3 {
+  const length = Math.hypot(vector.x, vector.z);
+  if (length <= Number.EPSILON) return fallback;
+  return { x: vector.x / length, y: 0, z: vector.z / length };
+}
+
+function dot(a: Vec3, b: Vec3): number {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function responseAlpha(rate: number, timestep: number): number {
+  return 1 - Math.exp(-Math.max(rate, 0) * timestep);
+}
+
+function forceAsImpulse(force: Vec3, timestep: number): Vec3 {
+  return {
+    x: force.x * timestep,
+    y: force.y * timestep,
+    z: force.z * timestep,
+  };
+}
+
+function softCapScale(speed: number, cap: number, startRatio: number): number {
+  const start = cap * clamp(startRatio, 0, 1);
+  if (speed <= start) return 1;
+  if (speed >= cap || cap <= start) return 0;
+  return 1 - (speed - start) / (cap - start);
+}
+
+/** Construct the per-car runtime state owned by a room or deterministic harness. */
+export function createCarPhysicsState(): CarPhysicsState {
+  return {
+    count: 0,
+    jumpHeld: false,
+    grounded: false,
+    wasGrounded: false,
+    airborneTime: 0,
+    landingTime: 0,
+    leftGroundSinceJump: false,
+    boostAmount: clamp(
+      getConstant('CAR.BOOST.START_AMOUNT'),
+      0,
+      getConstant('CAR.BOOST.MAX_AMOUNT'),
+    ),
+    boostRechargeDelay: 0,
+  };
+}
+
+/** Reset transient controls at kickoff and optionally restore starting boost. */
+export function resetCarPhysicsState(
+  state: CarPhysicsState,
+  resetBoost: boolean = true,
+): void {
+  state.count = 0;
+  state.jumpHeld = false;
+  state.grounded = false;
+  state.wasGrounded = false;
+  state.airborneTime = 0;
+  state.landingTime = 0;
+  state.leftGroundSinceJump = false;
+  state.boostRechargeDelay = 0;
+  if (resetBoost) {
+    state.boostAmount = clamp(
+      getConstant('CAR.BOOST.START_AMOUNT'),
+      0,
+      getConstant('CAR.BOOST.MAX_AMOUNT'),
+    );
+  }
+}
+
+/** Create a rounded dynamic chassis with stable, low-friction contacts. */
 export function createCar(
   world: RAPIER.World,
-  position: { x: number; y: number; z: number },
-  rotation?: { x: number; y: number; z: number; w: number }
+  position: Vec3,
+  rotation?: Quaternion,
 ): RAPIER.RigidBody {
   const width = getConstant('CAR.BODY.WIDTH');
   const height = getConstant('CAR.BODY.HEIGHT');
   const length = getConstant('CAR.BODY.LENGTH');
-  const mass = getConstant('CAR.BODY.MASS');
-  const linearDamping = getConstant('CAR.DAMPING.LINEAR');
-  const angularDamping = getConstant('CAR.DAMPING.ANGULAR');
+  const cornerRadius = getConstant('CAR.BODY.CORNER_RADIUS');
 
   const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
     .setTranslation(position.x, position.y, position.z)
-    .setLinearDamping(linearDamping)
-    .setAngularDamping(angularDamping);
+    .setLinearDamping(getConstant('CAR.DAMPING.LINEAR'))
+    .setAngularDamping(getConstant('CAR.DAMPING.ANGULAR'))
+    .setCcdEnabled(true)
+    .setSoftCcdPrediction(getConstant('CAR.BODY.SOFT_CCD_PREDICTION'))
+    .setAdditionalSolverIterations(Math.round(
+      getConstant('CAR.BODY.ADDITIONAL_SOLVER_ITERATIONS'),
+    ));
 
-  if (rotation) {
-    bodyDesc.setRotation({ x: rotation.x, y: rotation.y, z: rotation.z, w: rotation.w });
-  }
-
+  if (rotation) bodyDesc.setRotation(rotation);
   const body = world.createRigidBody(bodyDesc);
 
-  const colliderDesc = RAPIER.ColliderDesc.cuboid(width / 2, height / 2, length / 2)
-    .setMass(mass)
-    .setRestitution(0.2);
+  world.createCollider(
+    RAPIER.ColliderDesc.roundCuboid(
+      width / 2 - cornerRadius,
+      height / 2 - cornerRadius,
+      length / 2 - cornerRadius,
+      cornerRadius,
+    )
+      .setMass(getConstant('CAR.BODY.MASS'))
+      .setFriction(getConstant('CAR.BODY.FRICTION'))
+      .setRestitution(getConstant('CAR.BODY.RESTITUTION'))
+      .setContactSkin(getConstant('CAR.BODY.CONTACT_SKIN'))
+      .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min)
+      .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Max),
+    body,
+  );
 
-  world.createCollider(colliderDesc, body);
-
+  world.updateSceneQueries();
   return body;
 }
 
+/** Read local motion components used by the controller and test harnesses. */
+export function getCarMotion(carBody: RAPIER.RigidBody): CarMotion {
+  const rotation = carBody.rotation();
+  const velocity = carBody.linvel();
+  const fullForward = rotateVector(rotation, { x: 0, y: 0, z: 1 });
+  const fullRight = rotateVector(rotation, { x: 1, y: 0, z: 0 });
+  const up = rotateVector(rotation, { x: 0, y: 1, z: 0 });
+  const forward = horizontalUnit(fullForward, { x: 0, y: 0, z: 1 });
+  const right = { x: forward.z, y: 0, z: -forward.x };
+
+  return {
+    forward,
+    right,
+    fullForward,
+    fullRight,
+    up,
+    forwardSpeed: dot(velocity, forward),
+    lateralSpeed: dot(velocity, right),
+    horizontalSpeed: Math.hypot(velocity.x, velocity.z),
+    upAlignment: clamp(up.y, -1, 1),
+  };
+}
+
 /**
- * Check if car is grounded via a downward raycast.
- * Cast from car center downward, length = half car height + small margin.
+ * Query several chassis points against fixed, non-sensor geometry only.
+ * Dynamic cars and the ball cannot rearm a jump.
  */
 export function isGrounded(world: RAPIER.World, carBody: RAPIER.RigidBody): boolean {
-  const pos = carBody.translation();
-  const halfHeight = getConstant('CAR.BODY.HEIGHT') / 2;
-  const rayLength = halfHeight + 0.3; // small margin
+  if (carBody.linvel().y > getConstant('CAR.GROUND.MAX_UPWARD_SPEED')) return false;
 
-  const ray = new RAPIER.Ray(
-    { x: pos.x, y: pos.y, z: pos.z },
-    { x: 0, y: -1, z: 0 }
+  const widthOffset = getConstant('CAR.BODY.WIDTH') * getConstant('CAR.GROUND.RAY_SPREAD_X');
+  const lengthOffset = getConstant('CAR.BODY.LENGTH') * getConstant('CAR.GROUND.RAY_SPREAD_Z');
+  const rayLength = getConstant('CAR.BODY.HEIGHT') / 2
+    + getConstant('CAR.GROUND.CONTACT_MARGIN');
+  const position = carBody.translation();
+  const rotation = carBody.rotation();
+  const offsets: Vec3[] = [
+    { x: 0, y: 0, z: 0 },
+    { x: widthOffset, y: 0, z: lengthOffset },
+    { x: -widthOffset, y: 0, z: lengthOffset },
+    { x: widthOffset, y: 0, z: -lengthOffset },
+    { x: -widthOffset, y: 0, z: -lengthOffset },
+  ];
+  const filterFlags = RAPIER.QueryFilterFlags.ONLY_FIXED
+    | RAPIER.QueryFilterFlags.EXCLUDE_SENSORS;
+
+  return offsets.some((offset) => {
+    const rotatedOffset = rotateVector(rotation, offset);
+    const ray = new RAPIER.Ray(
+      {
+        x: position.x + rotatedOffset.x,
+        y: position.y + rotatedOffset.y,
+        z: position.z + rotatedOffset.z,
+      },
+      { x: 0, y: -1, z: 0 },
+    );
+
+    return world.castRay(
+      ray,
+      rayLength,
+      true,
+      filterFlags,
+      undefined,
+      undefined,
+      carBody,
+    ) !== null;
+  });
+}
+
+function updateLandingState(
+  state: CarPhysicsState,
+  grounded: boolean,
+  timestep: number,
+): void {
+  if (grounded) {
+    state.landingTime += timestep;
+    if (
+      state.leftGroundSinceJump
+      && state.landingTime >= getConstant('CAR.JUMP.LANDING_CONFIRM_TIME')
+    ) {
+      state.count = 0;
+      state.leftGroundSinceJump = false;
+    }
+    state.airborneTime = 0;
+  } else {
+    state.landingTime = 0;
+    state.airborneTime += timestep;
+    if (
+      state.count > 0
+      && state.airborneTime >= getConstant('CAR.JUMP.MIN_AIRBORNE_TIME')
+    ) {
+      state.leftGroundSinceJump = true;
+    }
+  }
+
+  state.wasGrounded = state.grounded;
+  state.grounded = grounded;
+}
+
+function consumeOrRechargeBoost(
+  state: CarPhysicsState,
+  requested: boolean,
+  timestep: number,
+): number {
+  const usageRate = Math.max(getConstant('CAR.BOOST.USAGE_RATE'), 0);
+  const amountNeeded = usageRate * timestep;
+
+  if (requested) {
+    state.boostRechargeDelay = getConstant('CAR.BOOST.RECHARGE_DELAY');
+    if (state.boostAmount <= 0) return 0;
+
+    const fraction = amountNeeded > 0
+      ? Math.min(state.boostAmount / amountNeeded, 1)
+      : 1;
+    state.boostAmount = Math.max(0, state.boostAmount - amountNeeded);
+    return fraction;
+  }
+
+  state.boostRechargeDelay = Math.max(0, state.boostRechargeDelay - timestep);
+  if (state.boostRechargeDelay <= 0) {
+    state.boostAmount = Math.min(
+      getConstant('CAR.BOOST.MAX_AMOUNT'),
+      state.boostAmount + getConstant('CAR.BOOST.RECHARGE_RATE') * timestep,
+    );
+  }
+  return 0;
+}
+
+function applyLateralTraction(
+  carBody: RAPIER.RigidBody,
+  motion: CarMotion,
+  steer: number,
+  timestep: number,
+): void {
+  const slipRatio = clamp(
+    Math.abs(motion.lateralSpeed) / getConstant('CAR.STEERING.FULL_GRIP_LATERAL_SPEED'),
+    0,
+    1,
   );
+  const baseRate = getConstant('CAR.STEERING.BASE_GRIP_RATE');
+  const maxRate = getConstant('CAR.STEERING.MAX_GRIP_RATE');
+  const steeringSlip = 1
+    - Math.abs(steer) * getConstant('CAR.STEERING.STEERING_SLIP_FACTOR');
+  const gripRate = (baseRate + (maxRate - baseRate) * slipRatio) * steeringSlip;
+  const velocityCorrection = -motion.lateralSpeed * responseAlpha(gripRate, timestep);
+  const impulse = velocityCorrection * carBody.mass();
 
-  const hit = world.castRay(ray, rayLength, true, undefined, undefined, undefined, carBody);
-  return hit !== null;
+  carBody.applyImpulse({
+    x: motion.right.x * impulse,
+    y: 0,
+    z: motion.right.z * impulse,
+  }, true);
 }
 
-/**
- * Get the car's local forward direction (local +Z in world space).
- */
-function getForwardDir(carBody: RAPIER.RigidBody): { x: number; y: number; z: number } {
-  const rot = carBody.rotation();
-  // Rotate local +Z (0,0,1) by quaternion
-  const qx = rot.x, qy = rot.y, qz = rot.z, qw = rot.w;
-  // q * v * q^-1 for v = (0, 0, 1)
-  const ix = qw * 0 + qy * 1 - qz * 0;
-  const iy = qw * 0 + qz * 0 - qx * 1;
-  const iz = qw * 1 + qx * 0 - qy * 0;
-  const iw = -qx * 0 - qy * 0 - qz * 1;
+function applyDrag(
+  carBody: RAPIER.RigidBody,
+  coasting: boolean,
+  timestep: number,
+): void {
+  const velocity = carBody.linvel();
+  const speed = Math.hypot(velocity.x, velocity.z);
+  if (speed <= Number.EPSILON) return;
 
-  return {
-    x: ix * qw + iw * -qx + iy * -qz - iz * -qy,
-    y: iy * qw + iw * -qy + iz * -qx - ix * -qz,
-    z: iz * qw + iw * -qz + ix * -qy - iy * -qx,
+  if (coasting && speed <= getConstant('CAR.DAMPING.STOP_SPEED')) {
+    carBody.setLinvel({ x: 0, y: velocity.y, z: 0 }, true);
+    return;
+  }
+
+  const dragForce = getConstant('CAR.DAMPING.AERO_COEFFICIENT') * speed * speed
+    + (coasting ? getConstant('CAR.DAMPING.COAST_FORCE') : 0);
+  const speedReduction = Math.min(speed, dragForce / carBody.mass() * timestep);
+  const impulseMagnitude = speedReduction * carBody.mass();
+
+  carBody.applyImpulse({
+    x: -velocity.x / speed * impulseMagnitude,
+    y: 0,
+    z: -velocity.z / speed * impulseMagnitude,
+  }, true);
+}
+
+function applySoftSpeedCap(
+  carBody: RAPIER.RigidBody,
+  cap: number,
+  includeVertical: boolean,
+  timestep: number,
+): void {
+  const velocity = carBody.linvel();
+  const speed = includeVertical
+    ? Math.hypot(velocity.x, velocity.y, velocity.z)
+    : Math.hypot(velocity.x, velocity.z);
+  if (speed <= cap || speed <= Number.EPSILON) return;
+
+  const correction = Math.min(
+    (speed - cap) * responseAlpha(getConstant('CAR.ENGINE.CAP_RESPONSE'), timestep),
+    getConstant('CAR.ENGINE.MAX_CAP_DECELERATION') * timestep,
+  );
+  const impulse = correction * carBody.mass();
+  const verticalScale = includeVertical ? 1 : 0;
+
+  carBody.applyImpulse({
+    x: -velocity.x / speed * impulse,
+    y: -velocity.y / speed * impulse * verticalScale,
+    z: -velocity.z / speed * impulse,
+  }, true);
+}
+
+function applyGroundAngularControl(
+  carBody: RAPIER.RigidBody,
+  motion: CarMotion,
+  steer: number,
+  timestep: number,
+): void {
+  const deadzone = getConstant('CAR.ENGINE.INPUT_DEADZONE');
+  const current = carBody.angvel();
+  const speedRatio = clamp(
+    motion.horizontalSpeed / getConstant('CAR.ENGINE.MAX_SPEED'),
+    0,
+    1,
+  );
+  const lowSpeedRate = getConstant('CAR.STEERING.TURN_RATE');
+  const highSpeedRate = getConstant('CAR.STEERING.TURN_RATE_AT_MAX');
+  const turnRate = lowSpeedRate + (highSpeedRate - lowSpeedRate) * speedRatio;
+  const authority = clamp(
+    motion.horizontalSpeed / getConstant('CAR.STEERING.FULL_AUTHORITY_SPEED'),
+    0,
+    1,
+  );
+  const reverseSign = motion.forwardSpeed < -getConstant('CAR.ENGINE.BRAKE_TO_REVERSE_SPEED')
+    ? -1
+    : 1;
+  const targetYaw = Math.abs(steer) > deadzone
+    ? steer * turnRate * authority * reverseSign
+    : 0;
+  const yawRate = Math.abs(steer) > deadzone
+    ? getConstant('CAR.STEERING.RESPONSE')
+    : getConstant('CAR.STEERING.CENTERING_RESPONSE');
+  const yaw = current.y + (targetYaw - current.y) * responseAlpha(yawRate, timestep);
+
+  let correctionX = -motion.up.z;
+  let correctionZ = motion.up.x;
+  if (motion.upAlignment < 0) {
+    const invertedAssist = getConstant('CAR.UPRIGHT.INVERTED_ASSIST');
+    correctionX += motion.fullForward.x * invertedAssist;
+    correctionZ += motion.fullForward.z * invertedAssist;
+  }
+  const uprightStrength = getConstant('CAR.UPRIGHT.STRENGTH');
+  let targetX = correctionX * uprightStrength;
+  let targetZ = correctionZ * uprightStrength;
+  const targetMagnitude = Math.hypot(targetX, targetZ);
+  const maxAngularSpeed = getConstant('CAR.UPRIGHT.MAX_ANGULAR_SPEED');
+  if (targetMagnitude > maxAngularSpeed) {
+    targetX = targetX / targetMagnitude * maxAngularSpeed;
+    targetZ = targetZ / targetMagnitude * maxAngularSpeed;
+  }
+  const uprightAlpha = responseAlpha(getConstant('CAR.UPRIGHT.RESPONSE'), timestep);
+
+  carBody.setAngvel({
+    x: current.x + (targetX - current.x) * uprightAlpha,
+    y: yaw,
+    z: current.z + (targetZ - current.z) * uprightAlpha,
+  }, true);
+}
+
+function applyAirAngularControl(
+  carBody: RAPIER.RigidBody,
+  motion: CarMotion,
+  input: InputPayload,
+  timestep: number,
+): void {
+  const targetPitch = input.throttle * getConstant('CAR.JUMP.AIR_PITCH_RATE');
+  const targetRoll = input.steer * getConstant('CAR.JUMP.AIR_ROLL_RATE');
+  const target = {
+    x: motion.fullRight.x * targetPitch + motion.fullForward.x * targetRoll,
+    y: motion.fullRight.y * targetPitch + motion.fullForward.y * targetRoll,
+    z: motion.fullRight.z * targetPitch + motion.fullForward.z * targetRoll,
   };
+  const current = carBody.angvel();
+  const alpha = responseAlpha(getConstant('CAR.JUMP.AIR_CONTROL_RESPONSE'), timestep);
+
+  carBody.setAngvel({
+    x: current.x + (target.x - current.x) * alpha,
+    y: current.y + (target.y - current.y) * alpha,
+    z: current.z + (target.z - current.z) * alpha,
+  }, true);
 }
 
-/**
- * Get the car's local right direction (local +X in world space).
- */
-function getRightDir(carBody: RAPIER.RigidBody): { x: number; y: number; z: number } {
-  const rot = carBody.rotation();
-  const qx = rot.x, qy = rot.y, qz = rot.z, qw = rot.w;
-  // Rotate local +X (1, 0, 0) by quaternion
-  const ix = qw * 1 + qy * 0 - qz * 0;
-  const iy = qw * 0 + qz * 1 - qx * 0;
-  const iz = qw * 0 + qx * 0 - qy * 1;
-  const iw = -qx * 1 - qy * 0 - qz * 0;
-
-  return {
-    x: ix * qw + iw * -qx + iy * -qz - iz * -qy,
-    y: iy * qw + iw * -qy + iz * -qx - ix * -qz,
-    z: iz * qw + iw * -qz + ix * -qy - iy * -qx,
-  };
-}
-
-/**
- * Apply car physics for one tick.
- * This is the core driving model with lateral grip (traction).
- */
+/** Apply one fixed 60 Hz authoritative arcade-car simulation step. */
 export function applyCarPhysics(
   world: RAPIER.World,
   carBody: RAPIER.RigidBody,
-  input: InputPayload,
-  jumpUsed: { count: number }
+  rawInput: InputPayload,
+  state: CarPhysicsState,
 ): void {
+  const timestep = getConstant('PHYSICS.TIMESTEP');
+  const input = sanitizeInput(rawInput);
+  const deadzone = getConstant('CAR.ENGINE.INPUT_DEADZONE');
   const grounded = isGrounded(world, carBody);
-  const mass = getConstant('CAR.BODY.MASS');
-  const vel = carBody.linvel();
-  const forward = getForwardDir(carBody);
-  const right = getRightDir(carBody);
+  const jumpPressed = input.jump && !state.jumpHeld;
+  state.jumpHeld = input.jump;
+  updateLandingState(state, grounded, timestep);
 
-  // --- GROUNDED PHYSICS ---
+  const canJump = grounded
+    && jumpPressed
+    && state.count < getConstant('CAR.JUMP.MAX_JUMPS');
+  const boostFraction = consumeOrRechargeBoost(state, input.boost, timestep);
+  const boosting = boostFraction > 0;
+  let motion = getCarMotion(carBody);
+
   if (grounded) {
-    // Reset jump counter on ground contact
-    jumpUsed.count = 0;
-
-    // 1. Forward/Brake/Reverse force
-    const forwardForce = getConstant('CAR.ENGINE.FORWARD_FORCE');
-    const brakeForce = getConstant('CAR.ENGINE.BRAKE_FORCE');
-    const reverseForce = getConstant('CAR.ENGINE.REVERSE_FORCE');
-
-    if (input.throttle > 0) {
-      // Check if below max speed
-      const speed = vel.x * forward.x + vel.y * forward.y + vel.z * forward.z;
-      const maxSpeed = getConstant('CAR.ENGINE.MAX_SPEED');
-      if (speed < maxSpeed) {
-        const force = forwardForce * input.throttle;
-        carBody.applyImpulse(
-          { x: forward.x * force * (1 / 60), y: forward.y * force * (1 / 60), z: forward.z * force * (1 / 60) },
-          true
-        );
-      }
-    } else if (input.throttle < 0) {
-      // Check forward speed to decide brake vs reverse
-      const speed = vel.x * forward.x + vel.y * forward.y + vel.z * forward.z;
-      if (speed > 0.5) {
-        // Braking
-        const force = brakeForce * Math.abs(input.throttle);
-        carBody.applyImpulse(
-          { x: -forward.x * force * (1 / 60), y: -forward.y * force * (1 / 60), z: -forward.z * force * (1 / 60) },
-          true
-        );
+    if (input.throttle > deadzone) {
+      const scale = softCapScale(
+        Math.max(motion.forwardSpeed, 0),
+        getConstant('CAR.ENGINE.MAX_SPEED'),
+        getConstant('CAR.ENGINE.CAP_START_RATIO'),
+      );
+      const force = getConstant('CAR.ENGINE.FORWARD_FORCE') * input.throttle * scale;
+      carBody.applyImpulse(forceAsImpulse({
+        x: motion.forward.x * force,
+        y: 0,
+        z: motion.forward.z * force,
+      }, timestep), true);
+    } else if (input.throttle < -deadzone) {
+      const amount = Math.abs(input.throttle);
+      if (motion.forwardSpeed > getConstant('CAR.ENGINE.BRAKE_TO_REVERSE_SPEED')) {
+        const force = getConstant('CAR.ENGINE.BRAKE_FORCE') * amount;
+        carBody.applyImpulse(forceAsImpulse({
+          x: -motion.forward.x * force,
+          y: 0,
+          z: -motion.forward.z * force,
+        }, timestep), true);
       } else {
-        // Reversing
-        const force = reverseForce * Math.abs(input.throttle);
-        carBody.applyImpulse(
-          { x: -forward.x * force * (1 / 60), y: -forward.y * force * (1 / 60), z: -forward.z * force * (1 / 60) },
-          true
+        const scale = softCapScale(
+          Math.max(-motion.forwardSpeed, 0),
+          getConstant('CAR.ENGINE.REVERSE_MAX_SPEED'),
+          getConstant('CAR.ENGINE.CAP_START_RATIO'),
         );
+        const force = getConstant('CAR.ENGINE.REVERSE_FORCE') * amount * scale;
+        carBody.applyImpulse(forceAsImpulse({
+          x: -motion.forward.x * force,
+          y: 0,
+          z: -motion.forward.z * force,
+        }, timestep), true);
       }
     }
 
-    // 2. Boost
-    if (input.boost) {
-      const boostForce = getConstant('CAR.BOOST.FORCE');
-      carBody.applyImpulse(
-        { x: forward.x * boostForce * (1 / 60), y: forward.y * boostForce * (1 / 60), z: forward.z * boostForce * (1 / 60) },
-        true
+    if (boosting) {
+      motion = getCarMotion(carBody);
+      const boostScale = softCapScale(
+        motion.horizontalSpeed,
+        getConstant('CAR.BOOST.MAX_SPEED'),
+        getConstant('CAR.BOOST.CAP_START_RATIO'),
       );
+      const force = getConstant('CAR.BOOST.FORCE') * boostFraction * boostScale;
+      carBody.applyImpulse(forceAsImpulse({
+        x: motion.forward.x * force,
+        y: 0,
+        z: motion.forward.z * force,
+      }, timestep), true);
     }
 
-    // 3. Steering — torque around Y axis, scaled by speed
-    if (Math.abs(input.steer) > 0.01) {
-      const speed = Math.sqrt(vel.x * vel.x + vel.z * vel.z);
-      const maxSpeed = getConstant('CAR.ENGINE.MAX_SPEED');
-      const speedRatio = Math.min(speed / maxSpeed, 1);
-      const turnRateLow = getConstant('CAR.STEERING.TURN_RATE');
-      const turnRateHigh = getConstant('CAR.STEERING.TURN_RATE_AT_MAX');
-      const turnRate = turnRateLow + (turnRateHigh - turnRateLow) * speedRatio;
+    motion = getCarMotion(carBody);
+    applyLateralTraction(carBody, motion, input.steer, timestep);
+    applyDrag(carBody, Math.abs(input.throttle) <= deadzone && !boosting, timestep);
 
-      carBody.applyTorqueImpulse(
-        { x: 0, y: turnRate * input.steer * mass * (1 / 60), z: 0 },
-        true
-      );
+    if (Math.abs(input.throttle) > deadzone || boosting) {
+      const cap = boosting
+        ? getConstant('CAR.BOOST.MAX_SPEED')
+        : input.throttle < 0
+          ? getConstant('CAR.ENGINE.REVERSE_MAX_SPEED')
+          : getConstant('CAR.ENGINE.MAX_SPEED');
+      applySoftSpeedCap(carBody, cap, false, timestep);
     }
 
-    // 4. LATERAL GRIP — THE KEY TO CAR FEEL
-    // Project velocity onto lateral (right) axis and apply counter-force
-    const lateralSpeed = vel.x * right.x + vel.y * right.y + vel.z * right.z;
-    const grip = getConstant('CAR.STEERING.LATERAL_GRIP');
-    const counterForce = -lateralSpeed * grip * mass * (1 / 60);
-    carBody.applyImpulse(
-      { x: right.x * counterForce, y: right.y * counterForce, z: right.z * counterForce },
-      true
+    applyGroundAngularControl(
+      carBody,
+      getCarMotion(carBody),
+      input.steer,
+      timestep,
     );
 
-    // 5. Jump
-    if (input.jump && jumpUsed.count < getConstant('CAR.JUMP.MAX_JUMPS')) {
-      const impulse = getConstant('CAR.JUMP.IMPULSE');
-      carBody.applyImpulse({ x: 0, y: impulse, z: 0 }, true);
-      jumpUsed.count++;
+    if (!canJump) {
+      carBody.applyImpulse({
+        x: 0,
+        y: -getConstant('CAR.GROUND.STICK_FORCE') * timestep,
+        z: 0,
+      }, true);
     }
   } else {
-    // --- AIRBORNE PHYSICS ---
-    // Air control: roll and pitch only
-    const airRoll = getConstant('CAR.JUMP.AIR_ROLL_RATE');
-    const airPitch = getConstant('CAR.JUMP.AIR_PITCH_RATE');
+    if (boosting) {
+      const speed = Math.hypot(carBody.linvel().x, carBody.linvel().y, carBody.linvel().z);
+      const boostScale = softCapScale(
+        speed,
+        getConstant('CAR.BOOST.MAX_SPEED'),
+        getConstant('CAR.BOOST.CAP_START_RATIO'),
+      );
+      const force = getConstant('CAR.BOOST.FORCE')
+        * getConstant('CAR.BOOST.AIR_FORCE_MULTIPLIER')
+        * boostFraction
+        * boostScale;
+      carBody.applyImpulse(forceAsImpulse({
+        x: motion.fullForward.x * force,
+        y: motion.fullForward.y * force,
+        z: motion.fullForward.z * force,
+      }, timestep), true);
+      applySoftSpeedCap(carBody, getConstant('CAR.BOOST.MAX_SPEED'), true, timestep);
+    }
 
-    if (Math.abs(input.steer) > 0.01) {
-      // Roll around forward axis
-      carBody.applyTorqueImpulse(
-        { x: forward.x * airRoll * input.steer * mass * (1 / 60), y: 0, z: forward.z * airRoll * input.steer * mass * (1 / 60) },
-        true
-      );
-    }
-    if (Math.abs(input.throttle) > 0.01) {
-      // Pitch around right axis
-      carBody.applyTorqueImpulse(
-        { x: right.x * airPitch * input.throttle * mass * (1 / 60), y: 0, z: right.z * airPitch * input.throttle * mass * (1 / 60) },
-        true
-      );
-    }
+    applyAirAngularControl(carBody, motion, input, timestep);
+  }
 
-    // Reduced boost in air (still works)
-    if (input.boost) {
-      const boostForce = getConstant('CAR.BOOST.FORCE');
-      carBody.applyImpulse(
-        { x: forward.x * boostForce * (1 / 60), y: forward.y * boostForce * (1 / 60), z: forward.z * boostForce * (1 / 60) },
-        true
-      );
-    }
+  if (canJump) {
+    carBody.applyImpulse({ x: 0, y: getConstant('CAR.JUMP.IMPULSE'), z: 0 }, true);
+    state.count += 1;
+    state.grounded = false;
+    state.wasGrounded = false;
+    state.airborneTime = 0;
+    state.landingTime = 0;
+    state.leftGroundSinceJump = false;
   }
 }

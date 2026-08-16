@@ -1,86 +1,72 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import { getConstant } from '../../../shared/src/constants/index.js';
 
+function applySurfaceMaterial(desc: RAPIER.ColliderDesc): RAPIER.ColliderDesc {
+  return desc
+    .setFriction(getConstant('ARENA.SURFACE.FRICTION'))
+    .setRestitution(getConstant('ARENA.SURFACE.RESTITUTION'))
+    .setContactSkin(getConstant('ARENA.SURFACE.CONTACT_SKIN'))
+    .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min)
+    .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Max);
+}
+
 /**
- * Create static colliders for the arena: floor, 4 walls, ceiling.
- * Goal openings are left as gaps in the short walls (Z-axis ends).
+ * Create static colliders for the arena: floor, walls, ceiling, and goal backs.
+ * Goal openings remain as gaps in the short walls along the Z axis.
  */
 export function createArenaColliders(world: RAPIER.World): void {
-  const W = getConstant('ARENA.WIDTH');
-  const L = getConstant('ARENA.LENGTH');
-  const H = getConstant('ARENA.HEIGHT');
-  const T = getConstant('ARENA.WALL_THICKNESS');
-  const goalW = getConstant('ARENA.GOAL.WIDTH');
-  const goalH = getConstant('ARENA.GOAL.HEIGHT');
+  const width = getConstant('ARENA.WIDTH');
+  const length = getConstant('ARENA.LENGTH');
+  const height = getConstant('ARENA.HEIGHT');
+  const thickness = getConstant('ARENA.WALL_THICKNESS');
+  const goalWidth = getConstant('ARENA.GOAL.WIDTH');
+  const goalHeight = getConstant('ARENA.GOAL.HEIGHT');
+  const goalDepth = getConstant('ARENA.GOAL.DEPTH');
 
-  // Floor (y = 0)
-  const floorDesc = RAPIER.ColliderDesc.cuboid(W / 2, T / 2, L / 2)
-    .setTranslation(0, -T / 2, 0)
-    .setRestitution(0.3);
-  world.createCollider(floorDesc);
+  world.createCollider(applySurfaceMaterial(
+    RAPIER.ColliderDesc.cuboid(width / 2, thickness / 2, length / 2)
+      .setTranslation(0, -thickness / 2, 0),
+  ));
 
-  // Ceiling
-  const ceilDesc = RAPIER.ColliderDesc.cuboid(W / 2, T / 2, L / 2)
-    .setTranslation(0, H + T / 2, 0);
-  world.createCollider(ceilDesc);
+  world.createCollider(applySurfaceMaterial(
+    RAPIER.ColliderDesc.cuboid(width / 2, thickness / 2, length / 2)
+      .setTranslation(0, height + thickness / 2, 0),
+  ));
 
-  // Left wall (negative X)
-  const leftDesc = RAPIER.ColliderDesc.cuboid(T / 2, H / 2, L / 2)
-    .setTranslation(-W / 2 - T / 2, H / 2, 0);
-  world.createCollider(leftDesc);
+  world.createCollider(applySurfaceMaterial(
+    RAPIER.ColliderDesc.cuboid(thickness / 2, height / 2, length / 2)
+      .setTranslation(-width / 2 - thickness / 2, height / 2, 0),
+  ));
+  world.createCollider(applySurfaceMaterial(
+    RAPIER.ColliderDesc.cuboid(thickness / 2, height / 2, length / 2)
+      .setTranslation(width / 2 + thickness / 2, height / 2, 0),
+  ));
 
-  // Right wall (positive X)
-  const rightDesc = RAPIER.ColliderDesc.cuboid(T / 2, H / 2, L / 2)
-    .setTranslation(W / 2 + T / 2, H / 2, 0);
-  world.createCollider(rightDesc);
+  const sideSegmentWidth = (width - goalWidth) / 2;
+  const sideSegmentX = width / 2 - sideSegmentWidth / 2;
+  const topSegmentHeight = height - goalHeight;
+  const endWallZ = length / 2 + thickness / 2;
 
-  // Back wall (negative Z) - with goal opening
-  // Left segment
-  const backLeftW = (W - goalW) / 2;
-  if (backLeftW > 0) {
-    const blDesc = RAPIER.ColliderDesc.cuboid(backLeftW / 2, H / 2, T / 2)
-      .setTranslation(-(W / 2 - backLeftW / 2), H / 2, -L / 2 - T / 2);
-    world.createCollider(blDesc);
+  for (const zSign of [-1, 1]) {
+    if (sideSegmentWidth > 0) {
+      for (const xSign of [-1, 1]) {
+        world.createCollider(applySurfaceMaterial(
+          RAPIER.ColliderDesc.cuboid(sideSegmentWidth / 2, height / 2, thickness / 2)
+            .setTranslation(xSign * sideSegmentX, height / 2, zSign * endWallZ),
+        ));
+      }
+    }
+
+    if (topSegmentHeight > 0) {
+      world.createCollider(applySurfaceMaterial(
+        RAPIER.ColliderDesc.cuboid(goalWidth / 2, topSegmentHeight / 2, thickness / 2)
+          .setTranslation(0, goalHeight + topSegmentHeight / 2, zSign * endWallZ),
+      ));
+    }
+
+    world.createCollider(applySurfaceMaterial(
+      RAPIER.ColliderDesc.cuboid(goalWidth / 2, goalHeight / 2, thickness / 2)
+        .setTranslation(0, goalHeight / 2, zSign * (length / 2 + goalDepth)),
+    ));
   }
-  // Right segment
-  if (backLeftW > 0) {
-    const brDesc = RAPIER.ColliderDesc.cuboid(backLeftW / 2, H / 2, T / 2)
-      .setTranslation(W / 2 - backLeftW / 2, H / 2, -L / 2 - T / 2);
-    world.createCollider(brDesc);
-  }
-  // Top segment above goal
-  const topSegH = (H - goalH) / 2;
-  if (topSegH > 0) {
-    const btDesc = RAPIER.ColliderDesc.cuboid(goalW / 2, topSegH / 2, T / 2)
-      .setTranslation(0, goalH + topSegH / 2, -L / 2 - T / 2);
-    world.createCollider(btDesc);
-  }
-
-  // Front wall (positive Z) - with goal opening (same structure)
-  if (backLeftW > 0) {
-    const flDesc = RAPIER.ColliderDesc.cuboid(backLeftW / 2, H / 2, T / 2)
-      .setTranslation(-(W / 2 - backLeftW / 2), H / 2, L / 2 + T / 2);
-    world.createCollider(flDesc);
-  }
-  if (backLeftW > 0) {
-    const frDesc = RAPIER.ColliderDesc.cuboid(backLeftW / 2, H / 2, T / 2)
-      .setTranslation(W / 2 - backLeftW / 2, H / 2, L / 2 + T / 2);
-    world.createCollider(frDesc);
-  }
-  if (topSegH > 0) {
-    const ftDesc = RAPIER.ColliderDesc.cuboid(goalW / 2, topSegH / 2, T / 2)
-      .setTranslation(0, goalH + topSegH / 2, L / 2 + T / 2);
-    world.createCollider(ftDesc);
-  }
-
-  // Goal back walls (to catch the ball inside the goal)
-  const goalD = getConstant('ARENA.GOAL.DEPTH');
-  // Blue goal back (negative Z)
-  const bgBack = RAPIER.ColliderDesc.cuboid(goalW / 2, goalH / 2, T / 2)
-    .setTranslation(0, goalH / 2, -L / 2 - goalD);
-  world.createCollider(bgBack);
-  // Orange goal back (positive Z)
-  const ogBack = RAPIER.ColliderDesc.cuboid(goalW / 2, goalH / 2, T / 2)
-    .setTranslation(0, goalH / 2, L / 2 + goalD);
-  world.createCollider(ogBack);
 }

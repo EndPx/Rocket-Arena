@@ -1,4 +1,5 @@
 import { Schema, defineTypes } from '@colyseus/schema';
+import { CAR } from '../constants/car.js';
 
 export class PlayerState extends Schema {
   x: number = 0;
@@ -14,7 +15,7 @@ export class PlayerState extends Schema {
   vy: number = 0;
   vz: number = 0;
 
-  boost: number = 33;
+  boost: number = CAR.BOOST.START_AMOUNT;
   team: string = 'blue';
   name: string = '';
   isHost: boolean = false;
