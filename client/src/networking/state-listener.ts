@@ -4,7 +4,7 @@ import { createCarMesh } from '../renderer/car.js';
 import { createBallMesh } from '../renderer/ball.js';
 
 const carMeshes: Map<string, THREE.Group> = new Map();
-let ballMesh: THREE.Mesh | null = null;
+let ballMesh: THREE.Group | null = null;
 let localState: StateSync | null = null;
 
 export interface StateSync {
@@ -74,7 +74,7 @@ export function getCarMeshes(): ReadonlyMap<string, THREE.Group> {
   return carMeshes;
 }
 
-export function getBallMesh(): THREE.Mesh | null {
+export function getBallMesh(): THREE.Group | null {
   return ballMesh;
 }
 

@@ -6,5 +6,6 @@ export { MATCH } from './match.js';
 export { NETCODE } from './netcode.js';
 export { PHYSICS } from './physics.js';
 export { CAMERA } from './camera.js';
+export { VISUAL } from './visual.js';
 export { DEFAULTS_REGISTRY } from './registry.js';
 export { getConstant, setOverride, clearOverride, clearOverrides, getOverrides, getDefault } from './resolver.js';
