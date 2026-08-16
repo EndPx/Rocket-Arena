@@ -123,6 +123,10 @@ This project was built using [Kiro](https://kiro.dev), an AI-powered development
 | `spec-auditor` | Reviews implementation against spec requirements |
 | `submission-writer` | Generates demo scripts and submission artifacts |
 
+### Workspace Lifecycle Skills (`.kiro/skills/`)
+
+Rocket Arena has three workspace Agent Skills installed and adapted for its Kiro project lifecycle: [`spec`](.kiro/skills/spec/SKILL.md) clarifies EARS-style requirements, [`plan`](.kiro/skills/plan/SKILL.md) creates traceable dependency-ordered tasks, and [`build`](.kiro/skills/build/SKILL.md) completes one approved task at a time. They are adapted from the [Coding Agents FYI skills collection](https://codingagents.fyi/skills/) for this repository's steering and spec layout.
+
 ### Spec-Driven Development
 
 The implementation plan lives in `.kiro/specs/rocket-arena/implementation-plan.md` — a 20-task breakdown revised through critical feedback before code was written. Key design decisions (traction model, mass ratios, patch rates, sandbox room) were locked in spec before implementation.
