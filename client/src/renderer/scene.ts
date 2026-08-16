@@ -11,12 +11,13 @@ export function initScene(container: HTMLElement): { renderer: THREE.WebGLRender
   renderer.setPixelRatio(window.devicePixelRatio);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-  renderer.setClearColor(0x1a1a2e);
+  renderer.setClearColor(0x0a0a1a);
   container.appendChild(renderer.domElement);
 
   // Scene
   scene = new THREE.Scene();
-  scene.fog = new THREE.Fog(0x1a1a2e, 50, 100);
+  // Very subtle fog — almost invisible, just adds depth at far distances
+  scene.fog = new THREE.Fog(0x0a0a1a, 80, 150);
 
   // Camera (will be controlled by camera-controller later)
   camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 200);

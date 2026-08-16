@@ -127,7 +127,7 @@ function showWaitingRoom(room: Room): void {
       <p class="player-count" id="player-count">1/4</p>
       <ul class="player-list" id="player-list"></ul>
       <button class="btn-danger" id="leave-room">Leave Room</button>
-      <p class="lobby-status" id="lobby-status">Camera orbiting arena</p>
+      <p class="lobby-status" id="lobby-status"></p>
     </div>
   `;
 
@@ -394,7 +394,7 @@ function getLobbyStyles(): string {
     .btn-accent:hover { background: #3ab8a8; }
     .custom-options { margin-top: 0.5rem; }
     .custom-options.hidden { display: none; }
-    .join-row { display: flex; gap: 0.5rem; }
+    .join-row { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
     .join-row input { flex: 1; margin-bottom: 0; }
     .join-row button { width: auto; margin-bottom: 0; padding: 0.6rem 1rem; }
     .lobby-status { color: #aaa; font-size: 0.8rem; margin-top: 1rem; min-height: 1.2rem; }
