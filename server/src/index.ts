@@ -1,6 +1,8 @@
 ﻿import colyseus from 'colyseus';
 import wsTransport from '@colyseus/ws-transport';
 import http from 'http';
+import { ArenaRoom } from './rooms/arena-room.js';
+import { SandboxRoom } from './rooms/sandbox-room.js';
 
 const { Server } = colyseus;
 const { WebSocketTransport } = wsTransport;
@@ -14,12 +16,13 @@ async function main() {
     transport: new WebSocketTransport({ server }),
   });
 
-  // Room definitions will be registered here in Task 7
-  // gameServer.define('arena', ArenaRoom);
-  // gameServer.define('sandbox', SandboxRoom);
+  // Register room types
+  gameServer.define('arena', ArenaRoom);
+  gameServer.define('sandbox', SandboxRoom);
 
   gameServer.listen(PORT);
   console.log(`[Rocket Arena] Server listening on ws://localhost:${PORT}`);
+  console.log(`[Rocket Arena] Rooms: arena (2v2), sandbox (dev)`);
 }
 
 main().catch(console.error);
