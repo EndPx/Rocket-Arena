@@ -1,16 +1,29 @@
-import { Schema, type } from '@colyseus/schema';
+import { Schema, defineTypes } from '@colyseus/schema';
 
 export class BallState extends Schema {
-  @type('float32') x: number = 0;
-  @type('float32') y: number = 0;
-  @type('float32') z: number = 0;
+  x: number = 0;
+  y: number = 0;
+  z: number = 0;
 
-  @type('float32') qx: number = 0;
-  @type('float32') qy: number = 0;
-  @type('float32') qz: number = 0;
-  @type('float32') qw: number = 1;
+  qx: number = 0;
+  qy: number = 0;
+  qz: number = 0;
+  qw: number = 1;
 
-  @type('float32') vx: number = 0;
-  @type('float32') vy: number = 0;
-  @type('float32') vz: number = 0;
+  vx: number = 0;
+  vy: number = 0;
+  vz: number = 0;
 }
+
+defineTypes(BallState, {
+  x: 'float32',
+  y: 'float32',
+  z: 'float32',
+  qx: 'float32',
+  qy: 'float32',
+  qz: 'float32',
+  qw: 'float32',
+  vx: 'float32',
+  vy: 'float32',
+  vz: 'float32',
+});
