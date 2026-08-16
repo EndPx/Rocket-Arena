@@ -1,4 +1,4 @@
-// Barrel export for all game constants
+/** Barrel import of all frozen constant objects */
 export { CAR } from './car.js';
 export { BALL } from './ball.js';
 export { ARENA } from './arena.js';
@@ -6,5 +6,3 @@ export { MATCH } from './match.js';
 export { NETCODE } from './netcode.js';
 export { PHYSICS } from './physics.js';
 export { CAMERA } from './camera.js';
-export { DEFAULTS_REGISTRY } from './registry.js';
-export { getConstant, setOverride, clearOverride, clearOverrides, getOverrides, getDefault } from './resolver.js';
