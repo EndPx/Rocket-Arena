@@ -7,9 +7,13 @@
 import { initScene } from './renderer/scene.js';
 import { createLighting } from './renderer/lighting.js';
 import { createArena } from './renderer/arena.js';
-import { joinSandbox, getRoom } from './networking/client.js';
+import { getRoom } from './networking/client.js';
 import { setupStateListener } from './networking/state-listener.js';
 import { sendInput } from './input/keyboard-handler.js';
+import { createHUD, updateHUD } from './hud/hud.js';
+import { createDevPanel } from './dev-panel/dev-panel.js';
+import { createLobby } from './ui/lobby.js';
+import type { Room } from 'colyseus.js';
 
 const app = document.getElementById('app')!;
 
@@ -18,26 +22,26 @@ const { renderer, scene, camera } = initScene(app);
 createLighting(scene);
 createArena(scene);
 
-// Connect to server
-async function connect() {
-  try {
-    const room = await joinSandbox('Player');
-    setupStateListener(room, scene);
-    console.log('[Rocket Arena] Connected to sandbox room');
-  } catch (e) {
-    console.warn('[Rocket Arena] Could not connect to server:', e);
-    console.log('[Rocket Arena] Running in offline mode (arena visible, no multiplayer)');
-  }
-}
+// Create HUD (hidden until game starts)
+createHUD();
 
-connect();
+// Show lobby
+createLobby((room: Room) => {
+  // On successful join
+  setupStateListener(room, scene);
+  createDevPanel(room);
+  console.log('[Rocket Arena] Connected and playing');
+});
 
 // Render loop
 function animate() {
   requestAnimationFrame(animate);
 
-  // Send input every frame
-  sendInput(getRoom());
+  const room = getRoom();
+  if (room) {
+    sendInput(room);
+    updateHUD(room);
+  }
 
   renderer.render(scene, camera);
 }
