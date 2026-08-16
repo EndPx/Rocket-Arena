@@ -1,6 +1,8 @@
-# Rocket Arena
+<h1 align="center">
+  <img src="client/src/assets/generated/rocket-arena-logo.png" alt="Rocket Arena" width="720" />
+</h1>
 
-A browser-based 2v2 multiplayer car-ball game inspired by Rocket League, built entirely with procedural geometry and authoritative server physics.
+A browser-based 2v2 multiplayer car-ball game inspired by Rocket League, built with procedural gameplay geometry and original, locally bundled brand art.
 
 ## The Problem
 
@@ -9,8 +11,12 @@ There is no open-source, text-only, instantly-runnable Rocket League clone that 
 ## Approach
 
 - **Authoritative server** — Rapier 3D physics runs at 60Hz on the server. Clients send inputs only; the server owns all state.
-- **Procedural visuals** — Every mesh is built from Three.js primitives (boxes, spheres, cylinders). Zero external asset files. The entire project is text-reviewable.
+- **Procedural gameplay visuals** — Every gameplay mesh is built from Three.js primitives (boxes, spheres, cylinders). Original reviewed 2D brand images are bundled locally for presentation only; no downloaded 3D assets define gameplay or collisions.
 - **Configurable constants** — Every physics number lives in `shared/src/constants/` with a frozen-default + mutable-override architecture and a live dev panel for tuning without restarts.
+
+## AI-Generated Brand Art
+
+The lobby wordmark, compact mark, and favicon are original 2D images generated with ChatGPT by OpenAI under participant direction, then human-selected, reviewed, and optimized for local use. They are presentation-only and are never loaded from remote URLs at runtime. See [`docs/asset-provenance.md`](docs/asset-provenance.md) for per-asset provenance, dimensions, purpose, and review notes.
 
 ## Quick Start
 
@@ -83,7 +89,7 @@ This starts both the Colyseus server (ws://localhost:2567) and the Vite client (
 |-------|-----------|-----|
 | Physics | Rapier 3D (WASM) | Stable CCD for fast rigid bodies; no tunneling |
 | Server | Colyseus 0.15 | Authoritative rooms, state sync, matchmaking |
-| Client | Three.js | Procedural geometry, no asset pipeline needed |
+| Client | Three.js | Procedural gameplay geometry with local, documented 2D brand art |
 | Language | TypeScript (strict) | Shared types prevent client/server drift |
 | Build | Vite | Fast HMR for client iteration |
 | Netcode | Interpolation buffer | Smooth rendering at 2x patch interval behind server |

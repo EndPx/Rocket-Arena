@@ -2,6 +2,8 @@ import { joinArena, createCustomRoom, joinCustomRoom, getClient } from '../netwo
 import { setupStateListener } from '../networking/state-listener.js';
 import type { Room } from 'colyseus.js';
 import * as THREE from 'three';
+import logoUrl from '../assets/generated/rocket-arena-logo.png';
+import markUrl from '../assets/generated/rocket-arena-mark.png';
 
 let lobbyEl: HTMLElement;
 let onJoinCallback: ((room: Room) => void) | null = null;
@@ -30,7 +32,30 @@ export function createLobby(onJoin: (room: Room) => void, sceneRef: THREE.Scene)
 function showMainMenu(): void {
   lobbyEl.innerHTML = `
     <div class="lobby-card">
-      <h1>Rocket Arena</h1>
+      <h1 class="lobby-brand">
+        <img
+          class="lobby-brand-wide"
+          src="${logoUrl}"
+          alt="Rocket Arena"
+          width="1024"
+          height="410"
+          draggable="false"
+        >
+        <span class="lobby-brand-compact">
+          <img
+            class="lobby-brand-mark"
+            src="${markUrl}"
+            alt=""
+            width="512"
+            height="512"
+            draggable="false"
+          >
+          <span class="lobby-brand-name">
+            <span>ROCKET</span>
+            <span class="lobby-brand-arena">ARENA</span>
+          </span>
+        </span>
+      </h1>
       <input type="text" id="lobby-name" placeholder="Your name" maxlength="16" value="${getSavedName()}">
       <button id="lobby-quick" class="btn-primary">Quick Match</button>
       <button id="lobby-custom-toggle" class="btn-secondary">Custom Room</button>
@@ -442,5 +467,72 @@ function getLobbyStyles(): string {
     .btn-orange:hover { background: #ff9955; }
     .btn-start { margin-top: 1rem; }
     .btn-start.hidden { display: none; }
+
+    /* Responsive brand treatment */
+    #lobby { padding: 1rem; }
+    .lobby-card {
+      width: min(500px, calc(100vw - 2rem));
+      min-width: 0;
+      max-height: calc(100vh - 2rem);
+      overflow-y: auto;
+    }
+    .lobby-card .lobby-brand {
+      width: min(100%, 420px);
+      margin: -0.25rem auto 1.15rem;
+      color: #fff;
+      font-size: inherit;
+      line-height: 1;
+    }
+    .lobby-brand-wide {
+      display: block;
+      width: 100%;
+      height: auto;
+      object-fit: contain;
+      filter: drop-shadow(0 12px 24px rgba(0, 0, 0, 0.38));
+      pointer-events: none;
+      user-select: none;
+    }
+    .lobby-brand-compact {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      gap: 0.7rem;
+    }
+    .lobby-brand-mark {
+      display: block;
+      width: clamp(4rem, 20vw, 4.75rem);
+      height: auto;
+      flex: 0 0 auto;
+      object-fit: contain;
+      filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.42));
+      pointer-events: none;
+      user-select: none;
+    }
+    .lobby-brand-name {
+      display: block;
+      color: #f8fbff;
+      font-family: Impact, Haettenschweiler, 'Arial Narrow Bold', sans-serif;
+      font-size: clamp(1.35rem, 7vw, 1.85rem);
+      font-style: italic;
+      font-weight: 900;
+      letter-spacing: 0.035em;
+      line-height: 0.86;
+      text-align: left;
+      text-shadow: 0 3px 0 #071225, 0 7px 14px rgba(0, 0, 0, 0.45);
+    }
+    .lobby-brand-name > span { display: block; }
+    .lobby-brand-arena {
+      color: #27a8ff;
+      background: linear-gradient(90deg, #27a8ff 0 49%, #ff8a1f 55% 100%);
+      background-clip: text;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    @media (max-width: 420px) {
+      .lobby-card { padding: 1.25rem; }
+      .lobby-brand-wide { display: none; }
+      .lobby-brand-compact { display: flex; }
+    }
   `;
 }
