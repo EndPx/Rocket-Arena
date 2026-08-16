@@ -1,5 +1,5 @@
 import RAPIER from '@dimforge/rapier3d-compat';
-import { getConstant } from '../../../shared/src/constants/index.js';
+import { PHYSICS, getConstant } from '../../../shared/src/constants/index.js';
 import type { InputPayload } from '../../../shared/src/types/input.js';
 
 interface Vec3 {
@@ -503,7 +503,7 @@ export function applyCarPhysics(
   rawInput: InputPayload,
   state: CarPhysicsState,
 ): void {
-  const timestep = getConstant('PHYSICS.TIMESTEP');
+  const timestep = PHYSICS.TIMESTEP;
   const input = sanitizeInput(rawInput);
   const deadzone = getConstant('CAR.ENGINE.INPUT_DEADZONE');
   const grounded = isGrounded(world, carBody);

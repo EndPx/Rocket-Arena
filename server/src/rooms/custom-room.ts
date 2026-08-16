@@ -1,7 +1,7 @@
 import colyseus from 'colyseus';
 import RAPIER from '@dimforge/rapier3d-compat';
 import { GameState, PlayerState } from '@rocket-arena/shared/schema';
-import { getConstant, setOverride, clearOverrides } from '@rocket-arena/shared/constants';
+import { PHYSICS, getConstant, setOverride, clearOverrides } from '@rocket-arena/shared/constants';
 import type { InputPayload } from '@rocket-arena/shared/types';
 import { initPhysics, createWorld } from '../physics/world.js';
 import { createArenaColliders } from '../physics/arena.js';
@@ -15,6 +15,7 @@ import {
 } from '../physics/car.js';
 import { createGoalSensors, checkGoal, resetToKickoff } from '../systems/scoring.js';
 import { updateTimer, resolveTimeUp, getGoalResetDelay } from '../systems/match-timer.js';
+import { FixedStepScheduler } from './fixed-step-scheduler.js';
 
 const { Room } = colyseus;
 
@@ -47,11 +48,19 @@ export class CustomRoom extends Room<GameState> {
   private goalResetTimer: number = 0;
   private wasOvertime: boolean = false;
   private hostSessionId: string = '';
+  private scheduler!: FixedStepScheduler;
+  private snapshotSequence = 0;
 
   onCreate(options: any) {
     this.setState(new GameState());
     this.maxClients = getConstant('MATCH.MAX_PLAYERS');
     this.setPatchRate(getConstant('NETCODE.PATCH_RATE_MS'));
+    this.scheduler = new FixedStepScheduler({
+      fixedStepSeconds: PHYSICS.TIMESTEP,
+      maxFrameDeltaSeconds: PHYSICS.MAX_FRAME_DELTA_SECONDS,
+      maxSubsteps: PHYSICS.MAX_FIXED_SUBSTEPS,
+      snapshotIntervalMs: getConstant('NETCODE.PATCH_RATE_MS'),
+    });
 
     // Generate room code and set metadata for room discovery
     const code = generateRoomCode();
@@ -109,10 +118,24 @@ export class CustomRoom extends Room<GameState> {
 
     console.log(`[CustomRoom] Created with code: ${code}`);
 
-    // Broadcast state at 30Hz from the start (lobby phase needs state-sync too)
-    this.setSimulationInterval(() => {
-      this.broadcastState();
-    }, getConstant('NETCODE.PATCH_RATE_MS'));
+    // Schedule callbacks near 60 Hz; the accumulator emits exact fixed steps.
+    this.setSimulationInterval((deltaTimeMs) => {
+      this.advanceSimulation(deltaTimeMs);
+    }, PHYSICS.TIMESTEP * 1000);
+  }
+
+  private advanceSimulation(deltaTimeMs: number): void {
+    const frame = this.scheduler.advance(deltaTimeMs);
+    for (let step = 0; step < frame.fixedSteps; step++) {
+      const phase = this.state.phase;
+      if (
+        this.physicsReady
+        && (phase === 'playing' || phase === 'overtime' || phase === 'goal-scored')
+      ) {
+        this.tick();
+      }
+    }
+    if (frame.snapshotDue) this.broadcastState();
   }
 
   private async initializePhysics() {
@@ -213,13 +236,7 @@ export class CustomRoom extends Room<GameState> {
     this.state.phase = 'playing';
     this.state.timeRemaining = getConstant('MATCH.DURATION_SECONDS');
 
-    // Start 60Hz physics loop with broadcast
-    this.setSimulationInterval(() => {
-      this.tick();
-      this.broadcastState();
-    }, getConstant('PHYSICS.TIMESTEP') * 1000);
-
-    console.log('[CustomRoom] Match started! Physics loop running at 60Hz');
+    console.log('[CustomRoom] Match started with fixed 60Hz physics');
   }
 
   private spawnCar(sessionId: string, team: string) {
@@ -332,7 +349,7 @@ export class CustomRoom extends Room<GameState> {
       phase: this.state.phase,
       goalResetTimer: this.goalResetTimer,
     };
-    const timerResult = updateTimer(timerState, getConstant('PHYSICS.TIMESTEP'));
+    const timerResult = updateTimer(timerState, PHYSICS.TIMESTEP);
     this.state.timeRemaining = timerState.timeRemaining;
     this.goalResetTimer = timerState.goalResetTimer;
 
@@ -416,6 +433,9 @@ export class CustomRoom extends Room<GameState> {
 
     const ball = this.state.ball;
     this.broadcast('state-sync', {
+      sequence: ++this.snapshotSequence,
+      serverTime: Date.now(),
+      simulationTime: this.scheduler.simulationTimeMs,
       players,
       ball: {
         x: ball.x, y: ball.y, z: ball.z,

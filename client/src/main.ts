@@ -8,7 +8,11 @@ import { initScene } from './renderer/scene.js';
 import { createLighting } from './renderer/lighting.js';
 import { createArena } from './renderer/arena.js';
 import { getRoom } from './networking/client.js';
-import { getCarMeshes, getLocalState } from './networking/state-listener.js';
+import {
+  getCarMeshes,
+  getLocalState,
+  updateInterpolatedEntities,
+} from './networking/state-listener.js';
 import { sendInput } from './input/keyboard-handler.js';
 import { createHUD, updateHUD } from './hud/hud.js';
 import { createDevPanel } from './dev-panel/dev-panel.js';
@@ -49,11 +53,13 @@ createLobby((room: Room) => {
 function animate() {
   requestAnimationFrame(animate);
 
-  const time = performance.now() / 1000;
+  const frameNowMs = performance.now();
+  const time = frameNowMs / 1000;
   const room = getRoom();
 
   if (room) {
     sendInput(room);
+    updateInterpolatedEntities(frameNowMs);
     updateHUD(room);
 
     // Camera follows local player's car
@@ -72,6 +78,6 @@ function animate() {
 
   renderer.render(scene, camera);
 }
-animate();
 
+animate();
 console.log('[Rocket Arena] Client initialized');
