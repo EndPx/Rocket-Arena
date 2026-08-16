@@ -6,7 +6,13 @@ import type { InputPayload } from '@rocket-arena/shared/types';
 import { initPhysics, createWorld } from '../physics/world.js';
 import { createArenaColliders } from '../physics/arena.js';
 import { createBall } from '../physics/ball.js';
-import { createCar, applyCarPhysics, createCarPhysicsState, type CarPhysicsState } from '../physics/car.js';
+import {
+  createCar,
+  applyCarPhysics,
+  createCarPhysicsState,
+  synchronizeCarInputState,
+  type CarPhysicsState,
+} from '../physics/car.js';
 import { createGoalSensors, checkGoal, resetToKickoff } from '../systems/scoring.js';
 import { updateTimer, resolveTimeUp, getGoalResetDelay } from '../systems/match-timer.js';
 
@@ -37,9 +43,13 @@ export class ArenaRoom extends Room<GameState> {
     this.maxClients = getConstant('MATCH.MAX_PLAYERS');
     this.setPatchRate(getConstant('NETCODE.PATCH_RATE_MS'));
 
-    // Handle input messages
+    // Retain continuous controls while acknowledging disabled-phase jump edges.
     this.onMessage('input', (client, payload: InputPayload) => {
       this.inputs.set(client.sessionId, payload);
+      if (this.state.phase !== 'playing' && this.state.phase !== 'overtime') {
+        const entry = this.carBodies.get(client.sessionId);
+        if (entry) synchronizeCarInputState(entry.jumpState, payload);
+      }
     });
 
     // Handle dev-tune messages
@@ -144,6 +154,12 @@ export class ArenaRoom extends Room<GameState> {
   }
 
   private startMatch() {
+    // Discard presses made while gameplay was disabled and seed held fallback.
+    for (const [sessionId, entry] of this.carBodies) {
+      const input = this.inputs.get(sessionId);
+      if (input) synchronizeCarInputState(entry.jumpState, input);
+    }
+
     this.state.phase = 'playing';
     this.state.timeRemaining = getConstant('MATCH.DURATION_SECONDS');
 

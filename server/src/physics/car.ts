@@ -15,7 +15,10 @@ interface Quaternion extends Vec3 {
 export interface CarPhysicsState {
   /** Number of jumps used since the last confirmed landing. */
   count: number;
+  /** Held state used only by backwards-compatible boolean input. */
   jumpHeld: boolean;
+  /** Highest monotonic jump press id consumed or intentionally discarded. */
+  lastJumpSequence: number;
   grounded: boolean;
   wasGrounded: boolean;
   airborneTime: number;
@@ -45,12 +48,20 @@ function finiteOrZero(value: number): number {
   return Number.isFinite(value) ? value : 0;
 }
 
+function normalizeJumpSequence(value: number | undefined): number | undefined {
+  return value !== undefined && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
+}
+
 function sanitizeInput(input: InputPayload): InputPayload {
+  const jumpSequence = normalizeJumpSequence(input.jumpSequence);
   return {
     throttle: clamp(finiteOrZero(input.throttle), -1, 1),
     steer: clamp(finiteOrZero(input.steer), -1, 1),
     jump: input.jump === true,
     boost: input.boost === true,
+    ...(jumpSequence === undefined ? {} : { jumpSequence }),
   };
 }
 
@@ -103,6 +114,7 @@ export function createCarPhysicsState(): CarPhysicsState {
   return {
     count: 0,
     jumpHeld: false,
+    lastJumpSequence: 0,
     grounded: false,
     wasGrounded: false,
     airborneTime: 0,
@@ -117,13 +129,28 @@ export function createCarPhysicsState(): CarPhysicsState {
   };
 }
 
-/** Reset transient controls at kickoff and optionally restore starting boost. */
+/**
+ * Consume/discard the current jump edge without applying physics. Rooms use
+ * this while input is disabled so lobby, countdown, and reset presses cannot
+ * queue an automatic kickoff jump.
+ */
+export function synchronizeCarInputState(
+  state: CarPhysicsState,
+  input: InputPayload,
+): void {
+  state.jumpHeld = input.jump === true;
+  const sequence = normalizeJumpSequence(input.jumpSequence);
+  if (sequence !== undefined) {
+    state.lastJumpSequence = Math.max(state.lastJumpSequence, sequence);
+  }
+}
+
+/** Reset transient motion state while retaining consumed input-edge history. */
 export function resetCarPhysicsState(
   state: CarPhysicsState,
   resetBoost: boolean = true,
 ): void {
   state.count = 0;
-  state.jumpHeld = false;
   state.grounded = false;
   state.wasGrounded = false;
   state.airborneTime = 0;
@@ -480,7 +507,13 @@ export function applyCarPhysics(
   const input = sanitizeInput(rawInput);
   const deadzone = getConstant('CAR.ENGINE.INPUT_DEADZONE');
   const grounded = isGrounded(world, carBody);
-  const jumpPressed = input.jump && !state.jumpHeld;
+  const sequence = input.jumpSequence;
+  const jumpPressed = sequence === undefined
+    ? input.jump && !state.jumpHeld
+    : sequence > state.lastJumpSequence;
+  if (sequence !== undefined) {
+    state.lastJumpSequence = Math.max(state.lastJumpSequence, sequence);
+  }
   state.jumpHeld = input.jump;
   updateLandingState(state, grounded, timestep);
 

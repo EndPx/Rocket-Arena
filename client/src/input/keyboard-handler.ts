@@ -1,44 +1,52 @@
 import type { Room } from 'colyseus.js';
-import type { InputPayload } from '@rocket-arena/shared';
+import { InputController, isEditableTarget } from './input-controller.js';
 
-const keys: Set<string> = new Set();
-let lastPayload: string = '';
+const controller = new InputController();
+let activeRoom: Room | null = null;
 
-window.addEventListener('keydown', (e) => keys.add(e.code));
-window.addEventListener('keyup', (e) => keys.delete(e.code));
+function nowMs(): number {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
 
-/**
- * Read current keyboard state and send input payload to server.
- * Call this every frame in the render loop.
- */
-export function sendInput(room: Room | null): void {
-  if (!room) return;
+function forceNeutralSync(): void {
+  controller.resetHeldKeys();
+  if (!activeRoom) return;
 
-  const payload: InputPayload = {
-    throttle: 0,
-    steer: 0,
-    jump: false,
-    boost: false,
-  };
-
-  // Throttle
-  if (keys.has('KeyW') || keys.has('ArrowUp')) payload.throttle = 1;
-  else if (keys.has('KeyS') || keys.has('ArrowDown')) payload.throttle = -1;
-
-  // Steer
-  if (keys.has('KeyA') || keys.has('ArrowLeft')) payload.steer = 1;
-  else if (keys.has('KeyD') || keys.has('ArrowRight')) payload.steer = -1;
-
-  // Jump (any frame it's held — server does edge detection)
-  if (keys.has('Space')) payload.jump = true;
-
-  // Boost
-  if (keys.has('ShiftLeft') || keys.has('ShiftRight')) payload.boost = true;
-
-  // Only send if changed (avoid flooding)
-  const serialized = JSON.stringify(payload);
-  if (serialized !== lastPayload) {
-    room.send('input', payload);
-    lastPayload = serialized;
+  try {
+    controller.send(activeRoom, nowMs(), true);
+  } catch (error) {
+    console.warn('[Input] Could not force neutral state:', error);
   }
+}
+
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+  window.addEventListener('keydown', (event) => {
+    if (isEditableTarget(event.target)) return;
+    if (controller.handleKeyDown(event.code, event.repeat)) event.preventDefault();
+  });
+
+  window.addEventListener('keyup', (event) => {
+    const handled = controller.handleKeyUp(event.code);
+    if (handled && !isEditableTarget(event.target)) event.preventDefault();
+  });
+
+  window.addEventListener('blur', forceNeutralSync);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') forceNeutralSync();
+  });
+  document.addEventListener('focusin', (event) => {
+    if (isEditableTarget(event.target)) forceNeutralSync();
+  });
+}
+
+/** Send current input when changed, on room entry, or on the input heartbeat. */
+export function sendInput(room: Room | null): void {
+  if (!room) {
+    activeRoom = null;
+    controller.detachRoom();
+    return;
+  }
+
+  activeRoom = room;
+  controller.send(room, nowMs());
 }
