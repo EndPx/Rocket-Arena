@@ -1,3 +1,3 @@
-// Barrel export for Colyseus state schemas
-// Will be fully populated in Task 3
-export {};
+export { PlayerState } from './player-state.js';
+export { BallState } from './ball-state.js';
+export { GameState } from './game-state.js';
