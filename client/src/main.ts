@@ -7,8 +7,9 @@
 import { initScene } from './renderer/scene.js';
 import { createLighting } from './renderer/lighting.js';
 import { createArena } from './renderer/arena.js';
-import { joinSandbox } from './networking/client.js';
+import { joinSandbox, getRoom } from './networking/client.js';
 import { setupStateListener } from './networking/state-listener.js';
+import { sendInput } from './input/keyboard-handler.js';
 
 const app = document.getElementById('app')!;
 
@@ -34,6 +35,10 @@ connect();
 // Render loop
 function animate() {
   requestAnimationFrame(animate);
+
+  // Send input every frame
+  sendInput(getRoom());
+
   renderer.render(scene, camera);
 }
 animate();
