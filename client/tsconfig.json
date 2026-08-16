@@ -4,7 +4,10 @@
     "composite": true,
     "outDir": "./dist",
     "rootDir": "./src",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "paths": {
+      "@rocket-arena/shared": ["../shared/src/index.ts"]
+    }
   },
   "include": ["src/**/*.ts"],
   "references": [
