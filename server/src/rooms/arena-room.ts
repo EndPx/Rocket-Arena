@@ -7,6 +7,8 @@ import { initPhysics, createWorld } from '../physics/world.js';
 import { createArenaColliders } from '../physics/arena.js';
 import { createBall } from '../physics/ball.js';
 import { createCar, applyCarPhysics } from '../physics/car.js';
+import { createGoalSensors, checkGoal, resetToKickoff } from '../systems/scoring.js';
+import { updateTimer, resolveTimeUp, getGoalResetDelay } from '../systems/match-timer.js';
 
 const { Room } = colyseus;
 
@@ -15,6 +17,9 @@ interface CarEntry {
   jumpState: { count: number };
 }
 
+/**
+ * Quick Match room — auto-assigns teams, starts when 4/4 players.
+ */
 export class ArenaRoom extends Room<GameState> {
   private inputs: Map<string, InputPayload> = new Map();
   private countdownTimer: number = 0;
@@ -23,6 +28,8 @@ export class ArenaRoom extends Room<GameState> {
   private ballBody!: RAPIER.RigidBody;
   private carBodies: Map<string, CarEntry> = new Map();
   private physicsReady: boolean = false;
+  private goalResetTimer: number = 0;
+  private wasOvertime: boolean = false;
 
   onCreate(options: any) {
     this.setState(new GameState());
@@ -49,7 +56,7 @@ export class ArenaRoom extends Room<GameState> {
       console.log('[Dev] All overrides cleared');
     });
 
-    // Initialize physics (world created but sim loop won't start until countdown finishes)
+    // Initialize physics
     this.initializePhysics();
 
     console.log(`[ArenaRoom] Created (max ${this.maxClients} players, patch rate ${getConstant('NETCODE.PATCH_RATE_MS')}ms)`);
@@ -60,6 +67,7 @@ export class ArenaRoom extends Room<GameState> {
     this.world = createWorld();
     createArenaColliders(this.world);
     this.ballBody = createBall(this.world);
+    createGoalSensors(this.world);
     this.physicsReady = true;
 
     console.log('[ArenaRoom] Physics initialized (waiting for players)');
@@ -139,7 +147,6 @@ export class ArenaRoom extends Room<GameState> {
 
   private spawnCar(sessionId: string, team: string) {
     if (!this.physicsReady) {
-      // Defer spawn until physics is ready
       const interval = setInterval(() => {
         if (this.physicsReady) {
           clearInterval(interval);
@@ -154,13 +161,12 @@ export class ArenaRoom extends Room<GameState> {
   private createCarBody(sessionId: string, team: string) {
     const pos = this.getKickoffPosition(sessionId, team);
     const rotation = team === 'orange'
-      ? { x: 0, y: 1, z: 0, w: 0 }  // Face toward blue goal (180° around Y)
-      : { x: 0, y: 0, z: 0, w: 1 };  // Face toward orange goal (default)
+      ? { x: 0, y: 1, z: 0, w: 0 }
+      : { x: 0, y: 0, z: 0, w: 1 };
 
     const body = createCar(this.world, pos, rotation);
     this.carBodies.set(sessionId, { body, jumpState: { count: 0 } });
 
-    // Set initial player position in schema
     const player = this.state.players.get(sessionId);
     if (player) {
       player.x = pos.x;
@@ -211,10 +217,12 @@ export class ArenaRoom extends Room<GameState> {
   private tick(dt: number) {
     if (!this.physicsReady) return;
 
-    // 1. Apply car physics from player inputs
-    for (const [sessionId, carEntry] of this.carBodies) {
-      const input = this.inputs.get(sessionId) || { throttle: 0, steer: 0, jump: false, boost: false };
-      applyCarPhysics(this.world, carEntry.body, input, carEntry.jumpState);
+    // 1. Apply car physics from player inputs (only during active play phases)
+    if (this.state.phase === 'playing' || this.state.phase === 'overtime') {
+      for (const [sessionId, carEntry] of this.carBodies) {
+        const input = this.inputs.get(sessionId) || { throttle: 0, steer: 0, jump: false, boost: false };
+        applyCarPhysics(this.world, carEntry.body, input, carEntry.jumpState);
+      }
     }
 
     // 2. Step the Rapier world
@@ -223,6 +231,59 @@ export class ArenaRoom extends Room<GameState> {
     // 3. Sync physics state to Colyseus schema
     this.syncBallState();
     this.syncPlayerStates();
+
+    // 4. Check for goals (only during 'playing' or 'overtime')
+    if (this.state.phase === 'playing' || this.state.phase === 'overtime') {
+      const scored = checkGoal(this.ballBody);
+      if (scored) {
+        if (scored === 'blue') this.state.blueScore++;
+        else this.state.orangeScore++;
+
+        if (this.state.phase === 'overtime') {
+          this.wasOvertime = true;
+        }
+
+        this.state.phase = 'goal-scored';
+        this.goalResetTimer = getGoalResetDelay();
+        console.log(`[ArenaRoom] GOAL! ${scored} scores! (${this.state.blueScore}-${this.state.orangeScore})`);
+      }
+    }
+
+    // 5. Update timer
+    const timerState = {
+      timeRemaining: this.state.timeRemaining,
+      phase: this.state.phase,
+      goalResetTimer: this.goalResetTimer,
+    };
+    const timerResult = updateTimer(timerState, 1 / 60);
+    this.state.timeRemaining = timerState.timeRemaining;
+    this.goalResetTimer = timerState.goalResetTimer;
+
+    if (timerResult === 'time-up') {
+      const result = resolveTimeUp(this.state.blueScore, this.state.orangeScore);
+      if (result === 'overtime') {
+        this.state.phase = 'overtime';
+        this.state.timeRemaining = -1;
+        this.wasOvertime = true;
+        console.log('[ArenaRoom] OVERTIME! Next goal wins.');
+      } else {
+        this.state.phase = 'ended';
+        console.log(`[ArenaRoom] Match ended! Blue ${this.state.blueScore} - ${this.state.orangeScore} Orange`);
+      }
+    } else if (timerResult === 'reset-complete') {
+      const playerTeams = new Map<string, { team: string }>();
+      for (const [sessionId, player] of this.state.players) {
+        playerTeams.set(sessionId, { team: player.team });
+      }
+      resetToKickoff(this.ballBody, this.carBodies, playerTeams, this.getKickoffPosition.bind(this));
+
+      if (this.wasOvertime) {
+        this.state.phase = 'overtime';
+      } else {
+        this.state.phase = 'playing';
+      }
+      console.log(`[ArenaRoom] Kickoff reset. Resuming: ${this.state.phase}`);
+    }
   }
 
   private syncBallState() {

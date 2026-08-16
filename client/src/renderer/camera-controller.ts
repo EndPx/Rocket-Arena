@@ -4,21 +4,47 @@ import { CAMERA } from '@rocket-arena/shared';
 const targetPosition = new THREE.Vector3();
 const targetLookAt = new THREE.Vector3();
 
+let mode: 'orbit' | 'follow' = 'orbit';
+
+/** Switch camera to orbit mode (lobby/waiting). */
+export function setOrbitMode(): void {
+  mode = 'orbit';
+}
+
+/** Switch camera to follow mode (in-game). */
+export function setFollowMode(): void {
+  mode = 'follow';
+}
+
+/** Get current camera mode. */
+export function getCameraMode(): 'orbit' | 'follow' {
+  return mode;
+}
+
 /**
- * Update camera to follow behind the local player's car.
- * Uses lerp for smooth following.
+ * Update camera. In orbit mode, slowly orbits the arena center.
+ * In follow mode, follows behind the local player's car.
  *
  * @param camera - The Three.js camera
  * @param carMesh - The local player's car mesh group (or null if not yet available)
+ * @param time - Elapsed time in seconds (performance.now() / 1000)
  */
-export function updateCamera(camera: THREE.PerspectiveCamera, carMesh: THREE.Group | null): void {
-  if (!carMesh) {
-    // Default overview position when no car to follow
-    camera.position.lerp(new THREE.Vector3(0, 30, -40), 0.02);
+export function updateCamera(camera: THREE.PerspectiveCamera, carMesh: THREE.Group | null, time: number): void {
+  if (mode === 'orbit' || !carMesh) {
+    // Orbit around center of arena
+    const radius = 45;
+    const speed = 0.3;
+    const angle = time * speed;
+    camera.position.set(
+      Math.sin(angle) * radius,
+      15,
+      Math.cos(angle) * radius
+    );
     camera.lookAt(0, 0, 0);
     return;
   }
 
+  // Follow mode — behind the car
   const carPos = carMesh.position;
   const carQuat = carMesh.quaternion;
 

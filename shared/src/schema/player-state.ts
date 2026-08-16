@@ -17,4 +17,5 @@ export class PlayerState extends Schema {
   @type('uint8') boost: number = 33;
   @type('string') team: string = 'blue';
   @type('string') name: string = '';
+  @type('boolean') isHost: boolean = false;
 }

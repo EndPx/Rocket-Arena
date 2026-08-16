@@ -14,7 +14,7 @@ import { createHUD, updateHUD } from './hud/hud.js';
 import { createDevPanel } from './dev-panel/dev-panel.js';
 import { createLobby } from './ui/lobby.js';
 import { showGameOver } from './ui/game-over.js';
-import { updateCamera } from './renderer/camera-controller.js';
+import { updateCamera, setFollowMode, setOrbitMode } from './renderer/camera-controller.js';
 import type { Room } from 'colyseus.js';
 
 const app = document.getElementById('app')!;
@@ -30,23 +30,17 @@ createHUD();
 // Track game-over state
 let gameEnded = false;
 
-// Show lobby
+// Show lobby — camera starts in orbit mode
+setOrbitMode();
+
 createLobby((room: Room) => {
-  // On successful join
+  // On successful join and match start
   setupStateListener(room, scene);
   createDevPanel(room);
   gameEnded = false;
 
-  // Debug: log initial state to verify timer/phase sync
-  setTimeout(() => {
-    const state = room.state as any;
-    console.log('[Debug] Room state:', {
-      phase: state.phase,
-      timeRemaining: state.timeRemaining,
-      players: state.players?.size,
-      ballY: state.ball?.y,
-    });
-  }, 1000);
+  // Switch camera to follow mode for gameplay
+  setFollowMode();
 
   // Listen for match end
   (room.state as any).listen('phase', (phase: string) => {
@@ -63,14 +57,16 @@ createLobby((room: Room) => {
 function animate() {
   requestAnimationFrame(animate);
 
+  const time = performance.now() / 1000;
   const room = getRoom();
+
   if (room) {
     sendInput(room);
     updateHUD(room);
 
     // Camera follows local player's car
     const localCar = getCarMeshes().get(room.sessionId) || null;
-    updateCamera(camera, localCar);
+    updateCamera(camera, localCar, time);
 
     // Fallback: check phase in render loop if listen() doesn't work
     if (!gameEnded && (room.state as any).phase === 'ended') {
@@ -78,7 +74,7 @@ function animate() {
       setTimeout(() => showGameOver(room), 2000);
     }
   } else {
-    updateCamera(camera, null);
+    updateCamera(camera, null, time);
   }
 
   renderer.render(scene, camera);
