@@ -31,29 +31,34 @@ function showMainMenu(): void {
   lobbyEl.innerHTML = `
     <div class="lobby-card">
       <h1>Rocket Arena</h1>
-      <input type="text" id="lobby-name" placeholder="Your name" maxlength="16" value="Player">
+      <input type="text" id="lobby-name" placeholder="Your name" maxlength="16" value="${getSavedName()}">
       <button id="lobby-quick" class="btn-primary">Quick Match</button>
       <button id="lobby-custom-toggle" class="btn-secondary">Custom Room</button>
-      <div id="lobby-custom-options" class="custom-options hidden">
-        <button id="lobby-create" class="btn-accent">Create Room</button>
-        <div class="join-row">
-          <input type="text" id="lobby-code" placeholder="Room code" maxlength="6">
-          <button id="lobby-join-code" class="btn-accent">Join</button>
-        </div>
-      </div>
       <p class="lobby-status" id="lobby-status"></p>
     </div>
   `;
 
   document.getElementById('lobby-quick')!.addEventListener('click', handleQuickMatch);
-  document.getElementById('lobby-custom-toggle')!.addEventListener('click', toggleCustomOptions);
-  document.getElementById('lobby-create')!.addEventListener('click', handleCreateRoom);
-  document.getElementById('lobby-join-code')!.addEventListener('click', handleJoinByCode);
+  document.getElementById('lobby-custom-toggle')!.addEventListener('click', showCustomScreen);
 }
 
-function toggleCustomOptions(): void {
-  const options = document.getElementById('lobby-custom-options')!;
-  options.classList.toggle('hidden');
+function showCustomScreen(): void {
+  lobbyEl.innerHTML = `
+    <div class="lobby-card">
+      <h2>Custom Room</h2>
+      <button id="lobby-create" class="btn-accent">Create Room</button>
+      <div class="join-row">
+        <input type="text" id="lobby-code" placeholder="Room code" maxlength="6">
+        <button id="lobby-join-code" class="btn-accent">Join</button>
+      </div>
+      <button id="lobby-back" class="btn-danger">Back</button>
+      <p class="lobby-status" id="lobby-status"></p>
+    </div>
+  `;
+
+  document.getElementById('lobby-create')!.addEventListener('click', handleCreateRoom);
+  document.getElementById('lobby-join-code')!.addEventListener('click', handleJoinByCode);
+  document.getElementById('lobby-back')!.addEventListener('click', showMainMenu);
 }
 
 async function handleQuickMatch(): Promise<void> {
@@ -121,7 +126,7 @@ function showWaitingRoom(room: Room): void {
       <p class="waiting-text" id="waiting-text">Waiting for players...</p>
       <p class="player-count" id="player-count">1/4</p>
       <ul class="player-list" id="player-list"></ul>
-      <button class="btn-secondary" id="leave-room">Leave Room</button>
+      <button class="btn-danger" id="leave-room">Leave Room</button>
       <p class="lobby-status" id="lobby-status">Camera orbiting arena</p>
     </div>
   `;
@@ -193,7 +198,7 @@ function showCustomLobby(room: Room): void {
       </div>
       <p class="player-count" id="player-count">1/4</p>
       <button class="btn-primary btn-start hidden" id="start-match">Start Match</button>
-      <button class="btn-secondary" id="leave-room">Leave Room</button>
+      <button class="btn-danger" id="leave-room">Leave Room</button>
       <p class="lobby-status" id="lobby-status"></p>
     </div>
   `;
@@ -309,7 +314,14 @@ async function fetchRoomCode(room: Room): Promise<void> {
 
 function getPlayerName(): string {
   const input = document.getElementById('lobby-name') as HTMLInputElement | null;
-  return input?.value?.trim() || 'Player';
+  const name = input?.value?.trim() || 'Player';
+  // Cache for next session
+  localStorage.setItem('rocket-arena-name', name);
+  return name;
+}
+
+function getSavedName(): string {
+  return localStorage.getItem('rocket-arena-name') || 'Player';
 }
 
 export function hideLobby(): void {
@@ -366,6 +378,13 @@ function getLobbyStyles(): string {
       cursor: pointer; font-family: monospace; font-size: 1rem;
     }
     .btn-secondary:hover { background: #666; }
+    .btn-danger {
+      display: block; width: 100%; padding: 0.7rem;
+      margin-bottom: 0.5rem; background: #cc3333; color: #fff;
+      border: none; border-radius: 4px; font-weight: bold;
+      cursor: pointer; font-family: monospace; font-size: 1rem;
+    }
+    .btn-danger:hover { background: #dd4444; }
     .btn-accent {
       display: block; width: 100%; padding: 0.6rem;
       margin-bottom: 0.5rem; background: #2a9d8f; color: #fff;
