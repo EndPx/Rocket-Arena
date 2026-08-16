@@ -1,14 +1,14 @@
 # Implementation Plan — Rocket Arena (rev 2)
 
 ## Problem Statement
-Build a browser-based 2v2 multiplayer car-ball game (Rocket League-style) for the Kiro hackathon. Players drive physics-driven cars in a walled arena and try to knock a large ball into the opposing goal. All visuals are procedural (Three.js primitives), physics is authoritative on server (Rapier), netcode via Colyseus, with a configurable constants architecture separating tuning values from logic.
+Build a browser-based 2v2 multiplayer car-ball game (Rocket League-style) for the Kiro hackathon. Players drive physics-driven cars in a walled arena and try to knock a large ball into the opposing goal. Visuals use procedural Three.js 3D geometry, supplemented where appropriate by original, documented 2D images generated with ChatGPT/OpenAI under participant direction; downloaded third-party 3D models and recognizable franchise copies are prohibited. Physics is authoritative on the server (Rapier), netcode uses Colyseus, and a configurable constants architecture separates tuning values from logic.
 
 ## Requirements
 - 2v2 (Blue vs Orange), 5 minutes per match + golden-goal overtime
 - Cars: accelerate, brake, turn, jump, boost, air control
 - Ball: heavy & bouncy, car-ball impact = most important game feel
 - Quick Match (join-or-create) + Custom Room (6-char code)
-- No external assets — all procedural geometry (BoxGeometry, SphereGeometry, CylinderGeometry)
+- Procedural, source-controlled 3D gameplay geometry (BoxGeometry, SphereGeometry, CylinderGeometry), with original, documented AI-generated 2D assets allowed under the steering asset policy; no downloaded third-party 3D models or recognizable franchise copies
 - Configurable constants hierarchy (class-based nested objects, SCREAMING_SNAKE_CASE, JSDoc comments)
 - Dev panel for live constant tuning during development
 - Desktop keyboard only
@@ -18,7 +18,7 @@ Build a browser-based 2v2 multiplayer car-ball game (Rocket League-style) for th
 ## Tech Stack
 - **Physics**: `@dimforge/rapier3d-compat` (WASM) — fixed timestep 1/60s, CCD on ball only (cars don't need it — they're slower and wider)
 - **Server**: Colyseus — authoritative, rooms, state sync, `setSimulationInterval` at 60Hz, `setPatchRate(33)` for ~30fps state broadcast
-- **Client**: Three.js — procedural geometry only, NO .glb/.gltf/.fbx/texture files
+- **Client**: Three.js — procedural, source-controlled 3D gameplay geometry plus local, original, documented AI-generated 2D images (`.webp` preferred; `.png` when alpha or lossless fidelity is required); no downloaded `.glb`/`.gltf`/`.fbx` models or recognizable franchise copies
 - **Language**: TypeScript strict mode throughout
 - **Build**: Vite for client dev server
 - **Netcode**: Interpolation buffer, delay = 2× patch interval (~66ms at 33ms patch rate)
