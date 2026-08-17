@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { Room } from 'colyseus.js';
-import { createCarMesh } from '../renderer/car.js';
+import { createCarMesh, type CarVisualRig } from '../renderer/car.js';
 import { createBallMesh } from '../renderer/ball.js';
 import {
   SnapshotBuffer,
@@ -65,8 +65,33 @@ function nowMs(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();
 }
 
+function disposeCarEffects(car: THREE.Group): void {
+  const rig = car.userData.visualRig as CarVisualRig | undefined;
+  if (!rig) return;
+  for (const effect of [...rig.boostFlames, ...rig.boostTrails]) {
+    const materials = Array.isArray(effect.material) ? effect.material : [effect.material];
+    materials.forEach((material) => material.dispose());
+  }
+}
+
+function disposeObjectResources(root: THREE.Object3D): void {
+  root.traverse((object) => {
+    const renderable = object as THREE.Mesh | THREE.LineSegments | THREE.Points;
+    if (renderable.geometry instanceof THREE.BufferGeometry) {
+      renderable.geometry.dispose();
+    }
+    if ('material' in renderable && renderable.material) {
+      const materials = Array.isArray(renderable.material)
+        ? renderable.material
+        : [renderable.material];
+      materials.forEach((material) => material.dispose());
+    }
+  });
+}
+
 function removeCar(scene: THREE.Scene, sessionId: string, car: THREE.Group): void {
   scene.remove(car);
+  disposeCarEffects(car);
   carMeshes.delete(sessionId);
 }
 
@@ -85,6 +110,7 @@ export function clearEntityMeshes(scene: THREE.Scene): void {
   }
   if (ballMesh) {
     scene.remove(ballMesh);
+    disposeObjectResources(ballMesh);
     ballMesh = null;
   }
   localState = null;
@@ -144,7 +170,7 @@ function recordSnapshotArrival(arrivalMs: number): void {
 
 /**
  * Queue manual state-sync snapshots while retaining the existing lobby/HUD and
- * entity lifecycle. Existing meshes are never snapped in this callback.
+ * visual-resource lifecycle. Existing meshes are never snapped in this callback.
  */
 export function setupStateListener(room: Room, scene: THREE.Scene): void {
   const generation = ++listenerGeneration;
@@ -170,6 +196,7 @@ export function setupStateListener(room: Room, scene: THREE.Scene): void {
     for (const [sessionId, player] of Object.entries(data.players)) {
       if (!carMeshes.has(sessionId)) {
         const carMesh = createCarMesh(player.team);
+        carMesh.userData.lastBoost = player.boost;
         applyEntityTransform(carMesh, toEntitySnapshot(player));
         scene.add(carMesh);
         carMeshes.set(sessionId, carMesh);

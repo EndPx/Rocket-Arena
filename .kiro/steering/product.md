@@ -1,6 +1,6 @@
 # Product: Rocket Arena
 
-A browser-based online multiplayer car-ball game (Rocket League-style) built for a one-week hackathon. Players drive physics-driven cars in a walled arena and try to knock a large ball into the opposing goal.
+A browser-based online multiplayer car-ball game (Rocket League-style) built for hackathon. Players drive physics-driven cars in a walled arena and try to knock a large ball into the opposing goal.
 
 ## Target experience
 Two teams of two (Blue vs Orange). A match runs 5 minutes; if scores are tied at time, a golden-goal overtime decides it. Cars accelerate, brake, turn, jump, and boost, with rotational air control while airborne. The ball must feel heavy and bouncy — car-ball impact is the single most important thing to get right, because the whole game is judged on that feel.

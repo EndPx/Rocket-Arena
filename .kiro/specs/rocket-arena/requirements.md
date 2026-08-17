@@ -164,3 +164,61 @@ This document specifies only the remaining work needed to complete, validate, an
 6. WHEN automated regressions and `Browser_Proof` pass, THE `Validation_Workflow` SHALL create one logical commit containing only the staged `Audio_Change_Set`.
 7. WHEN the isolated commit is verified, THE `Validation_Workflow` SHALL push the current branch to the configured `origin` remote.
 8. WHEN push completes, THE `Validation_Workflow` SHALL confirm that the remaining working-tree diff for `Protected_Dirty_Content` matches the Task 1 baseline.
+
+## Safe Integration Glossary
+
+- **Remaining_Dirty_Set**: Every tracked or untracked working-tree change present above commit `eb29bf7` when Task 5 begins, including later edits to this specification.
+- **Safe_Candidate_Group**: A hunk-level, semantically coherent set of remaining changes with one documented concern, complete supporting files, direct behavior or requirement traceability, and no known validation failure.
+- **Protected_Leftover**: A file or hunk excluded from staging whose exact bytes must remain unchanged throughout validation, commit creation, and push.
+- **Operational_Metadata**: Any `.kiro/specs/**/tasks.meta.json` file and any equivalent task-runner state that records local orchestration rather than product behavior.
+- **Group_Validation_Matrix**: The focused automated checks, repository-wide regressions, physics harnesses, type checks, builds, and browser scenarios mapped to a `Safe_Candidate_Group`.
+- **Tiny_Scoped_Fix**: A correction confined to files already assigned to one `Safe_Candidate_Group`, directly required by a failed mapped check, and introducing no dependency, architecture change, or unrelated behavior.
+- **Staged_Tree_Validation**: Validation performed in an isolated worktree created from the current commit with only the exact staged patch applied.
+- **Concern_Commit**: One independently reviewable commit containing one `Safe_Candidate_Group` and the tests required for that concern.
+
+## Remaining Dirty-Tree Requirements
+
+### Requirement 10: Semantic classification and protected baseline
+
+**User Story:** As a maintainer, I want every remaining dirty hunk classified before staging, so that only intentional and coherent changes can enter history.
+
+#### Acceptance Criteria
+
+1. WHEN Task 5 begins, THE `Validation_Workflow` SHALL verify and record the current HEAD commit relative to integration base `eb29bf7`.
+2. WHEN Task 5 begins, THE `Validation_Workflow` SHALL record the unstaged, staged, and untracked path sets and a SHA-256 byte hash for every path in the `Remaining_Dirty_Set`.
+3. WHEN a remaining file contains more than one semantic concern, THE `Validation_Workflow` SHALL classify each hunk independently as part of one `Safe_Candidate_Group` or as a `Protected_Leftover`.
+4. THE `Validation_Workflow` SHALL classify every `Operational_Metadata` file as a `Protected_Leftover`.
+5. THE `Validation_Workflow` SHALL initially classify each steering file and each orchestration-only task-status hunk as a `Protected_Leftover`.
+6. WHERE a steering hunk has documented intent, valid Markdown structure, direct traceability to verified project behavior, and no suspicious or corrupt text, THE `Validation_Workflow` SHALL permit reclassification of the steering hunk into a documentation `Safe_Candidate_Group`.
+7. IF a steering file contains malformed content or suspicious text including `ssssssss`, THEN THE `Validation_Workflow` SHALL retain the complete steering file as a `Protected_Leftover`.
+8. WHEN semantic classification completes, THE `Validation_Workflow` SHALL preserve the Git index, local commit history, configured remotes, and `Protected_Leftover` bytes unchanged.
+
+### Requirement 11: Candidate validation and exclusion fallback
+
+**User Story:** As a maintainer, I want each candidate concern proven in isolation and together, so that incomplete work remains local instead of reaching the remote branch.
+
+#### Acceptance Criteria
+
+1. WHEN a `Safe_Candidate_Group` is proposed, THE `Validation_Workflow` SHALL map every changed behavior in the group to at least one focused automated or browser check in the `Group_Validation_Matrix`.
+2. WHEN a `Safe_Candidate_Group` is validated, THE `Validation_Workflow` SHALL run every focused check mapped to the group and require exit code zero.
+3. WHEN all proposed `Safe_Candidate_Group` values pass focused checks, THE `Validation_Workflow` SHALL run every repository TypeScript test, all five Rapier harnesses, `npm run typecheck`, the shared build, the server build, and the client build with exit code zero.
+4. WHEN browser validation begins, THE `Validation_Workflow` SHALL use a `Fresh_Runtime` to verify page load, lobby entry, active gameplay, every runtime behavior mapped in the `Group_Validation_Matrix`, and zero uncaught page exceptions or unexpected console errors.
+5. WHEN browser validation exercises audio, THE `Validation_Workflow` SHALL observe a running supported `Audio_Context` after a `Real_Gesture`, responsive continuous layers during active input, deduplicated authoritative cues, and persisted sound controls after reload.
+6. IF a `Safe_Candidate_Group` fails a mapped check and no `Tiny_Scoped_Fix` resolves the failure, THEN THE `Validation_Workflow` SHALL reclassify the complete failing group as a `Protected_Leftover`.
+7. WHEN a `Tiny_Scoped_Fix` changes a candidate group, THE `Validation_Workflow` SHALL rerun every focused check for the group and every repository-wide check affected by the correction.
+8. WHEN each validation batch completes, THE `Validation_Workflow` SHALL verify every `Protected_Leftover` against the Task 5 SHA-256 baseline.
+
+### Requirement 12: Isolated staged integration and concern commits
+
+**User Story:** As a maintainer, I want validated changes staged and pushed in small logical commits, so that the remote history is reviewable and unsafe leftovers remain preserved.
+
+#### Acceptance Criteria
+
+1. WHEN staging a `Safe_Candidate_Group`, THE `Validation_Workflow` SHALL use explicit paths and non-interactive hunk patches instead of repository-wide add commands.
+2. WHEN staging a `Safe_Candidate_Group`, THE `Validation_Workflow` SHALL leave `Operational_Metadata`, non-qualified steering content, questionable hunks, and every other `Protected_Leftover` unstaged.
+3. WHEN a candidate staged patch is complete, THE `Validation_Workflow` SHALL review `git diff --cached --name-only`, the complete `git diff --cached`, and `git diff --cached --check` before commit creation.
+4. WHEN a candidate staged patch passes review, THE `Validation_Workflow` SHALL perform `Staged_Tree_Validation` with the exact staged patch and require the applicable `Group_Validation_Matrix` checks to pass.
+5. WHEN one `Safe_Candidate_Group` passes `Staged_Tree_Validation`, THE `Validation_Workflow` SHALL create one `Concern_Commit` for that group without amending or bypassing hooks.
+6. WHEN multiple `Safe_Candidate_Group` values qualify, THE `Validation_Workflow` SHALL create separate `Concern_Commit` values in dependency order instead of one combined commit.
+7. WHEN all `Concern_Commit` values are verified, THE `Validation_Workflow` SHALL push the current branch to `origin` without force and use upstream creation only when the branch has no configured upstream.
+8. WHEN the push completes, THE `Validation_Workflow` SHALL report commit identifiers, remote branch, validation results, browser evidence, and preserved `Protected_Leftover` paths with matching baseline hashes.

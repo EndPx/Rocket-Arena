@@ -1,4 +1,4 @@
-# Repository structure and boundaries
+ssssssss# Repository structure and boundaries
 
 ## Layout
 A single repo with three top-level source folders. `server/` holds the Colyseus server, room definitions, and the Rapier simulation. `client/` holds the Three.js renderer, input capture, interpolation buffer, and HUD. `shared/` holds types and constants imported by both — arena dimensions, physics tuning values, input payload shape, state schema definitions.

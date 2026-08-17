@@ -1,7 +1,7 @@
 /**
  * Rocket Arena — Client Entry Point
  *
- * Bootstraps renderer, connects to server, renders entities from state.
+ * Bootstraps renderer, connects to server, and presents synchronized entities.
  */
 
 import { initScene } from './renderer/scene.js';
@@ -20,41 +20,30 @@ import { createDevPanel } from './dev-panel/dev-panel.js';
 import { createLobby } from './ui/lobby.js';
 import { showGameOver } from './ui/game-over.js';
 import { updateCamera, setFollowMode, setOrbitMode } from './renderer/camera-controller.js';
+import { updateEntityEffects } from './renderer/entity-effects.js';
 import { initializeAudio, updateAudio } from './audio/audio-manager.js';
 import type { Room } from 'colyseus.js';
 
 const app = document.getElementById('app')!;
-
-// Initialize Three.js
 const { renderer, scene, camera } = initScene(app);
 createLighting(scene);
 createArena(scene);
-
-// Create HUD (hidden until game starts)
 createHUD();
 initializeAudio();
 
-// Track game-over state
 let gameEnded = false;
 let previousFrameTime = performance.now() / 1000;
 
-// Show lobby — camera starts in orbit mode
 setOrbitMode();
 
 createLobby((room: Room) => {
-  // Called when phase transitions to 'playing' — game is live
-  // setupStateListener was already called in lobby when the room was joined
   createDevPanel(room);
   gameEnded = false;
-
-  // Switch camera to follow mode for gameplay
   setFollowMode();
-
   console.log('[Rocket Arena] Connected and playing');
 }, scene);
 
-// Render loop
-function animate() {
+function animate(): void {
   requestAnimationFrame(animate);
 
   const frameNowMs = performance.now();
@@ -62,18 +51,16 @@ function animate() {
   const deltaSeconds = Math.min(Math.max(time - previousFrameTime, 0), 0.1);
   previousFrameTime = time;
   const room = getRoom();
+  sendInput(room);
 
   if (room) {
-    sendInput(room);
     updateInterpolatedEntities(frameNowMs);
     updateHUD(room);
+    updateEntityEffects(deltaSeconds, time);
 
-    // Camera follows local player's car
     const localCar = getCarMeshes().get(room.sessionId) || null;
-    updateCamera(camera, localCar, time);
-
-    // Check for game end via local state
     const state = getLocalState();
+    updateCamera(camera, localCar, time, deltaSeconds);
     updateAudio({
       roomId: room.id,
       sessionId: room.sessionId,
@@ -85,12 +72,13 @@ function animate() {
       deltaSeconds,
       nowMs: frameNowMs,
     });
+
     if (!gameEnded && state?.phase === 'ended') {
       gameEnded = true;
       setTimeout(() => showGameOver(room), 2000);
     }
   } else {
-    updateCamera(camera, null, time);
+    updateCamera(camera, null, time, deltaSeconds);
     updateAudio({
       roomId: null,
       sessionId: null,

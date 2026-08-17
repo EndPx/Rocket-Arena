@@ -9,8 +9,8 @@ export const VISUAL = {
     SKY: 0x04070d,
     FOG: 0x09111c,
     FIELD_BASE: 0x101923,
-    FIELD_BLUE: 0x10263a,
-    FIELD_ORANGE: 0x352014,
+    FIELD_BLUE: 0x143551,
+    FIELD_ORANGE: 0x4a2817,
     FIELD_LINE: 0xc6d7df,
     STRUCTURE_DARK: 0x111821,
     STRUCTURE_MID: 0x27323c,
@@ -93,8 +93,8 @@ export const VISUAL = {
       Y_OFFSET_HEIGHT_RATIO: -0.12,
       NOZZLE_RADIUS_HEIGHT_RATIO: 0.09,
       NOZZLE_LENGTH_RATIO: 0.11,
-      FLAME_LENGTH_RATIO: 0.95,
-      TRAIL_LENGTH_RATIO: 2.8,
+      FLAME_LENGTH_RATIO: 0.34,
+      TRAIL_LENGTH_RATIO: 0.96,
       GLOW: 2.4,
     },
     MATERIAL: {
@@ -135,7 +135,7 @@ export const VISUAL = {
       CENTER_RING_THICKNESS: 0.12,
       GRID_SPACING: 5,
       GRID_OPACITY: 0.12,
-      HALF_TINT_OPACITY: 0.38,
+      HALF_TINT_OPACITY: 0.48,
     },
     PERIMETER: {
       KICKBOARD_HEIGHT: 0.72,
@@ -151,7 +151,7 @@ export const VISUAL = {
       GRID_COLUMNS: 8,
       GRID_ROWS: 5,
       GRID_OPACITY: 0.34,
-      AMBIENT_GLOW: 1.45,
+      AMBIENT_GLOW: 0.78,
     },
     STANDS: {
       SIDE_OFFSET: 4.4,
@@ -201,10 +201,11 @@ export const VISUAL = {
 
   /** Frame-rate-independent camera response and speed framing. */
   CAMERA: {
-    ORBIT_RADIUS: 46,
-    ORBIT_HEIGHT: 16,
+    ORBIT_RADIUS_X: 16,
+    ORBIT_RADIUS_Z: 24,
+    ORBIT_HEIGHT: 12.5,
     ORBIT_RATE: 0.14,
-    ORBIT_LOOK_HEIGHT: 1.5,
+    ORBIT_LOOK_HEIGHT: 1.8,
     FOLLOW_DISTANCE_MIN: 9.8,
     FOLLOW_DISTANCE_MAX: 14.2,
     HEIGHT_MIN: 3.8,
@@ -229,6 +230,7 @@ export const VISUAL = {
     STEER_VELOCITY_THRESHOLD: 0.5,
     BOOST_DROP_THRESHOLD: 0.15,
     BOOST_MIN_SPEED: 6,
+    BOOST_HOLD_SECONDS: 0.18,
     BOOST_FADE_RESPONSE: 14,
     FLAME_FLICKER_RATE: 26,
     FLAME_FLICKER_AMOUNT: 0.16,
@@ -239,7 +241,7 @@ export const VISUAL = {
   /** Renderer and lighting budget for typical desktop integrated graphics. */
   RENDER: {
     MAX_PIXEL_RATIO: 1.75,
-    EXPOSURE: 1.08,
+    EXPOSURE: 1.1,
     CAMERA_NEAR: 0.1,
     CAMERA_FAR: 190,
     FOG_NEAR: 62,
@@ -247,8 +249,8 @@ export const VISUAL = {
     SHADOW_MAP_SIZE: 2048,
     SHADOW_BIAS: -0.00008,
     KEY_INTENSITY: 2.35,
-    HEMISPHERE_INTENSITY: 0.72,
-    GOAL_LIGHT_INTENSITY: 17,
+    HEMISPHERE_INTENSITY: 0.84,
+    GOAL_LIGHT_INTENSITY: 11.5,
     GOAL_LIGHT_DISTANCE: 24,
     FILL_INTENSITY: 0.55,
   },

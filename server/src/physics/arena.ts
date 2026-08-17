@@ -11,8 +11,8 @@ function applySurfaceMaterial(desc: RAPIER.ColliderDesc): RAPIER.ColliderDesc {
 }
 
 /**
- * Create static colliders for the arena: floor, walls, ceiling, and goal backs.
- * Goal openings remain as gaps in the short walls along the Z axis.
+ * Create static colliders for the arena: floor, walls, ceiling, and fully
+ * contained goal tunnels. Goal mouths remain open along the short walls.
  */
 export function createArenaColliders(world: RAPIER.World): void {
   const width = getConstant('ARENA.WIDTH');
@@ -64,6 +64,22 @@ export function createArenaColliders(world: RAPIER.World): void {
       ));
     }
 
+    const tunnelCenterZ = zSign * (length / 2 + goalDepth / 2);
+    for (const xSign of [-1, 1]) {
+      world.createCollider(applySurfaceMaterial(
+        RAPIER.ColliderDesc.cuboid(thickness / 2, goalHeight / 2, goalDepth / 2)
+          .setTranslation(xSign * (goalWidth / 2 + thickness / 2), goalHeight / 2, tunnelCenterZ),
+      ));
+    }
+
+    world.createCollider(applySurfaceMaterial(
+      RAPIER.ColliderDesc.cuboid(goalWidth / 2, thickness / 2, goalDepth / 2)
+        .setTranslation(0, -thickness / 2, tunnelCenterZ),
+    ));
+    world.createCollider(applySurfaceMaterial(
+      RAPIER.ColliderDesc.cuboid(goalWidth / 2, thickness / 2, goalDepth / 2)
+        .setTranslation(0, goalHeight + thickness / 2, tunnelCenterZ),
+    ));
     world.createCollider(applySurfaceMaterial(
       RAPIER.ColliderDesc.cuboid(goalWidth / 2, goalHeight / 2, thickness / 2)
         .setTranslation(0, goalHeight / 2, zSign * (length / 2 + goalDepth)),

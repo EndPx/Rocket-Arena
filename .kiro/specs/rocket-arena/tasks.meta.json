@@ -1,0 +1,171 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1.1 Audit and complete the uncommitted audio implementation against the approved requirements": [
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786951267420
+      },
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786951287339
+      },
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786952307673
+      }
+    ],
+    "2.1 Run focused tests, full regressions, type checks, builds, and diff checks; resolve only audio-caused failures": [
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786951267509
+      },
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786952322722
+      },
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786955054426
+      },
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786955142635
+      },
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786955685451
+      }
+    ],
+    "3.1 Start fresh managed processes and run the complete Playwright validation matrix": [
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786951267608
+      },
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786955698825
+      },
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786957196010
+      }
+    ],
+    "3.2 Resolve browser findings and rerun every affected automated and Playwright check": [
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786951267657
+      },
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786957216959
+      },
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786960993208
+      }
+    ],
+    "4.1 Build and verify an audio-only staged diff without disturbing protected dirty work": [
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786951267702
+      },
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786961189519
+      },
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786977851349
+      }
+    ],
+    "4.2 Commit the verified index once, push the current branch, and confirm preservation": [
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786951267749
+      },
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786977865616
+      },
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786980869740
+      }
+    ],
+    "1. Reconcile the current audio change set": [
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786952307738
+      }
+    ],
+    "2. Complete the automated regression checkpoint": [
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786955685501
+      }
+    ],
+    "3. Produce fresh post-restart browser proof": [
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786960993255
+      }
+    ],
+    "4. Create and push the isolated audio commit": [
+      {
+        "executionId": "454f0ff0-3419-468c-8efd-1c4cce139f35",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786980869805
+      }
+    ],
+    "5.1 Audit every remaining path and hunk against `eb29bf7` into safe concern groups or protected leftovers": [
+      {
+        "executionId": "d30d2063-fc84-4b0d-ac9c-b25e4742983e",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786981280758
+      },
+      {
+        "executionId": "d30d2063-fc84-4b0d-ac9c-b25e4742983e",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786981312007
+      }
+    ],
+    "6.1 Run focused, full, physics, build, and fresh-browser validation; exclude any group that cannot pass safely": [
+      {
+        "executionId": "d30d2063-fc84-4b0d-ac9c-b25e4742983e",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786981280833
+      }
+    ],
+    "7.1 Validate exact staged trees, create small concern commits, push without force, and preserve unsafe leftovers": [
+      {
+        "executionId": "d30d2063-fc84-4b0d-ac9c-b25e4742983e",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1786981280923
+      }
+    ]
+  }
+}

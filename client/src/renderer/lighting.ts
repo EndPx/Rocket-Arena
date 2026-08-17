@@ -1,60 +1,71 @@
 import * as THREE from 'three';
+import { ARENA, VISUAL } from '@rocket-arena/shared';
 
 /**
- * Stadium-style dramatic lighting with floodlights and goal accent lights.
+ * Premium night-stadium lighting with one shadow-casting key, a broad fill,
+ * and two non-shadowing goal accents. Floodlight meshes provide the visible
+ * fixtures without multiplying expensive real-time lights.
  */
-export function createLighting(scene: THREE.Scene): void {
-  // Ambient — slightly stronger for overall visibility
-  const ambient = new THREE.AmbientLight(0xffffff, 0.5);
-  scene.add(ambient);
+export function createLighting(scene: THREE.Scene): THREE.Group {
+  const rig = new THREE.Group();
+  rig.name = 'stadium-lighting-rig';
 
-  // Main directional (sun/floodlight from above)
-  const sun = new THREE.DirectionalLight(0xffffff, 0.9);
-  sun.position.set(10, 45, -5);
-  sun.castShadow = true;
-  sun.shadow.mapSize.width = 2048;
-  sun.shadow.mapSize.height = 2048;
-  sun.shadow.camera.near = 1;
-  sun.shadow.camera.far = 120;
-  sun.shadow.camera.left = -45;
-  sun.shadow.camera.right = 45;
-  sun.shadow.camera.top = 45;
-  sun.shadow.camera.bottom = -45;
-  scene.add(sun);
+  const hemisphere = new THREE.HemisphereLight(
+    0xa7c8dc,
+    0x11151b,
+    VISUAL.RENDER.HEMISPHERE_INTENSITY,
+  );
+  hemisphere.name = 'cool-hemisphere-fill';
+  rig.add(hemisphere);
 
-  // Stadium floodlights (4 point lights from above corners)
-  const floodColor = 0xeeeeff;
-  const floodIntensity = 0.6;
-  const floodDist = 60;
+  const key = new THREE.DirectionalLight(
+    VISUAL.PALETTE.WHITE_LIGHT,
+    VISUAL.RENDER.KEY_INTENSITY,
+  );
+  key.name = 'primary-shadow-key';
+  key.position.set(-18, 34, -12);
+  key.target.position.set(0, 0, 3);
+  key.castShadow = true;
+  key.shadow.mapSize.set(
+    VISUAL.RENDER.SHADOW_MAP_SIZE,
+    VISUAL.RENDER.SHADOW_MAP_SIZE,
+  );
+  key.shadow.camera.near = 2;
+  key.shadow.camera.far = 100;
+  key.shadow.camera.left = -30;
+  key.shadow.camera.right = 30;
+  key.shadow.camera.top = 38;
+  key.shadow.camera.bottom = -38;
+  key.shadow.bias = VISUAL.RENDER.SHADOW_BIAS;
+  key.shadow.normalBias = 0.035;
+  rig.add(key, key.target);
 
-  const flood1 = new THREE.PointLight(floodColor, floodIntensity, floodDist);
-  flood1.position.set(-15, 25, -20);
-  scene.add(flood1);
+  const fill = new THREE.DirectionalLight(0x9bb4c9, VISUAL.RENDER.FILL_INTENSITY);
+  fill.name = 'opposing-soft-fill';
+  fill.position.set(20, 18, 16);
+  fill.target.position.set(0, 2, -4);
+  rig.add(fill, fill.target);
 
-  const flood2 = new THREE.PointLight(floodColor, floodIntensity, floodDist);
-  flood2.position.set(15, 25, -20);
-  scene.add(flood2);
+  const blueGoal = new THREE.PointLight(
+    VISUAL.PALETTE.BLUE_LIGHT,
+    VISUAL.RENDER.GOAL_LIGHT_INTENSITY,
+    VISUAL.RENDER.GOAL_LIGHT_DISTANCE,
+    2,
+  );
+  blueGoal.name = 'blue-goal-ambience';
+  blueGoal.position.set(0, ARENA.GOAL.HEIGHT * 0.58, -ARENA.LENGTH / 2 + 1.2);
+  rig.add(blueGoal);
 
-  const flood3 = new THREE.PointLight(floodColor, floodIntensity, floodDist);
-  flood3.position.set(-15, 25, 20);
-  scene.add(flood3);
+  const orangeGoal = new THREE.PointLight(
+    VISUAL.PALETTE.ORANGE_LIGHT,
+    VISUAL.RENDER.GOAL_LIGHT_INTENSITY,
+    VISUAL.RENDER.GOAL_LIGHT_DISTANCE,
+    2,
+  );
+  orangeGoal.name = 'orange-goal-ambience';
+  orangeGoal.position.set(0, ARENA.GOAL.HEIGHT * 0.58, ARENA.LENGTH / 2 - 1.2);
+  rig.add(orangeGoal);
 
-  const flood4 = new THREE.PointLight(floodColor, floodIntensity, floodDist);
-  flood4.position.set(15, 25, 20);
-  scene.add(flood4);
-
-  // Blue goal light (stronger, closer)
-  const blueLight = new THREE.PointLight(0x3366ff, 1.5, 25);
-  blueLight.position.set(0, 3, -30);
-  scene.add(blueLight);
-
-  // Orange goal light (stronger, closer)
-  const orangeLight = new THREE.PointLight(0xff6633, 1.5, 25);
-  orangeLight.position.set(0, 3, 30);
-  scene.add(orangeLight);
-
-  // Subtle rim/uplighting from below center (gives arena depth)
-  const rimLight = new THREE.PointLight(0x6644ff, 0.3, 30);
-  rimLight.position.set(0, -2, 0);
-  scene.add(rimLight);
+  scene.add(rig);
+  return rig;
 }

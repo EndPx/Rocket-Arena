@@ -280,3 +280,66 @@ For any finite or non-finite speed, throttle, volume, frame delta, source positi
 ## Property Reflection
 
 The five properties cover distinct failure classes: temporal smoothing, transport idempotence, authoritative jump acknowledgement, discontinuity suppression, and numeric safety. Transition-specific duplicate checks are consolidated into Property 2, and landing and impact teleport checks are consolidated into Property 4. Browser lifecycle, accessibility, process freshness, and git isolation remain example or integration checks because repeated generated inputs would not add meaningful coverage.
+
+## Remaining Dirty-Tree Safe Integration
+
+### Scope and Safety Boundary
+
+This slice integrates only remaining working-tree changes above commit `eb29bf7` that can be proven complete and coherent. Classification is hunk-level: a dirty path is not safe merely because another hunk in the same file is safe. No candidate receives implied approval from this design, and exclusion is the default whenever intent, completeness, ownership, or validation is uncertain.
+
+The workflow records a baseline manifest containing HEAD, staged/unstaged/untracked path sets, file size, and SHA-256 hash for every remaining path. The index must stay empty during classification and candidate validation. Protected leftovers are checked against the manifest after every correction batch, staging operation, commit, and push.
+
+### Semantic Classification Ledger
+
+The audit produces an in-memory or execution-report ledger with: path and hunk identifier, semantic concern, dependencies, behavior traceability, focused checks, classification rationale, and final disposition.
+
+| Area | Known paths to inspect | Classification guidance |
+|---|---|---|
+| Operational metadata | `.kiro/specs/**/tasks.meta.json` | Always protected and unstaged; local task-runner state is not product history |
+| Spec orchestration | Status-only hunks in `tasks.md` | Protect status-only state; separately authored requirement, design, or plan content may qualify only as an intentional documentation concern |
+| Steering | `.kiro/steering/product.md`, `.kiro/steering/structure.md` | Excluded by default; qualify only with explicit intent, valid Markdown, direct traceability, and no corruption; text such as `ssssssss` excludes the complete file |
+| Stadium and rendering | `client/index.html`, renderer arena/camera/lighting/scene, `entity-effects.ts`, visual constants, and `stadium-camera-effects.test.ts` | Group only mutually required visual behavior and its tests; split unrelated integration hunks |
+| Lobby and client integration | `lobby-state.ts` plus relevant hunks in `client/src/main.ts` or `state-listener.ts` | Require a complete user flow and exact integration dependencies; do not absorb unrelated renderer or audio hunks |
+| Goal-tunnel physics | `server/src/physics/arena.ts` and `test-goal-tunnel.ts` | Keep authority and fixed-step invariants intact; pair physics behavior with its harness |
+| Mixed integration files | `client/src/main.ts`, `client/src/networking/state-listener.ts`, `client/index.html` | Classify and stage by hunk; an unsafe hunk does not block an independent safe hunk, and a safe hunk does not authorize the whole file |
+
+Candidate boundaries follow behavior rather than directory layout. Tests travel with the implementation concern they validate. If two sets cannot form independently valid commits, the ledger either records one coherent concern or records an explicit dependency order in which every intermediate commit still passes its required checks.
+
+### Validation Pipeline
+
+```text
+HEAD eb29bf7
+  -> byte/hash baseline
+  -> hunk-level classification ledger
+  -> focused checks per candidate group
+  -> combined full regressions and builds
+  -> fresh Playwright smoke/gameplay/audio/console proof
+  -> exact-path or hunk staging
+  -> isolated staged-tree validation
+  -> one concern commit
+  -> repeat for next concern
+  -> non-force push
+  -> protected-leftover hash comparison
+```
+
+Each group receives a validation matrix before commands run. Rendering candidates use renderer/stadium and interpolation tests; lobby candidates use lobby/input tests and browser navigation; physics candidates use the goal-tunnel harness plus the complete Rapier harness set; mixed client candidates use every affected focused test. The candidate union must also pass every repository TypeScript test, all five Rapier harnesses, type checking, shared/server/client builds, and diff whitespace checks.
+
+Playwright uses fresh managed server and client processes. Browser proof covers initial load, lobby entry, active driving and rendering, changed concern behavior, page exceptions, and error-level console output. The audio regression sample repeats gesture unlock, continuous drive/boost response, authoritative cue deduplication, control persistence, and lifecycle counters so the already-pushed audio slice remains healthy.
+
+A failed candidate can receive a `Tiny_Scoped_Fix` only inside the candidate's existing concern and file set. The correction restarts classification and all affected checks for that group. A failure requiring redesign, a dependency, a new concern, or edits to protected bytes causes the entire candidate group to become a protected leftover.
+
+### Explicit Staging and Staged-Tree Isolation
+
+Staging proceeds one concern at a time. New safe files use explicit path staging; mixed files use a reviewed non-interactive patch applied to the index. Repository-wide staging commands are forbidden. Before each commit, the executor reviews cached path names, every cached hunk, and `git diff --cached --check`, then confirms the index contains no operational metadata, non-qualified steering content, questionable hunk, or unrelated spec status state.
+
+For staged-tree isolation, the executor creates a temporary worktree from the current commit, materializes only the exact cached patch, and runs the concern's focused checks plus the repository-wide checks required by the validation matrix. Browser checks run against that isolated source whenever the concern affects runtime behavior. The temporary worktree is validation infrastructure only and cannot replace or rewrite the dirty primary working tree.
+
+### Small Commit and Push Strategy
+
+Each staged concern becomes one `Concern_Commit`; implementation and directly supporting tests stay together. Independent rendering, lobby, physics, and documentation concerns remain separate commits. Foundational concerns precede dependent integration concerns, and every commit must remain buildable and testable. Hooks remain enabled, commits are not amended, and no force operation is permitted.
+
+After all concern commits are locally verified, the current branch is pushed to `origin`, adding upstream tracking only when absent. The final report lists each commit and concern, command and browser outcomes, remote branch, excluded paths and reasons, and before/after hashes proving that unsafe leftovers were preserved.
+
+### Testing Classification
+
+This slice adds no new property-based correctness property because semantic review, Git index state, process freshness, and remote delivery are example, integration, and smoke concerns. Existing Properties 1-5 remain unchanged and continue to protect the audio and simulation behavior exercised by the expanded regression matrix.
