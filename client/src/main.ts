@@ -9,16 +9,18 @@ import { createLighting } from './renderer/lighting.js';
 import { createArena } from './renderer/arena.js';
 import { getRoom } from './networking/client.js';
 import {
+  getBallMesh,
   getCarMeshes,
   getLocalState,
   updateInterpolatedEntities,
 } from './networking/state-listener.js';
-import { sendInput } from './input/keyboard-handler.js';
+import { getCurrentInput, sendInput } from './input/keyboard-handler.js';
 import { createHUD, updateHUD } from './hud/hud.js';
 import { createDevPanel } from './dev-panel/dev-panel.js';
 import { createLobby } from './ui/lobby.js';
 import { showGameOver } from './ui/game-over.js';
 import { updateCamera, setFollowMode, setOrbitMode } from './renderer/camera-controller.js';
+import { initializeAudio, updateAudio } from './audio/audio-manager.js';
 import type { Room } from 'colyseus.js';
 
 const app = document.getElementById('app')!;
@@ -30,9 +32,11 @@ createArena(scene);
 
 // Create HUD (hidden until game starts)
 createHUD();
+initializeAudio();
 
 // Track game-over state
 let gameEnded = false;
+let previousFrameTime = performance.now() / 1000;
 
 // Show lobby — camera starts in orbit mode
 setOrbitMode();
@@ -55,6 +59,8 @@ function animate() {
 
   const frameNowMs = performance.now();
   const time = frameNowMs / 1000;
+  const deltaSeconds = Math.min(Math.max(time - previousFrameTime, 0), 0.1);
+  previousFrameTime = time;
   const room = getRoom();
 
   if (room) {
@@ -68,12 +74,34 @@ function animate() {
 
     // Check for game end via local state
     const state = getLocalState();
+    updateAudio({
+      roomId: room.id,
+      sessionId: room.sessionId,
+      state,
+      input: getCurrentInput(),
+      localCar,
+      ball: getBallMesh(),
+      camera,
+      deltaSeconds,
+      nowMs: frameNowMs,
+    });
     if (!gameEnded && state?.phase === 'ended') {
       gameEnded = true;
       setTimeout(() => showGameOver(room), 2000);
     }
   } else {
     updateCamera(camera, null, time);
+    updateAudio({
+      roomId: null,
+      sessionId: null,
+      state: null,
+      input: getCurrentInput(),
+      localCar: null,
+      ball: null,
+      camera,
+      deltaSeconds,
+      nowMs: frameNowMs,
+    });
   }
 
   renderer.render(scene, camera);

@@ -6,6 +6,7 @@ import { NETCODE } from './netcode.js';
 import { PHYSICS } from './physics.js';
 import { CAMERA } from './camera.js';
 import { VISUAL } from './visual.js';
+import { AUDIO } from './audio.js';
 
 /**
  * Recursively flatten a nested object into a Map of dot-path keys to number values.
@@ -33,3 +34,4 @@ flatten(NETCODE as unknown as Record<string, unknown>, 'NETCODE', DEFAULTS_REGIS
 flatten(PHYSICS as unknown as Record<string, unknown>, 'PHYSICS', DEFAULTS_REGISTRY);
 flatten(CAMERA as unknown as Record<string, unknown>, 'CAMERA', DEFAULTS_REGISTRY);
 flatten(VISUAL as unknown as Record<string, unknown>, 'VISUAL', DEFAULTS_REGISTRY);
+flatten(AUDIO as unknown as Record<string, unknown>, 'AUDIO', DEFAULTS_REGISTRY);

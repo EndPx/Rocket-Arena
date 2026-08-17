@@ -32,6 +32,8 @@ export function createDevPanel(room: Room): void {
 
   for (const [path, value] of DEFAULTS_REGISTRY) {
     const prefix = path.split('.')[0];
+    // AUDIO is synthesized entirely on the client; this panel sends server-only overrides.
+    if (prefix === 'AUDIO') continue;
     if (!groups.has(prefix)) groups.set(prefix, new Map());
     groups.get(prefix)!.set(path, value);
   }

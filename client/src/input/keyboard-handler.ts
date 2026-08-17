@@ -1,4 +1,5 @@
 import type { Room } from 'colyseus.js';
+import type { InputPayload } from '@rocket-arena/shared';
 import { InputController, isEditableTarget } from './input-controller.js';
 
 const controller = new InputController();
@@ -37,6 +38,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   document.addEventListener('focusin', (event) => {
     if (isEditableTarget(event.target)) forceNeutralSync();
   });
+}
+
+/** Read a fresh immutable view of the current local controls for presentation systems. */
+export function getCurrentInput(): Readonly<InputPayload> {
+  return controller.getPayload();
 }
 
 /** Send current input when changed, on room entry, or on the input heartbeat. */
