@@ -15,7 +15,6 @@ These were deliberately cut to fit the timebox. Do not add them, do not scaffold
 - No horizontal scaling, no Redis presence, no room sharding, no proxy layer. Single server process, cap concurrent rooms at 20.
 - No user accounts, no auth, no persistence, no database. Players are ephemeral; nothing survives a server restart.
 - No cosmetics, no progression, no unlocks, no currency.
-- No 3v3. Room capacity is fixed at four.
 - No mobile or touch controls. Desktop keyboard only.
 
 ## Stretch goals — only after the core loop is fully playable
