@@ -1,4 +1,8 @@
-import { getConstant } from '@rocket-arena/shared/constants';
+import {
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  TUNING_IDS,
+  getScalarTuningValue,
+} from '@rocket-arena/shared/tuning';
 
 export interface TimerState {
   timeRemaining: number;
@@ -6,44 +10,35 @@ export interface TimerState {
   goalResetTimer: number;
 }
 
-/**
- * Update match timer. Call each physics tick.
- * Returns the new phase if a transition occurred, null otherwise.
- */
+/** Legacy fixed-step timer compatibility path pending the pure match reducer. */
 export function updateTimer(state: TimerState, dt: number): string | null {
-  // Only count down during 'playing' phase
   if (state.phase === 'playing') {
     state.timeRemaining -= dt;
-
     if (state.timeRemaining <= 0) {
       state.timeRemaining = 0;
-      return 'time-up'; // Caller decides: end or overtime
+      return 'time-up';
     }
   }
 
-  // Goal reset countdown
-  if (state.phase === 'goal-scored') {
+  if (state.phase === 'goal-reset') {
     state.goalResetTimer -= dt;
     if (state.goalResetTimer <= 0) {
       state.goalResetTimer = 0;
-      return 'reset-complete'; // Caller resets and resumes
+      return 'reset-complete';
     }
   }
 
   return null;
 }
 
-/**
- * Determine what happens when time runs out.
- */
 export function resolveTimeUp(blueScore: number, orangeScore: number): 'ended' | 'overtime' {
-  if (blueScore === orangeScore) return 'overtime';
-  return 'ended';
+  return blueScore === orangeScore ? 'overtime' : 'ended';
 }
 
-/**
- * Get the goal reset delay from constants.
- */
+/** Read the staged two-second hypothesis from the immutable tuning snapshot. */
 export function getGoalResetDelay(): number {
-  return getConstant('MATCH.GOAL_RESET_DELAY');
+  return getScalarTuningValue(
+    DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+    TUNING_IDS.match.regulationGoalResetSeconds,
+  );
 }

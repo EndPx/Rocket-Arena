@@ -1,399 +1,473 @@
 import colyseus from 'colyseus';
 import RAPIER from '@dimforge/rapier3d-compat';
+import {
+  INPUT_PROTOCOL_VERSION,
+  MATCH_RULES,
+  ROOM_POLICIES,
+  type InputCommandV2,
+  type RosterEntry,
+} from '@rocket-arena/shared';
 import { GameState, PlayerState } from '@rocket-arena/shared/schema';
-import { PHYSICS, getConstant, setOverride, clearOverrides } from '@rocket-arena/shared/constants';
+import {
+  PHYSICS,
+  clearOverrides,
+  getConstant,
+  setOverride,
+} from '@rocket-arena/shared/constants';
 import type { InputPayload } from '@rocket-arena/shared/types';
-import { initPhysics, createWorld } from '../physics/world.js';
 import { createArenaColliders } from '../physics/arena.js';
 import { createBall } from '../physics/ball.js';
 import {
-  createCar,
   applyCarPhysics,
+  createCar,
   createCarPhysicsState,
   synchronizeCarInputState,
   type CarPhysicsState,
 } from '../physics/car.js';
-import { createGoalSensors, checkGoal, resetToKickoff } from '../systems/scoring.js';
-import { updateTimer, resolveTimeUp, getGoalResetDelay } from '../systems/match-timer.js';
-import { FixedStepScheduler } from './fixed-step-scheduler.js';
+import { createWorld, initPhysics } from '../physics/world.js';
+import {
+  AuthoritativeRoomCore,
+  createNeutralInputCommandV2,
+  type AuthoritativeRoomCoreOptions,
+  type AuthoritativeRoomMutationFailure,
+  type AuthoritativeRoomProjection,
+  type AuthoritativeRoomWorldBundle,
+} from './authoritative-room-core.js';
 
 const { Room } = colyseus;
 
-interface CarEntry {
-  body: RAPIER.RigidBody;
-  jumpState: CarPhysicsState;
+/** The only capacity, assignment, and start policy accepted by Quick Match. */
+export const QUICK_MATCH_POLICY = ROOM_POLICIES.quick;
+
+interface QuickCar {
+  readonly body: RAPIER.RigidBody;
+  readonly jumpState: CarPhysicsState;
+}
+
+type QuickRoomCore = AuthoritativeRoomCore<
+  RAPIER.World,
+  QuickCar,
+  RAPIER.RigidBody
+>;
+
+/**
+ * A policy-bound core factory shared by the Colyseus adapter and focused room
+ * tests. Caller-supplied capacity assertions still pass through the core's
+ * canonical policy validation; callers cannot replace the Quick policy.
+ */
+export type QuickMatchCoreOptions<
+  TWorld,
+  TCar,
+  TBall,
+  TKickoffAssignment = unknown,
+> = Omit<
+  AuthoritativeRoomCoreOptions<TWorld, TCar, TBall, TKickoffAssignment>,
+  'mode' | 'policy'
+>;
+
+export function createQuickMatchCore<
+  TWorld,
+  TCar,
+  TBall,
+  TKickoffAssignment = unknown,
+>(
+  options: QuickMatchCoreOptions<TWorld, TCar, TBall, TKickoffAssignment>,
+): AuthoritativeRoomCore<TWorld, TCar, TBall, TKickoffAssignment> {
+  return new AuthoritativeRoomCore({
+    ...options,
+    mode: QUICK_MATCH_POLICY.mode,
+    policy: QUICK_MATCH_POLICY,
+  });
+}
+
+function legacyKickoffPosition(entry: Pick<RosterEntry, 'acceptedJoinOrdinal' | 'team'>): {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+} {
+  const y = getConstant('CAR.BODY.HEIGHT') / 2
+    + getConstant('ARENA.KICKOFF.SPAWN_CLEARANCE');
+  const slot = entry.acceptedJoinOrdinal % QUICK_MATCH_POLICY.teamCapacity;
+  const horizontalSlot = slot === 0 ? 1 : slot === 1 ? -1 : 0;
+  const xOffset = entry.team === 'blue'
+    ? getConstant('ARENA.KICKOFF.BLUE_X_OFFSET')
+    : getConstant('ARENA.KICKOFF.ORANGE_X_OFFSET');
+  const z = entry.team === 'blue'
+    ? getConstant('ARENA.KICKOFF.BLUE_Z_OFFSET')
+    : getConstant('ARENA.KICKOFF.ORANGE_Z_OFFSET');
+
+  return { x: horizontalSlot * xOffset, y, z };
+}
+
+function toLegacyInput(input: Readonly<InputCommandV2>): InputPayload {
+  return {
+    throttle: input.throttle,
+    steer: input.steer,
+    jump: input.jumpHeld,
+    boost: input.boostHeld,
+    jumpSequence: input.jumpSequence,
+  };
 }
 
 /**
- * Quick Match room — auto-assigns teams, starts when 4/4 players.
- * Uses manual broadcast-based state sync instead of Colyseus auto-patching.
+ * Temporary legacy physics bundle. The shared core owns scheduling, roster,
+ * bodies, inputs, projection, and disposal; later stages replace only these
+ * callback implementations without changing the Quick policy adapter.
+ */
+async function initializeQuickWorld(): Promise<
+  AuthoritativeRoomWorldBundle<RAPIER.World, QuickCar, RAPIER.RigidBody>
+> {
+  await initPhysics();
+  const world = createWorld();
+  createArenaColliders(world);
+  const ball = createBall(world);
+
+  return {
+    world,
+    ball,
+    mutationResources: {
+      prepareJoin: ({ entry }, scope) => {
+        const position = legacyKickoffPosition(entry);
+        const rotation = entry.team === 'orange'
+          ? { x: 0, y: 1, z: 0, w: 0 }
+          : { x: 0, y: 0, z: 0, w: 1 };
+        const car = scope.track<QuickCar>(
+          {
+            body: createCar(world, position, rotation),
+            jumpState: createCarPhysicsState(),
+          },
+          ({ body }) => { world.removeRigidBody(body); },
+        );
+        return { car, input: createNeutralInputCommandV2() };
+      },
+      prepareLeave: ({ car }) => ({
+        commitRemoval: () => { world.removeRigidBody(car.body); },
+      }),
+    },
+    fixedStep: ({ state }) => {
+      const activePlay = state.phase === 'playing' || state.phase === 'overtime';
+      for (const [sessionId, car] of state.cars) {
+        const input = state.inputs.get(sessionId) ?? createNeutralInputCommandV2();
+        if (activePlay) applyCarPhysics(world, car.body, toLegacyInput(input), car.jumpState);
+        else synchronizeCarInputState(car.jumpState, toLegacyInput(input));
+      }
+
+      if (activePlay || state.phase === 'goal-reset') world.step();
+    },
+    projectCar: ({ car }) => {
+      const position = car.body.translation();
+      const rotation = car.body.rotation();
+      const linearVelocity = car.body.linvel();
+      const angularVelocity = car.body.angvel();
+      return {
+        position: [position.x, position.y, position.z],
+        rotation: [rotation.x, rotation.y, rotation.z, rotation.w],
+        linearVelocity: [linearVelocity.x, linearVelocity.y, linearVelocity.z],
+        angularVelocity: [angularVelocity.x, angularVelocity.y, angularVelocity.z],
+        boost: car.jumpState.boostAmount,
+      };
+    },
+    projectBall: ({ ball: authoritativeBall }) => {
+      const position = authoritativeBall.translation();
+      const rotation = authoritativeBall.rotation();
+      const linearVelocity = authoritativeBall.linvel();
+      const angularVelocity = authoritativeBall.angvel();
+      return {
+        position: [position.x, position.y, position.z],
+        rotation: [rotation.x, rotation.y, rotation.z, rotation.w],
+        linearVelocity: [linearVelocity.x, linearVelocity.y, linearVelocity.z],
+        angularVelocity: [angularVelocity.x, angularVelocity.y, angularVelocity.z],
+      };
+    },
+    dispose: () => { world.free(); },
+  };
+}
+
+interface LegacyInputEdgeState {
+  readonly jumpHeld: boolean;
+  readonly jumpSequence: number;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function legacyInputCommand(
+  candidate: unknown,
+  previous: LegacyInputEdgeState,
+): { readonly command: InputCommandV2; readonly edges: LegacyInputEdgeState } {
+  const payload = isRecord(candidate) ? candidate : {};
+  const jumpHeld = payload.jump === true;
+  const suppliedSequence = Number.isSafeInteger(payload.jumpSequence)
+    && (payload.jumpSequence as number) >= previous.jumpSequence
+    && (payload.jumpSequence as number) >= 0
+    ? payload.jumpSequence as number
+    : null;
+  const jumpSequence = suppliedSequence
+    ?? previous.jumpSequence + Number(jumpHeld && !previous.jumpHeld);
+  const edges = Object.freeze({ jumpHeld, jumpSequence });
+
+  return {
+    edges,
+    command: {
+      protocolVersion: INPUT_PROTOCOL_VERSION,
+      throttle: typeof payload.throttle === 'number' ? payload.throttle : 0,
+      steer: typeof payload.steer === 'number' ? payload.steer : 0,
+      pitch: 0,
+      yaw: 0,
+      roll: 0,
+      jumpHeld,
+      jumpSequence,
+      boostHeld: payload.boost === true,
+      powerslideHeld: false,
+      cameraToggleSequence: 0,
+    },
+  };
+}
+
+/**
+ * Quick Match transport adapter. All authoritative roster and body mutation is
+ * delegated to AuthoritativeRoomCore under the immutable exact-3v3 policy.
  */
 export class ArenaRoom extends Room<GameState> {
-  private inputs: Map<string, InputPayload> = new Map();
-  private countdownTimer: number = 0;
-  private countdownInterval: ReturnType<typeof setInterval> | null = null;
-  private world!: RAPIER.World;
-  private ballBody!: RAPIER.RigidBody;
-  private carBodies: Map<string, CarEntry> = new Map();
-  private physicsReady: boolean = false;
-  private goalResetTimer: number = 0;
-  private wasOvertime: boolean = false;
-  private scheduler!: FixedStepScheduler;
+  private core!: QuickRoomCore;
+  private readonly legacyInputEdges = new Map<string, LegacyInputEdgeState>();
   private snapshotSequence = 0;
 
-  onCreate(options: any) {
+  onCreate(options: unknown): void {
     this.setState(new GameState());
-    this.maxClients = getConstant('MATCH.MAX_PLAYERS');
+    this.applyPolicyMetadata();
+    this.maxClients = QUICK_MATCH_POLICY.totalCapacity;
     this.setPatchRate(getConstant('NETCODE.PATCH_RATE_MS'));
-    this.scheduler = new FixedStepScheduler({
-      fixedStepSeconds: PHYSICS.TIMESTEP,
-      maxFrameDeltaSeconds: PHYSICS.MAX_FRAME_DELTA_SECONDS,
-      maxSubsteps: PHYSICS.MAX_FIXED_SUBSTEPS,
-      snapshotIntervalMs: getConstant('NETCODE.PATCH_RATE_MS'),
+
+    const requested = isRecord(options) ? options : {};
+    this.core = createQuickMatchCore({
+      roomId: this.roomId,
+      totalCapacity: requested.totalCapacity,
+      teamCapacity: requested.teamCapacity,
+      initializeWorld: initializeQuickWorld,
+      onFatal: (error) => {
+        console.error(`[ArenaRoom] Authoritative core failed: ${error.message}`, error);
+      },
     });
 
-    // Retain continuous controls while acknowledging disabled-phase jump edges.
-    this.onMessage('input', (client, payload: InputPayload) => {
-      this.inputs.set(client.sessionId, payload);
-      if (this.state.phase !== 'playing' && this.state.phase !== 'overtime') {
-        const entry = this.carBodies.get(client.sessionId);
-        if (entry) synchronizeCarInputState(entry.jumpState, payload);
+    this.onMessage('input', (client, candidate: unknown) => {
+      let result;
+      if (isRecord(candidate) && candidate.protocolVersion === INPUT_PROTOCOL_VERSION) {
+        result = this.core.submitInput(client.sessionId, candidate);
+      } else {
+        const previous = this.legacyInputEdges.get(client.sessionId)
+          ?? { jumpHeld: false, jumpSequence: 0 };
+        const translated = legacyInputCommand(candidate, previous);
+        result = this.core.submitInput(client.sessionId, translated.command);
+        if (result.ok) this.legacyInputEdges.set(client.sessionId, translated.edges);
+      }
+
+      if (!result.ok) {
+        client.send('input-rejection', { code: result.code, message: result.message });
       }
     });
 
-    // Handle dev-tune messages
+    // Temporary development transport retained until registry tooling is wired.
     this.onMessage('dev-tune', (_client, data: { path: string; value: number }) => {
       try {
         setOverride(data.path, data.value);
-      } catch (e: any) {
-        console.warn(`[Dev] Failed to override: ${e.message}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[Dev] Failed to override: ${message}`);
       }
     });
+    this.onMessage('dev-reset', () => { clearOverrides(); });
 
-    this.onMessage('dev-reset', () => {
-      clearOverrides();
-    });
+    void this.core.initialize()
+      .then(() => { this.synchronizeState(); })
+      .catch((error: unknown) => {
+        console.error('[ArenaRoom] Physics initialization failed', error);
+      });
 
-    // Initialize physics
-    this.initializePhysics();
-
-    // Schedule callbacks near 60 Hz; the accumulator emits exact fixed steps.
     this.setSimulationInterval((deltaTimeMs) => {
       this.advanceSimulation(deltaTimeMs);
     }, PHYSICS.TIMESTEP * 1000);
-
-    console.log(`[ArenaRoom] Created (max ${this.maxClients} players)`);
   }
 
-  private advanceSimulation(deltaTimeMs: number): void {
-    const frame = this.scheduler.advance(deltaTimeMs);
-    for (let step = 0; step < frame.fixedSteps; step++) {
-      const phase = this.state.phase;
-      if (
-        this.physicsReady
-        && (phase === 'playing' || phase === 'overtime' || phase === 'goal-scored')
-      ) {
-        this.tick();
-      }
+  async onJoin(client: colyseus.Client, options: unknown): Promise<void> {
+    const requested = isRecord(options) ? options : {};
+    const name = typeof requested.name === 'string'
+      ? requested.name
+      : `Player ${this.clients.length}`;
+    const result = await this.core.queueMutation({
+      kind: 'join',
+      sessionId: client.sessionId,
+      name,
+    });
+
+    if (!result.ok) {
+      this.sendMutationRejection(client, result);
+      throw new Error(`Quick Match join rejected (${result.code}): ${result.message}`);
     }
-    if (frame.snapshotDue) this.broadcastState();
-  }
 
-  private async initializePhysics() {
-    await initPhysics();
-    this.world = createWorld();
-    createArenaColliders(this.world);
-    this.ballBody = createBall(this.world);
-    createGoalSensors(this.world);
-    this.physicsReady = true;
-    console.log('[ArenaRoom] Physics initialized');
-  }
-
-  onJoin(client: colyseus.Client, options: any) {
-    const player = new PlayerState();
-    player.boost = getConstant('CAR.BOOST.START_AMOUNT');
-    player.name = options?.name || `Player ${this.clients.length}`;
-
-    // Assign team: first 2 = blue, next 2 = orange
-    const blueCount = Array.from(this.state.players.values()).filter(p => p.team === 'blue').length;
-    player.team = blueCount < getConstant('MATCH.TEAM_SIZE') ? 'blue' : 'orange';
-
-    this.state.players.set(client.sessionId, player);
-
-    // Create car body at kickoff position
-    this.spawnCar(client.sessionId, player.team);
-
-    console.log(`[ArenaRoom] ${player.name} joined team ${player.team} (${this.clients.length}/${this.maxClients})`);
-
-    // Check if room is full -> start countdown
-    if (this.clients.length >= this.maxClients) {
-      this.lock();
-      this.startCountdown();
+    this.synchronizeState();
+    if (result.effect.kind === 'joined') {
+      console.log(
+        `[ArenaRoom] ${result.effect.entry.name} joined team ${result.effect.entry.team}`
+        + ` (${this.state.totalOccupancy}/${QUICK_MATCH_POLICY.totalCapacity})`,
+      );
     }
   }
 
-  onLeave(client: colyseus.Client) {
-    const player = this.state.players.get(client.sessionId);
-    if (player) {
-      console.log(`[ArenaRoom] ${player.name} left`);
+  async onLeave(client: colyseus.Client): Promise<void> {
+    this.legacyInputEdges.delete(client.sessionId);
+    const result = await this.core.queueMutation({
+      kind: 'leave',
+      sessionId: client.sessionId,
+    });
+    if (!result.ok && result.code !== 'not-represented') {
+      console.warn(`[ArenaRoom] Leave rejected (${result.code}): ${result.message}`);
     }
-    this.state.players.delete(client.sessionId);
-    this.inputs.delete(client.sessionId);
-    this.removeCar(client.sessionId);
+    this.synchronizeState();
   }
 
-  onDispose() {
-    if (this.countdownInterval) {
-      clearInterval(this.countdownInterval);
-    }
-    if (this.world) {
-      this.world.free();
-    }
+  onDispose(): void {
+    this.legacyInputEdges.clear();
+    this.core?.dispose();
     console.log('[ArenaRoom] Disposed');
   }
 
-  private startCountdown() {
-    this.state.phase = 'countdown';
-    this.countdownTimer = getConstant('MATCH.COUNTDOWN_SECONDS');
-    this.state.timeRemaining = this.countdownTimer;
-    console.log(`[ArenaRoom] Room full! Countdown: ${this.countdownTimer}s`);
+  private advanceSimulation(deltaTimeMs: number): void {
+    const frame = this.core.advanceSimulation(deltaTimeMs);
+    const projection = this.synchronizeState();
+    if (frame.snapshotDue && projection !== null) {
+      this.broadcastLegacyState(projection);
+    }
+  }
 
-    this.countdownInterval = setInterval(() => {
-      this.countdownTimer--;
-      this.state.timeRemaining = this.countdownTimer;
+  private applyPolicyMetadata(): void {
+    this.state.policyVersion = QUICK_MATCH_POLICY.version;
+    this.state.roomMode = QUICK_MATCH_POLICY.mode;
+    this.state.totalCapacity = QUICK_MATCH_POLICY.totalCapacity;
+    this.state.teamCapacity = QUICK_MATCH_POLICY.teamCapacity;
+  }
 
-      if (this.countdownTimer <= 0) {
-        if (this.countdownInterval) {
-          clearInterval(this.countdownInterval);
-          this.countdownInterval = null;
+  private synchronizeState(): Readonly<AuthoritativeRoomProjection> | null {
+    const projection = this.core.projectAuthoritativeState();
+    if (projection === null) {
+      if (this.core.lifecycle === 'disposed' || this.core.lifecycle === 'fatal') {
+        for (const sessionId of [...this.state.players.keys()]) {
+          this.state.players.delete(sessionId);
         }
-        this.startMatch();
+        this.state.totalOccupancy = 0;
+        this.state.blueOccupancy = 0;
+        this.state.orangeOccupancy = 0;
+        this.state.hostSessionId = '';
       }
-    }, 1000);
-  }
-
-  private startMatch() {
-    // Discard presses made while gameplay was disabled and seed held fallback.
-    for (const [sessionId, entry] of this.carBodies) {
-      const input = this.inputs.get(sessionId);
-      if (input) synchronizeCarInputState(entry.jumpState, input);
+      return null;
     }
 
-    this.state.phase = 'playing';
-    this.state.timeRemaining = getConstant('MATCH.DURATION_SECONDS');
-
-    console.log('[ArenaRoom] Match started with fixed 60Hz physics');
-  }
-
-  private spawnCar(sessionId: string, team: string) {
-    if (!this.physicsReady) {
-      const interval = setInterval(() => {
-        if (this.physicsReady) {
-          clearInterval(interval);
-          this.createCarBody(sessionId, team);
-        }
-      }, 50);
-      return;
+    const represented = new Set<string>();
+    for (const car of projection.cars) {
+      represented.add(car.sessionId);
+      const player = this.state.players.get(car.sessionId) ?? new PlayerState();
+      player.applyAuthoritativeProjection(car);
+      this.state.players.set(car.sessionId, player);
     }
-    this.createCarBody(sessionId, team);
-  }
-
-  private createCarBody(sessionId: string, team: string) {
-    const pos = this.getKickoffPosition(sessionId, team);
-    const rotation = team === 'orange'
-      ? { x: 0, y: 1, z: 0, w: 0 }
-      : { x: 0, y: 0, z: 0, w: 1 };
-
-    const body = createCar(this.world, pos, rotation);
-    this.carBodies.set(sessionId, { body, jumpState: createCarPhysicsState() });
-
-    const player = this.state.players.get(sessionId);
-    if (player) {
-      player.x = pos.x;
-      player.y = pos.y;
-      player.z = pos.z;
-      player.qx = rotation.x;
-      player.qy = rotation.y;
-      player.qz = rotation.z;
-      player.qw = rotation.w;
-    }
-  }
-
-  private getKickoffPosition(sessionId: string, team: string): { x: number; y: number; z: number } {
-    const carHeight = getConstant('CAR.BODY.HEIGHT');
-    const y = carHeight / 2 + getConstant('ARENA.KICKOFF.SPAWN_CLEARANCE');
-
-    const teamPlayers = Array.from(this.state.players.entries())
-      .filter(([id, p]) => p.team === team && id !== sessionId);
-    const isSecondPlayer = teamPlayers.length > 0;
-
-    if (team === 'blue') {
-      const xOffset = getConstant('ARENA.KICKOFF.BLUE_X_OFFSET');
-      const zOffset = getConstant('ARENA.KICKOFF.BLUE_Z_OFFSET');
-      return {
-        x: isSecondPlayer ? -xOffset : xOffset,
-        y,
-        z: zOffset,
-      };
-    } else {
-      const xOffset = getConstant('ARENA.KICKOFF.ORANGE_X_OFFSET');
-      const zOffset = getConstant('ARENA.KICKOFF.ORANGE_Z_OFFSET');
-      return {
-        x: isSecondPlayer ? -xOffset : xOffset,
-        y,
-        z: zOffset,
-      };
-    }
-  }
-
-  private removeCar(sessionId: string) {
-    const entry = this.carBodies.get(sessionId);
-    if (entry && this.world) {
-      this.world.removeRigidBody(entry.body);
-      this.carBodies.delete(sessionId);
-    }
-  }
-
-  private tick() {
-    // 1. Apply car physics from player inputs (only during active play phases)
-    if (this.state.phase === 'playing' || this.state.phase === 'overtime') {
-      for (const [sessionId, carEntry] of this.carBodies) {
-        const input = this.inputs.get(sessionId) || { throttle: 0, steer: 0, jump: false, boost: false };
-        applyCarPhysics(this.world, carEntry.body, input, carEntry.jumpState);
-      }
+    for (const sessionId of [...this.state.players.keys()]) {
+      if (!represented.has(sessionId)) this.state.players.delete(sessionId);
     }
 
-    // 2. Step the Rapier world
-    this.world.step();
-
-    // 3. Sync physics state to schema (for internal tracking)
-    this.syncBallState();
-    this.syncPlayerStates();
-
-    // 4. Check for goals
-    if (this.state.phase === 'playing' || this.state.phase === 'overtime') {
-      const scored = checkGoal(this.ballBody);
-      if (scored) {
-        if (scored === 'blue') this.state.blueScore++;
-        else this.state.orangeScore++;
-
-        if (this.state.phase === 'overtime') {
-          this.wasOvertime = true;
-        }
-
-        this.state.phase = 'goal-scored';
-        this.goalResetTimer = getGoalResetDelay();
-        console.log(`[ArenaRoom] GOAL! ${scored} scores! (${this.state.blueScore}-${this.state.orangeScore})`);
-      }
-    }
-
-    // 5. Update timer
-    const timerState = {
-      timeRemaining: this.state.timeRemaining,
-      phase: this.state.phase,
-      goalResetTimer: this.goalResetTimer,
-    };
-    const timerResult = updateTimer(timerState, PHYSICS.TIMESTEP);
-    this.state.timeRemaining = timerState.timeRemaining;
-    this.goalResetTimer = timerState.goalResetTimer;
-
-    if (timerResult === 'time-up') {
-      const result = resolveTimeUp(this.state.blueScore, this.state.orangeScore);
-      if (result === 'overtime') {
-        this.state.phase = 'overtime';
-        this.state.timeRemaining = -1;
-        this.wasOvertime = true;
-        console.log('[ArenaRoom] OVERTIME! Next goal wins.');
-      } else {
-        this.state.phase = 'ended';
-        console.log(`[ArenaRoom] Match ended! Blue ${this.state.blueScore} - ${this.state.orangeScore} Orange`);
-      }
-    } else if (timerResult === 'reset-complete') {
-      const playerTeams = new Map<string, { team: string }>();
-      for (const [sessionId, player] of this.state.players) {
-        playerTeams.set(sessionId, { team: player.team });
-      }
-      resetToKickoff(this.ballBody, this.carBodies, playerTeams, this.getKickoffPosition.bind(this));
-
-      if (this.wasOvertime) {
-        this.state.phase = 'overtime';
-      } else {
-        this.state.phase = 'playing';
-      }
-      console.log(`[ArenaRoom] Kickoff reset. Resuming: ${this.state.phase}`);
-    }
-  }
-
-  private broadcastState() {
-    const players: Record<string, any> = {};
-    this.state.players.forEach((p, k) => {
-      players[k] = {
-        x: p.x, y: p.y, z: p.z,
-        qx: p.qx, qy: p.qy, qz: p.qz, qw: p.qw,
-        vx: p.vx, vy: p.vy, vz: p.vz,
-        boost: p.boost, team: p.team, name: p.name, isHost: p.isHost,
-      };
+    const [ballX, ballY, ballZ] = projection.ball.position;
+    const [ballQx, ballQy, ballQz, ballQw] = projection.ball.rotation;
+    const [ballVx, ballVy, ballVz] = projection.ball.linearVelocity;
+    Object.assign(this.state.ball, {
+      x: ballX,
+      y: ballY,
+      z: ballZ,
+      qx: ballQx,
+      qy: ballQy,
+      qz: ballQz,
+      qw: ballQw,
+      vx: ballVx,
+      vy: ballVy,
+      vz: ballVz,
     });
 
-    const ball = this.state.ball;
+    this.applyPolicyMetadata();
+    this.state.phase = projection.phase;
+    this.state.countdownKind = projection.countdownKind;
+    this.state.countdownStepsRemaining = projection.countdownStepsRemaining;
+    this.state.phaseSecondsRemaining = projection.countdownStepsRemaining
+      / MATCH_RULES.fixedStepsPerSecond;
+    this.state.regulationStepsRemaining = projection.regulationStepsRemaining;
+    this.state.regulationActivePlayStepsCompleted = Math.max(
+      0,
+      MATCH_RULES.regulationActivePlaySteps - projection.regulationStepsRemaining,
+    );
+    this.state.regulationSecondsRemaining = projection.regulationStepsRemaining
+      / MATCH_RULES.fixedStepsPerSecond;
+    this.state.blueScore = projection.blueScore;
+    this.state.orangeScore = projection.orangeScore;
+    this.state.totalOccupancy = projection.occupancy.total;
+    this.state.blueOccupancy = projection.occupancy.blue;
+    this.state.orangeOccupancy = projection.occupancy.orange;
+    this.state.hostSessionId = projection.hostSessionId ?? '';
+    this.state.timeRemaining = projection.phase === 'countdown'
+      ? this.state.phaseSecondsRemaining
+      : this.state.regulationSecondsRemaining;
+    this.state.refreshAuthoritativeOccupancy(projection.policy);
+
+    return projection;
+  }
+
+  /** Temporary V1 envelope retained until the staged V2 transport task. */
+  private broadcastLegacyState(projection: Readonly<AuthoritativeRoomProjection>): void {
+    const players = Object.fromEntries(projection.cars.map((car) => [car.sessionId, {
+      x: car.position[0],
+      y: car.position[1],
+      z: car.position[2],
+      qx: car.rotation[0],
+      qy: car.rotation[1],
+      qz: car.rotation[2],
+      qw: car.rotation[3],
+      vx: car.linearVelocity[0],
+      vy: car.linearVelocity[1],
+      vz: car.linearVelocity[2],
+      boost: car.boost,
+      team: car.team,
+      name: car.name,
+      isHost: car.isHost,
+    }]));
+
+    const ball = projection.ball;
     this.broadcast('state-sync', {
       sequence: ++this.snapshotSequence,
       serverTime: Date.now(),
-      simulationTime: this.scheduler.simulationTimeMs,
+      simulationTime: projection.simulationTimeMs,
       players,
       ball: {
-        x: ball.x, y: ball.y, z: ball.z,
-        qx: ball.qx, qy: ball.qy, qz: ball.qz, qw: ball.qw,
-        vx: ball.vx, vy: ball.vy, vz: ball.vz,
+        x: ball.position[0],
+        y: ball.position[1],
+        z: ball.position[2],
+        qx: ball.rotation[0],
+        qy: ball.rotation[1],
+        qz: ball.rotation[2],
+        qw: ball.rotation[3],
+        vx: ball.linearVelocity[0],
+        vy: ball.linearVelocity[1],
+        vz: ball.linearVelocity[2],
       },
-      blueScore: this.state.blueScore,
-      orangeScore: this.state.orangeScore,
+      blueScore: projection.blueScore,
+      orangeScore: projection.orangeScore,
       timeRemaining: this.state.timeRemaining,
-      phase: this.state.phase,
+      phase: projection.phase,
     });
   }
 
-  private syncBallState() {
-    const ballPos = this.ballBody.translation();
-    const ballRot = this.ballBody.rotation();
-    const ballVel = this.ballBody.linvel();
-
-    this.state.ball.x = ballPos.x;
-    this.state.ball.y = ballPos.y;
-    this.state.ball.z = ballPos.z;
-    this.state.ball.qx = ballRot.x;
-    this.state.ball.qy = ballRot.y;
-    this.state.ball.qz = ballRot.z;
-    this.state.ball.qw = ballRot.w;
-    this.state.ball.vx = ballVel.x;
-    this.state.ball.vy = ballVel.y;
-    this.state.ball.vz = ballVel.z;
-  }
-
-  private syncPlayerStates() {
-    for (const [sessionId, carEntry] of this.carBodies) {
-      const player = this.state.players.get(sessionId);
-      if (!player) continue;
-
-      const pos = carEntry.body.translation();
-      const rot = carEntry.body.rotation();
-      const vel = carEntry.body.linvel();
-
-      player.x = pos.x;
-      player.y = pos.y;
-      player.z = pos.z;
-      player.qx = rot.x;
-      player.qy = rot.y;
-      player.qz = rot.z;
-      player.qw = rot.w;
-      player.vx = vel.x;
-      player.vy = vel.y;
-      player.vz = vel.z;
-      player.boost = Math.round(carEntry.jumpState.boostAmount);
-    }
-  }
-
-  getInput(sessionId: string): InputPayload {
-    return this.inputs.get(sessionId) || { throttle: 0, steer: 0, jump: false, boost: false };
+  private sendMutationRejection(
+    client: colyseus.Client,
+    result: AuthoritativeRoomMutationFailure,
+  ): void {
+    client.send('room-rejection', {
+      code: result.code,
+      message: result.message,
+    });
   }
 }

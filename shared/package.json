@@ -7,10 +7,16 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
+    "./config": "./src/config/index.ts",
+    "./config/*": "./src/config/*.ts",
     "./constants": "./src/constants/index.ts",
     "./constants/*": "./src/constants/*.ts",
-    "./types": "./src/types/index.ts",
-    "./schema": "./src/schema/index.ts"
+    "./geometry": "./src/geometry/index.ts",
+    "./geometry/*": "./src/geometry/*.ts",
+    "./schema": "./src/schema/index.ts",
+    "./tuning": "./src/tuning/index.ts",
+    "./tuning/*": "./src/tuning/*.ts",
+    "./types": "./src/types/index.ts"
   },
   "dependencies": {
     "@colyseus/schema": "^2.0.4"

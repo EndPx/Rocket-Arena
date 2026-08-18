@@ -1,0 +1,31 @@
+export * from './arena-spec.js';
+export {
+  BLUE_KICKOFF_SLOTS,
+  CAR_COLLIDER_TUNING_IDS,
+  InvalidKickoffSlotTableError,
+  KICKOFF_SLOT_COUNT_PER_TEAM,
+  KICKOFF_SLOT_INDEXES,
+  KICKOFF_SLOTS,
+  ORANGE_KICKOFF_SLOTS,
+  TEAM_FACING_MAX_ERROR_DEGREES,
+  centerFacingErrorDegrees,
+  colliderWorldHalfExtents,
+  createKickoffArenaBounds,
+  isValidKickoffSlotTable,
+  mirrorBlueKickoffSlot,
+  resolveCarColliderDimensions,
+  validateKickoffSlotTable,
+} from './kickoff-slots.js';
+export type {
+  CarColliderDimensions,
+  CarColliderTuningIds,
+  KickoffArenaBounds,
+  KickoffArenaDimensions,
+  KickoffSlot,
+  KickoffSlotId,
+  KickoffSlotIndex,
+  KickoffSlotTable,
+  KickoffSlotValidationCode,
+  KickoffSlotValidationOptions,
+  RegistryEntrySource,
+} from './kickoff-slots.js';

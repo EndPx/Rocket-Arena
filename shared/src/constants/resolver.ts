@@ -1,51 +1,65 @@
-import { DEFAULTS_REGISTRY } from './registry.js';
+import {
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  getScalarTuningValue,
+} from '../tuning/registry.js';
+import type { TuningRegistrySnapshot } from '../tuning/model.js';
+import { DEFAULTS_REGISTRY, isMechanicsConstantPath } from './registry.js';
 
-/** Mutable override map — populated at runtime by the dev panel. Empty in production. */
-const overrides: Map<string, number> = new Map();
+/** Legacy presentation-only overrides; authoritative mechanics use registry snapshots. */
+const compatibilityOverrides = new Map<string, number>();
 
-/**
- * Resolve a constant value by dot-path.
- * Checks override map first, falls back to frozen default.
- * All simulation code should read through this, never from the frozen object directly.
- *
- * @example getConstant("CAR.ENGINE.FORWARD_FORCE") // 3600 (or overridden value)
- */
+/** Resolve an unchanged compatibility constant by its historical dot path. */
 export function getConstant(path: string): number {
-  const override = overrides.get(path);
+  const override = compatibilityOverrides.get(path);
   if (override !== undefined) return override;
-
-  const defaultVal = DEFAULTS_REGISTRY.get(path);
-  if (defaultVal !== undefined) return defaultVal;
-
+  const defaultValue = DEFAULTS_REGISTRY.get(path);
+  if (defaultValue !== undefined) return defaultValue;
   throw new Error(`[Constants] Unknown path: "${path}"`);
 }
 
-/** Set a runtime override (used by dev panel) */
+/** Resolve one scalar from an explicit immutable tuning snapshot. */
+export function getTuningConstant(
+  id: string,
+  snapshot: Pick<TuningRegistrySnapshot, 'get'> = DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+): number {
+  return getScalarTuningValue(snapshot, id);
+}
+
+/**
+ * Deprecated compatibility API for audio/visual development controls only.
+ * Mechanics paths are intentionally rejected because process-global mutation
+ * would bypass atomic range checks, registry history, and room pinning.
+ */
 export function setOverride(path: string, value: number): void {
   if (!DEFAULTS_REGISTRY.has(path)) {
     throw new Error(`[Constants] Cannot override unknown path: "${path}"`);
   }
-  overrides.set(path, value);
+  if (!Number.isFinite(value)) {
+    throw new RangeError(`[Constants] Override for "${path}" must be finite.`);
+  }
+  if (isMechanicsConstantPath(path)) {
+    throw new Error(
+      `[Constants] Mechanics path "${path}" requires a VersionedTuningRegistry proposal.`,
+    );
+  }
+  compatibilityOverrides.set(path, value);
 }
 
-/** Remove a single override, reverting to default */
 export function clearOverride(path: string): void {
-  overrides.delete(path);
+  compatibilityOverrides.delete(path);
 }
 
-/** Remove all overrides, reverting everything to defaults */
 export function clearOverrides(): void {
-  overrides.clear();
+  compatibilityOverrides.clear();
 }
 
-/** Get all current overrides (for dev panel display) */
+/** Return an isolated read-only copy so callers cannot mutate resolver state. */
 export function getOverrides(): ReadonlyMap<string, number> {
-  return overrides;
+  return new Map(compatibilityOverrides);
 }
 
-/** Get the default value ignoring overrides */
 export function getDefault(path: string): number {
-  const val = DEFAULTS_REGISTRY.get(path);
-  if (val !== undefined) return val;
+  const value = DEFAULTS_REGISTRY.get(path);
+  if (value !== undefined) return value;
   throw new Error(`[Constants] Unknown path: "${path}"`);
 }

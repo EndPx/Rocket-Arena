@@ -166,6 +166,622 @@
         "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
         "timestamp": 1786981280923
       }
+    ],
+    "1.1 Add immutable room policies and confirmed shared match rules": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038354856
+      },
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038371704
+      },
+      {
+        "executionId": "ab704267-03d3-48aa-b997-d724258f932c",
+        "chatSessionId": "sess_7de4a9db-a2f8-49f7-b9c9-fae367ae51ee",
+        "timestamp": 1787076697429
+      }
+    ],
+    "1.2 Define V2 input, snapshot, terminal-transition, and authoritative schema contracts": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038354952
+      },
+      {
+        "executionId": "3c0faed0-f50c-41e3-b033-7c07c02086e1",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787064799017
+      },
+      {
+        "executionId": "3c0faed0-f50c-41e3-b033-7c07c02086e1",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787065619603
+      }
+    ],
+    "1.3 Add the single shared metric arena and surface specification": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038355039
+      },
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038380902
+      },
+      {
+        "executionId": "ab704267-03d3-48aa-b997-d724258f932c",
+        "chatSessionId": "sess_7de4a9db-a2f8-49f7-b9c9-fae367ae51ee",
+        "timestamp": 1787076706129
+      }
+    ],
+    "1.4 Implement the versioned tuning registry and release-validation core": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038355101
+      },
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038386022
+      },
+      {
+        "executionId": "ab704267-03d3-48aa-b997-d724258f932c",
+        "chatSessionId": "sess_7de4a9db-a2f8-49f7-b9c9-fae367ae51ee",
+        "timestamp": 1787076719738
+      }
+    ],
+    "1.5 Wire shared exports and verify the foundational contracts compile": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038355161
+      },
+      {
+        "executionId": "ab704267-03d3-48aa-b997-d724258f932c",
+        "chatSessionId": "sess_7de4a9db-a2f8-49f7-b9c9-fae367ae51ee",
+        "timestamp": 1787076726664
+      }
+    ],
+    "1.6 Implement generated Property 20 coverage for tuning atomicity and traceability": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038355217
+      },
+      {
+        "executionId": "3c0faed0-f50c-41e3-b033-7c07c02086e1",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787064805382
+      },
+      {
+        "executionId": "ab704267-03d3-48aa-b997-d724258f932c",
+        "chatSessionId": "sess_7de4a9db-a2f8-49f7-b9c9-fae367ae51ee",
+        "timestamp": 1787076733751
+      }
+    ],
+    "2.1 Implement deterministic team assignment as a pure service": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038355272
+      },
+      {
+        "executionId": "0d2ac2e8-98f3-4a93-9dc9-45a0d7e0fb0c",
+        "chatSessionId": "sess_6cf1869c-e97b-4d2e-b29d-f27e714393d1",
+        "timestamp": 1787077535491
+      },
+      {
+        "executionId": "0d2ac2e8-98f3-4a93-9dc9-45a0d7e0fb0c",
+        "chatSessionId": "sess_6cf1869c-e97b-4d2e-b29d-f27e714393d1",
+        "timestamp": 1787077897097
+      }
+    ],
+    "2.2 Implement transactional room mutation planning and commit": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038355334
+      },
+      {
+        "executionId": "0d2ac2e8-98f3-4a93-9dc9-45a0d7e0fb0c",
+        "chatSessionId": "sess_6cf1869c-e97b-4d2e-b29d-f27e714393d1",
+        "timestamp": 1787077958295
+      },
+      {
+        "executionId": "0d2ac2e8-98f3-4a93-9dc9-45a0d7e0fb0c",
+        "chatSessionId": "sess_6cf1869c-e97b-4d2e-b29d-f27e714393d1",
+        "timestamp": 1787078676563
+      }
+    ],
+    "2.3 Add the shared authoritative room core and readiness lifecycle": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038355404
+      },
+      {
+        "executionId": "0d2ac2e8-98f3-4a93-9dc9-45a0d7e0fb0c",
+        "chatSessionId": "sess_6cf1869c-e97b-4d2e-b29d-f27e714393d1",
+        "timestamp": 1787078696922
+      }
+    ],
+    "2.4 Refactor Quick Match into a thin exact-3v3 policy adapter": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038355485
+      }
+    ],
+    "2.5 Refactor Custom Room into a thin up-to-8/4v4 policy adapter": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038355541
+      }
+    ],
+    "2.6 Implement generated Property 2 coverage for deterministic team assignment": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038355599
+      },
+      {
+        "executionId": "0d2ac2e8-98f3-4a93-9dc9-45a0d7e0fb0c",
+        "chatSessionId": "sess_6cf1869c-e97b-4d2e-b29d-f27e714393d1",
+        "timestamp": 1787077971618
+      },
+      {
+        "executionId": "0d2ac2e8-98f3-4a93-9dc9-45a0d7e0fb0c",
+        "chatSessionId": "sess_6cf1869c-e97b-4d2e-b29d-f27e714393d1",
+        "timestamp": 1787078682304
+      }
+    ],
+    "2.7 Implement generated Property 1 coverage for mode policy and capacity invariants": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038355654
+      }
+    ],
+    "2.8 Implement generated Property 3 coverage for atomic roster mutations": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038355710
+      }
+    ],
+    "3.1 Implement the bounded ordered V2 snapshot builder": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038355775
+      }
+    ],
+    "3.2 Add the client V2 decoder, validator, and temporary V1 adapter": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038355830
+      }
+    ],
+    "3.3 Add a single immutable accepted-snapshot store": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038355891
+      }
+    ],
+    "3.4 Refactor scene reconciliation into prepare-and-commit acceptance": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038355974
+      }
+    ],
+    "3.5 Switch both room adapters and the client connection path to V2": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038356031
+      }
+    ],
+    "3.6 Preserve and extend scheduler/interpolation baselines for V2 epochs": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038356088
+      }
+    ],
+    "3.7 Implement generated Property 7 coverage for snapshot round trip and identity completeness": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038356151
+      }
+    ],
+    "3.8 Implement generated Property 8 coverage for atomic client acceptance and rejection": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038356205
+      }
+    ],
+    "3.9 Implement generated Property 25 coverage for transport and interpolation bounds": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038356261
+      }
+    ],
+    "4.1 Define four mirrored, team-facing slots per team": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038356323
+      },
+      {
+        "executionId": "3c0faed0-f50c-41e3-b033-7c07c02086e1",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787064809153
+      },
+      {
+        "executionId": "3c0faed0-f50c-41e3-b033-7c07c02086e1",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787065627907
+      }
+    ],
+    "4.2 Implement complete deterministic kickoff assignment": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038356379
+      }
+    ],
+    "4.3 Integrate kickoff epochs and atomic placements into the room core": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038356452
+      }
+    ],
+    "4.4 Replace wall-clock countdown/reset logic with a pure fixed-step match-state reducer skeleton": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038356528
+      }
+    ],
+    "4.5 Wire Quick cancellation and Custom Host start into fixed-step phases": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038356588
+      }
+    ],
+    "4.7 Implement generated Property 6 coverage for kickoff bijection and unique spawn": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038356644
+      }
+    ],
+    "4.8 Implement generated Property 4 coverage for Quick countdown gating": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038356699
+      }
+    ],
+    "4.9 Implement generated Property 5 coverage for Custom Host authority and succession": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038356765
+      }
+    ],
+    "4.10 Implement generated Property 14 coverage for kickoff and reset timing": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038356825
+      }
+    ],
+    "4.11 Checkpoint the room, transport, kickoff, and timing increment": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038356884
+      }
+    ],
+    "5.1 Build metric Rapier bodies and finite-state recovery": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038356943
+      }
+    ],
+    "5.2 Implement speed-dependent throttle, boost actuation, drag, and propulsion bounds": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038357039
+      }
+    ],
+    "5.3 Implement grounded steering, lateral grip, and powerslide": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038357100
+      }
+    ],
+    "5.4 Implement jump/flip/air state and expanded client controls": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038357158
+      }
+    ],
+    "5.5 Implement local-down grounding for Core surfaces": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038357218
+      }
+    ],
+    "5.6 Wire the ordered scripted simulation pipeline into the room core": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038357275
+      }
+    ],
+    "5.7 Implement generated Property 23 coverage for physics construction and collision-owned spin": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038357333
+      }
+    ],
+    "5.8 Implement generated Property 9 coverage for throttle monotonicity and scaling": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038357392
+      }
+    ],
+    "5.9 Implement generated Property 11 coverage for grip and powerslide ordering": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038357451
+      }
+    ],
+    "5.10 Implement generated Property 13 coverage for local-down grounding": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038357511
+      }
+    ],
+    "5.11 Implement generated Property 10 coverage for finite output and speed bounds": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038357573
+      }
+    ],
+    "5.12 Implement generated Property 19 coverage for server authority preservation": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038357639
+      }
+    ],
+    "6.1 Generate the closed Rapier arena and solid goal interiors from the shared spec": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038357705
+      }
+    ],
+    "6.2 Align visible authoritative boundaries to the shared arena spec": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038357760
+      }
+    ],
+    "6.3 Replace goal occupancy with swept ball-center crossing": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038357818
+      }
+    ],
+    "6.4 Complete the pure regulation, atomic cutoff, and sudden-death outcome reducer": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038357890
+      }
+    ],
+    "6.5 Integrate goal epochs, cutoff halting, terminal snapshots, and match outcomes": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038357952
+      }
+    ],
+    "6.6 Implement generated Property 24 coverage for arena closure and renderer alignment": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038358012
+      }
+    ],
+    "6.7 Implement generated Property 15 coverage for goal-line crossing semantics": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038358073
+      }
+    ],
+    "6.8 Implement generated Property 18 coverage for above-zero target-and-margin outcomes": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038358139
+      }
+    ],
+    "6.9 Implement generated Property 26 coverage for atomic Hard_Regulation_Cutoff": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038358209
+      }
+    ],
+    "6.10 Implement generated Property 27 coverage for first-goal-wins overtime": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038358312
+      }
+    ],
+    "6.11 Implement generated Property 16 coverage for fixed-step partition determinism": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038358373
+      }
+    ],
+    "6.12 Checkpoint the metric mechanics, arena, goal, and finalized match-flow increment": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038358444
+      }
+    ],
+    "7.1 Complete authoritative boost inventory lifecycle": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038358505
+      }
+    ],
+    "7.2 Add the generic pad system and all six Large pad specs": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038358569
+      }
+    ],
+    "7.3 Integrate pad sensors, authoritative state, rendering, and Rapier harnesses": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038358627
+      }
+    ],
+    "7.5 Implement generated Property 17 coverage for boost inventory and pad lifecycle": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038358686
+      }
+    ],
+    "8.1 Implement local Ball and Car camera modes with edge toggles": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038358747
+      }
+    ],
+    "8.2 Implement the off-screen ball indicator projection": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038358804
+      }
+    ],
+    "8.3 Refactor lobby and HUD around accepted policy, match, and transition state": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038358867
+      }
+    ],
+    "8.4 Wire presentation order, transition-ID audio, stadium, and entity lifecycle": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038358929
+      }
+    ],
+    "8.5 Add and run non-watch browser proof for full multiplayer and finalized outcome presentation": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038358992
+      }
+    ],
+    "8.6 Implement generated Property 21 coverage for camera isolation and finite output": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038359051
+      }
+    ],
+    "8.7 Implement generated Property 22 coverage for indicator and transition-announcement determinism": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038359119
+      }
+    ],
+    "8.8 Implement generated Property 12 coverage for input-edge idempotence and bounded windows": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038359179
+      }
+    ],
+    "9.1 Implement executable tuning/status/release validation for the staging build": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038359244
+      }
+    ],
+    "9.4 Final checkpoint: run the complete required staging validation matrix": [
+      {
+        "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
+        "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
+        "timestamp": 1787038359305
+      }
+    ],
+    "1. Establish shared policies, V2 contracts, metric geometry, and tuning foundations": [
+      {
+        "executionId": "ab704267-03d3-48aa-b997-d724258f932c",
+        "chatSessionId": "sess_7de4a9db-a2f8-49f7-b9c9-fae367ae51ee",
+        "timestamp": 1787067408547
+      },
+      {
+        "executionId": "ab704267-03d3-48aa-b997-d724258f932c",
+        "chatSessionId": "sess_7de4a9db-a2f8-49f7-b9c9-fae367ae51ee",
+        "timestamp": 1787076682988
+      }
+    ],
+    "2. Build the transactional authoritative room core and mode-specific roster behavior": [
+      {
+        "executionId": "0d2ac2e8-98f3-4a93-9dc9-45a0d7e0fb0c",
+        "chatSessionId": "sess_6cf1869c-e97b-4d2e-b29d-f27e714393d1",
+        "timestamp": 1787077511079
+      }
     ]
   }
 }
