@@ -7,7 +7,6 @@ import {
   type RoomMutationErrorCode,
 } from '@rocket-arena/shared';
 import {
-  createRoomMutationState,
   type RoomMutationRequest,
   type RoomMutationState,
 } from '../systems/room-mutations.js';
@@ -121,6 +120,46 @@ function makeBundle(
         },
       }),
     },
+    prepareKickoffPlacement: ({ cars, assignmentSet }) => {
+      const carSnapshots = new Map([...cars].map(([sessionId, car]) => [sessionId, {
+        position: [...car.position] as [number, number, number],
+        rotation: [...car.rotation] as [number, number, number, number],
+        linearVelocity: [...car.linearVelocity] as [number, number, number],
+        angularVelocity: [...car.angularVelocity] as [number, number, number],
+      }]));
+      const ballSnapshot = {
+        position: [...ball.position] as [number, number, number],
+        linearVelocity: [...ball.linearVelocity] as [number, number, number],
+        angularVelocity: [...ball.angularVelocity] as [number, number, number],
+      };
+      return {
+        apply: () => {
+          ball.position.splice(0, 3, 0, 1, 0);
+          ball.linearVelocity.splice(0, 3, 0, 0, 0);
+          ball.angularVelocity.splice(0, 3, 0, 0, 0);
+          for (const [sessionId, car] of cars) {
+            const assignment = assignmentSet.assignments.get(sessionId);
+            assert.ok(assignment);
+            car.position.splice(0, 3, ...assignment.position);
+            car.rotation.splice(0, 4, ...assignment.rotation);
+            car.linearVelocity.splice(0, 3, 0, 0, 0);
+            car.angularVelocity.splice(0, 3, 0, 0, 0);
+          }
+        },
+        rollback: () => {
+          ball.position.splice(0, 3, ...ballSnapshot.position);
+          ball.linearVelocity.splice(0, 3, ...ballSnapshot.linearVelocity);
+          ball.angularVelocity.splice(0, 3, ...ballSnapshot.angularVelocity);
+          for (const [sessionId, snapshot] of carSnapshots) {
+            const car = cars.get(sessionId)!;
+            car.position.splice(0, 3, ...snapshot.position);
+            car.rotation.splice(0, 4, ...snapshot.rotation);
+            car.linearVelocity.splice(0, 3, ...snapshot.linearVelocity);
+            car.angularVelocity.splice(0, 3, ...snapshot.angularVelocity);
+          }
+        },
+      };
+    },
     fixedStep: () => { world.fixedSteps += 1; },
     projectCar: ({ car }) => ({
       position: [...car.position],
@@ -170,13 +209,21 @@ async function join(core: TestCore, sessionId: string): Promise<void> {
   assert.equal(result.ok, true, result.ok ? undefined : result.message);
 }
 
+function advanceFixedSteps(core: TestCore, count: number): void {
+  for (let index = 0; index < count; index += 1) {
+    const frame = core.advanceSimulation(PHYSICS.TIMESTEP * 1000);
+    assert.equal(frame.scheduledFixedSteps, 1);
+    assert.equal(frame.executedFixedSteps, 1);
+  }
+}
+
 function projection(core: TestCore): Readonly<AuthoritativeRoomProjection> {
   const value = core.projectAuthoritativeState();
   assert.ok(value, 'ready Quick core must expose an authoritative projection');
   return value;
 }
 
-function rejectionPreservationSnapshot(value: Readonly<AuthoritativeRoomProjection>): unknown {
+function rejectionPreservationSnapshot(value: Readonly<AuthoritativeRoomProjection>) {
   return structuredClone({
     policy: value.policy,
     tuning: value.tuning,
@@ -199,31 +246,31 @@ async function assertRejectedWithoutMutation(
   request: RoomMutationRequest,
   expectedCode: RoomMutationErrorCode,
 ): Promise<void> {
-  const before = rejectionPreservationSnapshot(projection(core));
+  const beforeProjection = projection(core);
+  const before = rejectionPreservationSnapshot(beforeProjection);
   const result = await commitMutation(core, request);
   assert.equal(result.ok, false);
   if (result.ok) return;
   assert.equal(result.code, expectedCode);
   assert.equal(result.fatal, false);
+
+  const expected = structuredClone(before);
+  if (beforeProjection.phase === 'countdown') {
+    assert.ok(beforeProjection.countdownStepsRemaining > 1);
+    expected.countdownStepsRemaining = beforeProjection.countdownStepsRemaining - 1;
+  } else if (beforeProjection.phase === 'playing') {
+    expected.regulationStepsRemaining = beforeProjection.regulationStepsRemaining - 1;
+  }
   assert.deepEqual(
     rejectionPreservationSnapshot(projection(core)),
-    before,
-    `${expectedCode} rejection must preserve roster, assignments, occupancy, phase, countdown, score, timer, ball, and cars`,
+    expected,
+    `${expectedCode} rejection must preserve authority apart from independent fixed-step clock progress`,
   );
 }
 
-function replaceCoreState(
-  core: TestCore,
-  update: (state: TestState) => TestState,
-): void {
-  const holder = core as unknown as { stateValue: TestState | null };
-  assert.ok(holder.stateValue);
-  holder.stateValue = update(holder.stateValue);
-}
+// Validates: Requirements 3.1-3.10, 13.5-13.7, 18.12-18.13
 
-// Validates: Requirements 3.1-3.8, 18.12
-
-test('Quick policy factory binds immutable 6/3 policy and assigns a stable balanced 3+3 roster', async () => {
+test('Quick policy binds 6/3 and starts exactly one 180-step countdown only at balanced 3+3', async () => {
   const { core, world } = await makeCore();
   try {
     assert.equal(core.policy, QUICK_MATCH_POLICY);
@@ -264,15 +311,38 @@ test('Quick policy factory binds immutable 6/3 policy and assigns a stable balan
       assert.ok(Math.abs(current.occupancy.blue - current.occupancy.orange) <= 1);
       assert.ok(current.occupancy.blue <= 3);
       assert.ok(current.occupancy.orange <= 3);
-      assert.equal(core.isStartEligible, index === expectedTeams.length - 1);
+      assert.equal(core.isStartEligible, false);
+      if (index < expectedTeams.length - 1) {
+        assert.equal(current.phase, 'waiting');
+        assert.equal(current.countdownKind, null);
+        assert.equal(current.countdownStepsRemaining, 0);
+      } else {
+        assert.equal(current.phase, 'countdown');
+        assert.equal(current.countdownKind, 'initial');
+        assert.equal(current.countdownStepsRemaining, 180);
+      }
     }
 
     const full = projection(core);
     assert.deepEqual(full.occupancy, { total: 6, blue: 3, orange: 3 });
-    assert.equal(full.phase, 'waiting');
-    assert.equal(full.countdownKind, null);
-    assert.equal(full.countdownStepsRemaining, 0);
+    assert.equal(full.phase, 'countdown');
+    assert.equal(full.countdownKind, 'initial');
+    assert.equal(full.countdownStepsRemaining, 180);
+    assert.equal(full.regulationStepsRemaining, 18_000);
     assert.equal(world.cars.size, 6);
+
+    advanceFixedSteps(core, 179);
+    const finalCountdownStep = projection(core);
+    assert.equal(finalCountdownStep.phase, 'countdown');
+    assert.equal(finalCountdownStep.countdownStepsRemaining, 1);
+    assert.equal(finalCountdownStep.regulationStepsRemaining, 18_000);
+
+    advanceFixedSteps(core, 1);
+    const active = projection(core);
+    assert.equal(active.phase, 'playing');
+    assert.equal(active.countdownKind, null);
+    assert.equal(active.countdownStepsRemaining, 0);
+    assert.equal(active.regulationStepsRemaining, 18_000);
   } finally {
     core.dispose();
   }
@@ -300,13 +370,15 @@ test('duplicate and seventh-player requests reject with complete state preservat
     const { core, world } = await makeCore();
     try {
       for (let index = 0; index < 6; index += 1) await join(core, `full-${index}`);
-      assert.equal(core.isStartEligible, true);
+      assert.equal(projection(core).phase, 'countdown');
+      assert.equal(projection(core).countdownStepsRemaining, 180);
       await assertRejectedWithoutMutation(
         core,
         { kind: 'join', sessionId: 'seventh', name: 'Seventh' },
         'total-capacity',
       );
-      assert.equal(core.isStartEligible, true);
+      assert.equal(projection(core).phase, 'countdown');
+      assert.equal(projection(core).countdownStepsRemaining, 179);
       assert.equal(world.cars.has('seventh'), false);
       assert.equal(world.cars.size, 6);
     } finally {
@@ -315,12 +387,15 @@ test('duplicate and seventh-player requests reject with complete state preservat
   });
 });
 
-// Validates: Requirements 3.1, 3.11
+// Validates: Requirements 3.1, 3.11-3.13, 18.13
 
-test('pre-active leave removes only that identity and car and preserves stable assignments', async () => {
+test('pre-active leave cancels Quick countdown, reopens admission, and restarts all 180 steps', async () => {
   const { core, world } = await makeCore();
   try {
     for (let index = 0; index < 6; index += 1) await join(core, `waiting-${index}`);
+    assert.equal(projection(core).countdownStepsRemaining, 180);
+    advanceFixedSteps(core, 37);
+    assert.equal(projection(core).countdownStepsRemaining, 143);
     const before = projection(core);
     const beforeAssignments = new Map(before.cars.map((car) => [car.sessionId, car.team]));
     const removedCar = world.cars.get('waiting-3');
@@ -353,9 +428,12 @@ test('pre-active leave removes only that identity and car and preserves stable a
     await join(core, 'replacement');
     const restored = projection(core);
     assert.deepEqual(restored.occupancy, { total: 6, blue: 3, orange: 3 });
+    assert.equal(restored.phase, 'countdown');
+    assert.equal(restored.countdownKind, 'initial');
+    assert.equal(restored.countdownStepsRemaining, 180);
     assert.equal(restored.cars.at(-1)?.sessionId, 'replacement');
     assert.equal(restored.cars.at(-1)?.team, 'orange');
-    assert.equal(core.isStartEligible, true);
+    assert.equal(core.isStartEligible, false);
     for (const car of restored.cars.filter(({ sessionId }) => sessionId !== 'replacement')) {
       assert.equal(car.team, beforeAssignments.get(car.sessionId));
     }
@@ -370,6 +448,9 @@ test('active-play disconnect removes only one identity and preserves all remaini
   const { core, world } = await makeCore();
   try {
     for (let index = 0; index < 6; index += 1) await join(core, `active-${index}`);
+    assert.equal(projection(core).countdownStepsRemaining, 180);
+    advanceFixedSteps(core, 180);
+    assert.equal(projection(core).phase, 'playing');
 
     const authoritativeBall = projection(core).ball;
     const internalBall = (core as unknown as { stateValue: TestState }).stateValue.ball;
@@ -381,16 +462,6 @@ test('active-play disconnect removes only one identity and preserves all remaini
       car.boost = 70 - index;
     }
     assert.notDeepEqual(internalBall.position, authoritativeBall.position);
-
-    replaceCoreState(core, (state) => createRoomMutationState({
-      ...state,
-      phase: 'playing',
-      countdownKind: null,
-      countdownStepsRemaining: 0,
-      blueScore: 8,
-      orangeScore: 7,
-      regulationStepsRemaining: 9_876,
-    }));
 
     const before = projection(core);
     assert.equal(core.isStartEligible, false, 'active play never reopens the pre-play start gate');
@@ -404,7 +475,11 @@ test('active-play disconnect removes only one identity and preserves all remaini
     assert.equal(after.phase, 'playing');
     assert.equal(after.blueScore, before.blueScore);
     assert.equal(after.orangeScore, before.orangeScore);
-    assert.equal(after.regulationStepsRemaining, before.regulationStepsRemaining);
+    assert.equal(
+      after.regulationStepsRemaining,
+      before.regulationStepsRemaining - 1,
+      'the disconnect does not reset regulation; the enclosing Active_Play step advances normally',
+    );
     assert.equal(after.countdownKind, before.countdownKind);
     assert.equal(after.countdownStepsRemaining, before.countdownStepsRemaining);
     assert.deepEqual(after.ball, before.ball);

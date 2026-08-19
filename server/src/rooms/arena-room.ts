@@ -286,6 +286,7 @@ export class ArenaRoom extends Room<GameState> {
         console.error('[ArenaRoom] Physics initialization failed', error);
       });
 
+    // This callback only feeds the fixed-step scheduler; MatchFlow owns countdown time.
     this.setSimulationInterval((deltaTimeMs) => {
       this.advanceSimulation(deltaTimeMs);
     }, PHYSICS.TIMESTEP * 1000);

@@ -124,6 +124,46 @@ function makeBundle(
         },
       }),
     },
+    prepareKickoffPlacement: ({ cars, assignmentSet }) => {
+      const carSnapshots = new Map([...cars].map(([sessionId, car]) => [sessionId, {
+        position: [...car.position] as [number, number, number],
+        rotation: [...car.rotation] as [number, number, number, number],
+        linearVelocity: [...car.linearVelocity] as [number, number, number],
+        angularVelocity: [...car.angularVelocity] as [number, number, number],
+      }]));
+      const ballSnapshot = {
+        position: [...ball.position] as [number, number, number],
+        linearVelocity: [...ball.linearVelocity] as [number, number, number],
+        angularVelocity: [...ball.angularVelocity] as [number, number, number],
+      };
+      return {
+        apply: () => {
+          ball.position.splice(0, 3, 0, 1, 0);
+          ball.linearVelocity.splice(0, 3, 0, 0, 0);
+          ball.angularVelocity.splice(0, 3, 0, 0, 0);
+          for (const [sessionId, car] of cars) {
+            const assignment = assignmentSet.assignments.get(sessionId);
+            assert.ok(assignment);
+            car.position.splice(0, 3, ...assignment.position);
+            car.rotation.splice(0, 4, ...assignment.rotation);
+            car.linearVelocity.splice(0, 3, 0, 0, 0);
+            car.angularVelocity.splice(0, 3, 0, 0, 0);
+          }
+        },
+        rollback: () => {
+          ball.position.splice(0, 3, ...ballSnapshot.position);
+          ball.linearVelocity.splice(0, 3, ...ballSnapshot.linearVelocity);
+          ball.angularVelocity.splice(0, 3, ...ballSnapshot.angularVelocity);
+          for (const [sessionId, snapshot] of carSnapshots) {
+            const car = cars.get(sessionId)!;
+            car.position.splice(0, 3, ...snapshot.position);
+            car.rotation.splice(0, 4, ...snapshot.rotation);
+            car.linearVelocity.splice(0, 3, ...snapshot.linearVelocity);
+            car.angularVelocity.splice(0, 3, ...snapshot.angularVelocity);
+          }
+        },
+      };
+    },
     fixedStep: () => { world.fixedSteps += 1; },
     projectCar: ({ car }) => ({
       position: [...car.position],
@@ -172,6 +212,14 @@ async function join(core: TestCore, sessionId: string): Promise<void> {
   assert.equal(result.ok, true, result.ok ? undefined : result.message);
 }
 
+function advanceFixedSteps(core: TestCore, count: number): void {
+  for (let index = 0; index < count; index += 1) {
+    const frame = core.advanceSimulation(PHYSICS.TIMESTEP * 1000);
+    assert.equal(frame.scheduledFixedSteps, 1);
+    assert.equal(frame.executedFixedSteps, 1);
+  }
+}
+
 function projection(core: TestCore): Readonly<AuthoritativeRoomProjection> {
   const value = core.projectAuthoritativeState();
   assert.ok(value, 'ready Custom core must expose an authoritative projection');
@@ -202,7 +250,7 @@ function stableEntries(
   ));
 }
 
-function rejectionPreservationSnapshot(core: TestCore): unknown {
+function rejectionPreservationSnapshot(core: TestCore) {
   const state = internalState(core);
   const projected = projection(core);
   const sortedPairs = <T>(values: ReadonlyMap<string, T>): readonly (readonly [string, T])[] => (
@@ -250,16 +298,27 @@ async function assertRejectedWithoutMutation(
   request: RoomMutationRequest,
   expectedCode: RoomMutationErrorCode,
 ): Promise<void> {
+  const beforeProjection = projection(core);
   const before = rejectionPreservationSnapshot(core);
   const result = await commitMutation(core, request);
   assert.equal(result.ok, false);
   if (result.ok) return;
   assert.equal(result.code, expectedCode);
   assert.equal(result.fatal, false);
+
+  const expected = structuredClone(before);
+  if (beforeProjection.phase === 'countdown') {
+    assert.ok(beforeProjection.countdownStepsRemaining > 1);
+    expected.countdownStepsRemaining = beforeProjection.countdownStepsRemaining - 1;
+    expected.projection.countdownStepsRemaining = beforeProjection.countdownStepsRemaining - 1;
+  } else if (beforeProjection.phase === 'playing') {
+    expected.regulationStepsRemaining = beforeProjection.regulationStepsRemaining - 1;
+    expected.projection.regulationStepsRemaining = beforeProjection.regulationStepsRemaining - 1;
+  }
   assert.deepEqual(
     rejectionPreservationSnapshot(core),
-    before,
-    `${expectedCode} rejection must preserve the complete authoritative mutation state`,
+    expected,
+    `${expectedCode} rejection must preserve authority apart from independent fixed-step clock progress`,
   );
 }
 
@@ -409,12 +468,10 @@ test('waiting-only opposite-team switches are atomic and reject a full destinati
         'not-opposite-team',
       );
 
-      replaceCoreState(core, (state) => createRoomMutationState({
-        ...state,
-        phase: 'playing',
-        countdownKind: null,
-        countdownStepsRemaining: 0,
-      }));
+      const started = await commitMutation(core, { kind: 'start', sessionId: 'host' });
+      assert.equal(started.ok, true, started.ok ? undefined : started.message);
+      assert.equal(projection(core).phase, 'countdown');
+      assert.equal(projection(core).countdownStepsRemaining, 180);
       await assertRejectedWithoutMutation(
         core,
         { kind: 'switch-team', sessionId: 'host', team: 'blue' },
@@ -441,9 +498,9 @@ test('waiting-only opposite-team switches are atomic and reject a full destinati
   });
 });
 
-// Validates: Requirements 4.14-4.15, 18.15
+// Validates: Requirements 4.13-4.15, 13.5-13.7, 18.15
 
-test('Host start hooks expose eligibility and reject non-Host or invalid-phase requests atomically', async () => {
+test('only the current Host starts one full fixed-step countdown and rejections are atomic', async () => {
   const { core } = await makeCore();
   try {
     await join(core, 'host');
@@ -464,38 +521,40 @@ test('Host start hooks expose eligibility and reject non-Host or invalid-phase r
     assert.equal(accepted.ok, true, accepted.ok ? undefined : accepted.message);
     if (!accepted.ok) return;
     assert.deepEqual(accepted.effect, { kind: 'start-validated', sessionId: 'host' });
-    assert.equal(projection(core).phase, 'waiting');
-    assert.equal(projection(core).countdownKind, null);
-    assert.equal(projection(core).countdownStepsRemaining, 0);
-    assert.equal(core.isStartEligible, true, 'Task 2.5 validates start without progressing countdown');
-
-    replaceCoreState(core, (state) => createRoomMutationState({
-      ...state,
-      phase: 'countdown',
-      countdownKind: 'initial',
-      countdownStepsRemaining: 73,
-    }));
+    assert.equal(projection(core).phase, 'countdown');
+    assert.equal(projection(core).countdownKind, 'initial');
+    assert.equal(projection(core).countdownStepsRemaining, 180);
+    assert.equal(projection(core).regulationStepsRemaining, 18_000);
     assert.equal(core.isStartEligible, false);
     assert.equal(isCustomRoomHostStartEligible(internalState(core), 'host'), false);
+
     await assertRejectedWithoutMutation(
       core,
       { kind: 'start', sessionId: 'host' },
       'wrong-phase',
     );
+    assert.equal(projection(core).phase, 'countdown');
+    assert.equal(projection(core).countdownStepsRemaining, 179);
   } finally {
     core.dispose();
   }
 });
 
-// Validates: Requirements 4.16, 4.18-4.19, 18.15
+// Validates: Requirements 4.16-4.19, 18.15
 
-test('Host leave chooses the earliest remaining Stable_Roster_Order identity as sole successor', async () => {
+test('Host leave during countdown preserves progress and chooses the earliest stable successor', async () => {
   const { core, world } = await makeCore();
   try {
     await join(core, 'host');
     await join(core, 'second');
     await join(core, 'third');
     const teamsBefore = new Map(projection(core).cars.map(({ sessionId, team }) => [sessionId, team]));
+    const started = await commitMutation(core, { kind: 'start', sessionId: 'host' });
+    assert.equal(started.ok, true, started.ok ? undefined : started.message);
+    assert.equal(projection(core).countdownStepsRemaining, 180);
+    advanceFixedSteps(core, 23);
+    const countdownBeforeLeave = projection(core).countdownStepsRemaining;
+    assert.equal(countdownBeforeLeave, 157);
 
     replaceCoreState(core, (state) => {
       const reordered = new Map<string, RosterEntry>();
@@ -520,6 +579,13 @@ test('Host leave chooses the earliest remaining Stable_Roster_Order identity as 
 
     const after = projection(core);
     assert.equal(after.hostSessionId, 'second');
+    assert.equal(after.phase, 'countdown');
+    assert.equal(after.countdownKind, 'initial');
+    assert.equal(
+      after.countdownStepsRemaining,
+      countdownBeforeLeave - 1,
+      'Host succession preserves the countdown while its enclosing fixed step advances once',
+    );
     assert.deepEqual(
       after.cars.filter(({ isHost }) => isHost).map(({ sessionId }) => sessionId),
       ['second'],

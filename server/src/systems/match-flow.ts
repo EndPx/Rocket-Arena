@@ -388,6 +388,36 @@ export function beginInitialCountdown(
 }
 
 /**
+ * Cancel only a pre-regulation initial countdown. Quick Match uses this when
+ * its exact 3+3 gate becomes false before Active_Play; no partial progress is
+ * retained, so a later eligible roster must start from all 180 steps again.
+ */
+export function cancelInitialCountdown(
+  state: MatchFlowState,
+  config: MatchFlowConfig,
+): Readonly<MatchFlowState> {
+  assertMatchFlowState(state, config);
+  if (
+    state.phase !== 'countdown'
+    || state.countdownKind !== 'initial'
+    || state.regulationStarted
+  ) {
+    throw new Error('Only a pre-regulation initial countdown can be cancelled.');
+  }
+
+  return freezeState({
+    ...state,
+    phase: 'waiting',
+    countdownKind: null,
+    countdownStepsRemaining: 0,
+    goalResetStepsRemaining: 0,
+    regulationStepsRemaining: config.rules.regulationActivePlaySteps,
+    regulationActivePlayStepsCompleted: 0,
+    pendingOutcome: null,
+  }, config);
+}
+
+/**
  * Commit an already-resolved non-winning regulation goal to Goal_Reset_State.
  * This function deliberately does not evaluate target/margin or increment score.
  */

@@ -7,7 +7,9 @@ import {
 } from '@rocket-arena/shared';
 import {
   beginGoalReset,
+  beginInitialCountdown,
   beginOvertimeCountdown,
+  cancelInitialCountdown,
   createEndedMatchFlowState,
   createInitialMatchFlowState,
   createMatchFlowConfig,
@@ -105,6 +107,33 @@ test('initial countdown completes after exactly 180 disabled steps and never ear
   assert.equal(firstActiveStep.gates.synchronizeInputEdges, false);
   assert.equal(firstActiveStep.state.regulationStepsRemaining, 17_999);
   assert.equal(firstActiveStep.state.regulationActivePlayStepsCompleted, 1);
+});
+
+// Validates: Requirements 3.12-3.13, 13.5-13.7, 18.13
+
+test('cancelled initial countdown discards partial progress and restarts from 180', () => {
+  const config = createMatchFlowConfig('quick');
+  let countdown = createInitialMatchFlowState(config);
+  for (let completed = 0; completed < 47; completed += 1) {
+    countdown = reduceMatchFlowStep(countdown, config).state;
+  }
+  assert.equal(countdown.countdownStepsRemaining, 133);
+
+  const waiting = cancelInitialCountdown(countdown, config);
+  assert.equal(waiting.phase, 'waiting');
+  assert.equal(waiting.countdownKind, null);
+  assert.equal(waiting.countdownStepsRemaining, 0);
+  assert.equal(waiting.regulationStepsRemaining, 18_000);
+  assert.equal(waiting.regulationActivePlayStepsCompleted, 0);
+
+  const restarted = beginInitialCountdown(waiting, config);
+  assert.equal(restarted.phase, 'countdown');
+  assert.equal(restarted.countdownKind, 'initial');
+  assert.equal(restarted.countdownStepsRemaining, 180);
+  assert.throws(
+    () => cancelInitialCountdown(completeInitialCountdown(restarted), config),
+    /pre-regulation initial countdown/,
+  );
 });
 
 // Validates: Requirements 13.5-13.8, 13.15-13.16, 18.23

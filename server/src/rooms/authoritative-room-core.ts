@@ -1,6 +1,5 @@
 import {
   INPUT_PROTOCOL_VERSION,
-  MATCH_RULES,
   NETCODE,
   PHYSICS,
   createVersionedTuningRegistry,
@@ -23,6 +22,15 @@ import {
   type KickoffAssignmentErrorCode,
   type KickoffAssignmentSet,
 } from '../systems/kickoff-slots.js';
+import {
+  beginInitialCountdown,
+  cancelInitialCountdown,
+  createMatchFlowConfig,
+  createWaitingMatchFlowState,
+  reduceMatchFlowStep,
+  type MatchFlowConfig,
+  type MatchFlowState,
+} from '../systems/match-flow.js';
 import {
   RoomMutationCommitError,
   canAcceptRoomInput,
@@ -482,11 +490,14 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
   private readonly onMutationResult?: (result: AuthoritativeRoomMutationResult) => void;
   private readonly scheduler: FixedStepScheduler;
   private readonly kickoffAssignmentService: DeterministicKickoffAssignmentService;
+  private readonly matchFlowConfig: Readonly<MatchFlowConfig>;
 
   private lifecycleValue: AuthoritativeRoomLifecycle = 'created';
   private stateValue: Readonly<
     RoomMutationState<TCar, InputCommandV2, TBall, Readonly<KickoffAssignment>>
   > | null = null;
+  private matchFlowStateValue: Readonly<MatchFlowState> | null = null;
+  private initialCountdownStartedAtBoundary = false;
   private worldBundle: AuthoritativeRoomWorldBundle<TWorld, TCar, TBall> | null = null;
   private initializationPromise: Promise<void> | null = null;
   private readonly mutationQueue: QueuedMutation[] = [];
@@ -512,6 +523,7 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
     this.onMutationResult = options.onMutationResult;
     this.tuningSnapshot = (options.tuningRegistry ?? DEFAULT_TUNING_REGISTRY)
       .pinForRoom(this.roomId);
+    this.matchFlowConfig = createMatchFlowConfig(this.policy.mode, this.tuningSnapshot);
     this.kickoffAssignmentService = new DeterministicKickoffAssignmentService({
       policy: this.policy,
       tuningRegistry: this.tuningSnapshot,
@@ -540,6 +552,11 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
     return this.lifecycleValue === 'ready'
       && this.stateValue !== null
       && this.worldBundle !== null;
+  }
+
+  /** Immutable fixed-step phase state owned by the room core. */
+  get matchFlowState(): Readonly<MatchFlowState> | null {
+    return this.matchFlowStateValue;
   }
 
   /**
@@ -801,17 +818,19 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
         }
 
         this.worldBundle = candidate;
+        const matchFlow = createWaitingMatchFlowState(this.matchFlowConfig);
+        this.matchFlowStateValue = matchFlow;
         this.stateValue = createRoomMutationState({
           policy: this.policy,
           roster: new Map(),
           nextJoinOrdinal: 0,
           hostSessionId: null,
-          phase: 'waiting',
-          countdownKind: null,
-          countdownStepsRemaining: 0,
-          blueScore: 0,
-          orangeScore: 0,
-          regulationStepsRemaining: MATCH_RULES.regulationActivePlaySteps,
+          phase: matchFlow.phase,
+          countdownKind: matchFlow.countdownKind,
+          countdownStepsRemaining: matchFlow.countdownStepsRemaining,
+          blueScore: matchFlow.blueScore,
+          orangeScore: matchFlow.orangeScore,
+          regulationStepsRemaining: matchFlow.regulationStepsRemaining,
           ball: candidate.ball,
           cars: new Map(),
           inputs: new Map(),
@@ -940,7 +959,9 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
     let executedFixedSteps = 0;
 
     for (let index = 0; index < scheduled.fixedSteps; index += 1) {
+      this.initialCountdownStartedAtBoundary = false;
       mutationResults.push(...this.drainMutationQueue());
+      this.reconcileQuickCountdownGate();
       if (this.lifecycleValue !== 'ready' || this.stateValue === null || this.worldBundle === null) {
         break;
       }
@@ -955,6 +976,9 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
           tuning: this.tuningSnapshot,
           state: this.stateValue,
         });
+        if (!this.initialCountdownStartedAtBoundary) {
+          this.advanceMatchFlowStep();
+        }
         this.fixedStepsCompleted += 1;
         executedFixedSteps += 1;
       } catch (cause) {
@@ -1170,16 +1194,34 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
       }
       this.stateValue = committed.next;
       if (committed.effect.kind === 'joined') this.acceptedAnIdentity = true;
+
+      if (committed.effect.kind === 'start-validated') {
+        const started = this.beginInitialCountdownAtBoundary();
+        if (!started.ok) {
+          if (!started.fatal && this.lifecycleValue === 'ready') {
+            this.stateValue = state;
+          }
+          return failureResult(
+            queued.sequence,
+            started.code === 'physics-not-ready' ? 'physics-not-ready' : 'invalid-roster',
+            `Match start could not prepare a complete kickoff: ${started.message}`,
+            started.fatal,
+            started.cause,
+          );
+        }
+      }
+
+      this.reconcileQuickCountdownGate();
       const result: AuthoritativeRoomMutationSuccess = Object.freeze({
         ok: true,
         queueSequence: queued.sequence,
         effect: committed.effect,
-        revision: committed.next.revision,
+        revision: this.stateValue?.revision ?? committed.next.revision,
       });
 
       if (
         committed.effect.kind === 'left'
-        && committed.next.roster.size === 0
+        && this.stateValue?.roster.size === 0
         && this.acceptedAnIdentity
       ) {
         this.disposeEmptyRoom();
@@ -1201,6 +1243,109 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
         fatalCause,
       );
     }
+  }
+
+  /**
+   * Place every represented car before committing a fresh initial countdown.
+   * The boundary step itself is not charged against the new 180-step budget.
+   */
+  private beginInitialCountdownAtBoundary(): AuthoritativeKickoffPlacementResult {
+    const flow = this.matchFlowStateValue;
+    if (this.lifecycleValue !== 'ready' || this.stateValue === null || flow === null) {
+      return Object.freeze({
+        ok: false,
+        code: 'physics-not-ready',
+        message: 'Initial countdown requires a ready room and match-flow state.',
+        fatal: this.lifecycleValue === 'fatal',
+        retained: this.kickoffAssignmentService.current,
+      });
+    }
+    if (flow.phase !== 'waiting') {
+      return Object.freeze({
+        ok: false,
+        code: 'invalid-roster',
+        message: 'Initial countdown can begin only while the room is waiting.',
+        fatal: false,
+        retained: this.kickoffAssignmentService.current,
+      });
+    }
+
+    const nextFlow = beginInitialCountdown(flow, this.matchFlowConfig);
+    const placement = this.placeKickoff(flow.kickoffEpoch + 1);
+    if (!placement.ok) return placement;
+
+    this.commitMatchFlowState(nextFlow);
+    this.initialCountdownStartedAtBoundary = true;
+    return placement;
+  }
+
+  /** Quick alone automatically starts/cancels from its exact balanced gate. */
+  private reconcileQuickCountdownGate(): void {
+    if (this.policy.mode !== 'quick') return;
+    const state = this.stateValue;
+    const flow = this.matchFlowStateValue;
+    if (this.lifecycleValue !== 'ready' || state === null || flow === null) return;
+
+    const exactBalancedRoster = state.occupancy.total === this.policy.totalCapacity
+      && state.occupancy.blue === this.policy.teamCapacity
+      && state.occupancy.orange === this.policy.teamCapacity;
+
+    if (flow.phase === 'waiting' && exactBalancedRoster) {
+      const started = this.beginInitialCountdownAtBoundary();
+      if (!started.ok) {
+        this.logger.error(
+          `[AuthoritativeRoomCore] Quick countdown preparation failed roomId=${this.roomId}: ${started.message}`,
+          started.cause,
+        );
+      }
+      return;
+    }
+
+    if (
+      flow.phase === 'countdown'
+      && flow.countdownKind === 'initial'
+      && !exactBalancedRoster
+    ) {
+      this.commitMatchFlowState(cancelInitialCountdown(flow, this.matchFlowConfig));
+    }
+  }
+
+  /** Advance one reducer step after the world callback has completed. */
+  private advanceMatchFlowStep(): void {
+    const flow = this.matchFlowStateValue;
+    if (flow === null || this.stateValue === null) {
+      throw new Error('A ready fixed step requires initialized match-flow state.');
+    }
+
+    const reduced = reduceMatchFlowStep(flow, this.matchFlowConfig);
+    if (reduced.kickoffReset !== null) {
+      const placement = this.placeKickoff(reduced.kickoffReset.targetKickoffEpoch);
+      if (!placement.ok) {
+        throw new Error(`Post-goal kickoff placement failed: ${placement.message}`, {
+          cause: placement.cause,
+        });
+      }
+    }
+    this.commitMatchFlowState(reduced.state);
+  }
+
+  /** Keep transactional roster state and the pure reducer projection coherent. */
+  private commitMatchFlowState(flow: Readonly<MatchFlowState>): void {
+    const state = this.stateValue;
+    if (state === null) {
+      throw new Error('Match-flow state cannot commit without transactional room state.');
+    }
+
+    this.matchFlowStateValue = flow;
+    this.stateValue = createRoomMutationState({
+      ...state,
+      phase: flow.phase,
+      countdownKind: flow.countdownKind,
+      countdownStepsRemaining: flow.countdownStepsRemaining,
+      blueScore: flow.blueScore,
+      orangeScore: flow.orangeScore,
+      regulationStepsRemaining: flow.regulationStepsRemaining,
+    });
   }
 
   private disposeEmptyRoom(): void {

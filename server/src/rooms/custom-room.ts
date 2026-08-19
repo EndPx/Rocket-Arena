@@ -89,7 +89,7 @@ export function isCustomRoomCapacityValidRoster(
   return isCapacityValidRoster(CUSTOM_ROOM_POLICY, roster);
 }
 
-/** Read-only Host request predicate used before Stage 4 supplies phase progression. */
+/** Compatibility predicate matching the core's fixed-step Host-start validation. */
 export function isCustomRoomHostStartEligible(
   state: CustomRoomStartPredicateState,
   requesterSessionId: string,
@@ -344,6 +344,7 @@ export class CustomRoom extends Room<GameState> {
         console.error('[CustomRoom] Physics initialization failed', error);
       });
 
+    // This callback only feeds the fixed-step scheduler; MatchFlow owns countdown time.
     this.setSimulationInterval((deltaTimeMs) => {
       this.advanceSimulation(deltaTimeMs);
     }, PHYSICS.TIMESTEP * 1000);
@@ -443,8 +444,7 @@ export class CustomRoom extends Room<GameState> {
     this.synchronizeState();
     if (result.effect.kind === 'start-validated') {
       console.log(
-        `[CustomRoom] Host start validated for ${result.effect.sessionId};`
-        + ' fixed-step countdown progression is deferred to Stage 4.',
+        `[CustomRoom] Host ${result.effect.sessionId} started the fixed-step kickoff countdown.`,
       );
     }
   }
