@@ -33,6 +33,16 @@ const VALID_AFFECTS = new Set<TuningAffect>([
   'perceived-control',
 ]);
 const VALID_CURVE_ORDERS = new Set(['any', 'non-increasing', 'non-decreasing'] as const);
+const MUTABLE_TUNING_PATCH_FIELDS: ReadonlySet<string> = new Set([
+  'id',
+  'label',
+  'value',
+  'validatedRange',
+  'evidenceId',
+  'approvalId',
+  'approvalRationale',
+  'verificationStatus',
+] as const);
 
 function scalar(
   id: string,
@@ -683,6 +693,15 @@ export class VersionedTuningRegistry {
       if (!isRecord(patch) || typeof patch.id !== 'string' || patch.id.trim().length === 0) {
         proposalIssues.push(issue('invalid-id', null, 'Every proposal change requires a non-empty tuning ID.'));
         continue;
+      }
+      const immutableOrUnknownFields = Object.keys(patch)
+        .filter((field) => !MUTABLE_TUNING_PATCH_FIELDS.has(field));
+      for (const field of immutableOrUnknownFields) {
+        proposalIssues.push(issue(
+          'invalid-patch-field',
+          patch.id,
+          `Proposal field "${field}" is immutable or unsupported.`,
+        ));
       }
       if (changedIds.has(patch.id)) {
         proposalIssues.push(issue('duplicate-change', patch.id, `Proposal changes ${patch.id} more than once.`));

@@ -75,6 +75,7 @@ export type TuningValidationCode =
   | 'empty-proposal'
   | 'version-conflict'
   | 'invalid-proposal-id'
+  | 'invalid-patch-field'
   | 'invalid-id'
   | 'invalid-label'
   | 'invalid-unit'
@@ -99,13 +100,14 @@ export interface TuningValidationIssue {
   readonly message: string;
 }
 
-/** One atomic patch. Identity and entry kind cannot be changed by a proposal. */
+/**
+ * One atomic patch. Identity, kind, unit, classification, and affected domains
+ * are immutable registry schema; verification can advance only through linked
+ * evidence and approval fields validated by the registry.
+ */
 export interface TuningEntryPatch {
   readonly id: string;
   readonly label?: string;
-  readonly unit?: TuningUnit;
-  readonly classification?: TuningClassification;
-  readonly affects?: readonly TuningAffect[];
   readonly value?: TuningValue;
   readonly validatedRange?: TuningValidatedRange;
   readonly evidenceId?: string | null;
