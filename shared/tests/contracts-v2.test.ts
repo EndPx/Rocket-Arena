@@ -396,3 +396,400 @@ test('authoritative schemas project stable roster order, bounded boost, policy, 
     transitionSequence: 71,
   }), TypeError);
 });
+
+type GameProjection = Parameters<GameState['applyAuthoritativeProjection']>[0];
+type RoomPolicyValue = (typeof ROOM_POLICIES)[keyof typeof ROOM_POLICIES];
+
+function makeNonTerminalProjection(
+  policy: RoomPolicyValue = ROOM_POLICIES.custom,
+): GameProjection {
+  return {
+    policy,
+    phase: 'waiting',
+    countdownKind: null,
+    phaseSecondsRemaining: 0,
+    countdownStepsRemaining: 0,
+    goalResetStepsRemaining: 0,
+    regulationStepsRemaining: 18_000,
+    regulationActivePlayStepsCompleted: 0,
+    regulationStarted: false,
+    regulationCutoffResolved: false,
+    kickoffEpoch: 0,
+    blueScore: 0,
+    orangeScore: 0,
+    winner: null,
+    terminalResult: null,
+    latestTransition: null,
+    transitionSequence: 0,
+  };
+}
+
+function makeChangedNonTerminalProjection(policy: RoomPolicyValue): GameProjection {
+  return {
+    ...makeNonTerminalProjection(policy),
+    phase: 'playing',
+    phaseSecondsRemaining: 1.25,
+    regulationStepsRemaining: 12_000,
+    regulationActivePlayStepsCompleted: 6_000,
+    regulationStarted: true,
+    kickoffEpoch: 4,
+    blueScore: 2,
+    orangeScore: 1,
+  };
+}
+
+function makeEndedProjectionForTransition(
+  terminal: Readonly<TerminalResult>,
+  transition: Readonly<MatchTransitionSnapshot>,
+): GameProjection {
+  return {
+    ...makeNonTerminalProjection(),
+    phase: 'ended',
+    regulationStepsRemaining: 0,
+    regulationActivePlayStepsCompleted: 18_000,
+    regulationStarted: true,
+    regulationCutoffResolved: true,
+    blueScore: terminal.blueScore,
+    orangeScore: terminal.orangeScore,
+    winner: terminal.winner,
+    terminalResult: terminal,
+    latestTransition: transition,
+    transitionSequence: transition.eventId,
+  };
+}
+
+function projectionForTransition(
+  transition: Readonly<MatchTransitionSnapshot>,
+): GameProjection {
+  if (transition.terminal !== null) {
+    return makeEndedProjectionForTransition(transition.terminal, transition);
+  }
+  return {
+    ...makeNonTerminalProjection(),
+    latestTransition: transition,
+    transitionSequence: transition.eventId,
+  };
+}
+
+function addSchemaPlayer(
+  state: GameState,
+  index: number,
+  team: CarSnapshot['team'],
+  isHost = false,
+): PlayerState {
+  const sessionId = `schema-session-${index}`;
+  const player = PlayerState.fromAuthoritative({
+    sessionId,
+    acceptedJoinOrdinal: index,
+    team,
+    name: `Schema Driver ${index}`,
+    isHost,
+    position: [index, 1, -index],
+    rotation: [0, 0, 0, 1],
+    linearVelocity: [0, 0, 0],
+    angularVelocity: [0, 0, 0],
+    boost: 33,
+  });
+  state.players.set(sessionId, player);
+  return player;
+}
+
+function cloneSchemaState(state: GameState): unknown {
+  return JSON.parse(JSON.stringify(state.toJSON())) as unknown;
+}
+
+function assertProjectionRejectedWithoutMutation(
+  state: GameState,
+  projection: GameProjection,
+): void {
+  const before = cloneSchemaState(state);
+  const references = {
+    players: state.players,
+    ball: state.ball,
+    terminalResult: state.terminalResult,
+    latestTransition: state.latestTransition,
+  };
+
+  assert.throws(() => state.applyAuthoritativeProjection(projection), Error);
+  assert.deepEqual(cloneSchemaState(state), before);
+  assert.strictEqual(state.players, references.players);
+  assert.strictEqual(state.ball, references.ball);
+  assert.strictEqual(state.terminalResult, references.terminalResult);
+  assert.strictEqual(state.latestTransition, references.latestTransition);
+}
+
+test('non-ended V2 snapshots reject terminal transition payloads', () => {
+  const ended = makeEndedSnapshot(80, makeTerminal(80, 'hard-regulation-cutoff'));
+
+  assert.throws(
+    () => parseSnapshotEnvelopeV2({
+      ...ended,
+      phase: 'playing',
+      winner: null,
+      terminalResult: null,
+    }),
+    SnapshotContractError,
+  );
+});
+
+test('V2 terminal transitions require symmetric and identical goal payloads', () => {
+  const eventId = 81;
+  const cutoffGoal = createGoalResult({
+    eventId,
+    team: 'blue',
+    kickoffEpoch: 3,
+    blueScore: 5,
+    orangeScore: 4,
+  });
+  const cutoffWithGoal = createTerminalResult({
+    eventId,
+    reason: 'hard-regulation-cutoff',
+    winner: 'blue',
+    blueScore: 5,
+    orangeScore: 4,
+    goal: cutoffGoal,
+  });
+  const withGoalSource = makeEndedSnapshot(81, cutoffWithGoal);
+
+  assert.doesNotThrow(() => parseSnapshotEnvelopeV2(withGoalSource));
+  assert.throws(
+    () => parseSnapshotEnvelopeV2({
+      ...withGoalSource,
+      latestTransition: {
+        ...terminalTransition(cutoffWithGoal),
+        goal: null,
+      },
+    }),
+    SnapshotContractError,
+  );
+
+  const cutoffWithoutGoal = makeTerminal(82, 'hard-regulation-cutoff');
+  const transitionOnlyGoal = createGoalResult({
+    eventId: 82,
+    team: 'blue',
+    kickoffEpoch: 3,
+    blueScore: 5,
+    orangeScore: 4,
+  });
+  assert.throws(
+    () => parseSnapshotEnvelopeV2({
+      ...makeEndedSnapshot(82, cutoffWithoutGoal),
+      latestTransition: {
+        ...terminalTransition(cutoffWithoutGoal),
+        goal: transitionOnlyGoal,
+      },
+    }),
+    SnapshotContractError,
+  );
+
+  const unequalGoal = createGoalResult({
+    ...cutoffGoal,
+    kickoffEpoch: cutoffGoal.kickoffEpoch - 1,
+  });
+  assert.throws(
+    () => parseSnapshotEnvelopeV2({
+      ...withGoalSource,
+      latestTransition: {
+        ...terminalTransition(cutoffWithGoal),
+        goal: unequalGoal,
+      },
+    }),
+    SnapshotContractError,
+  );
+});
+
+test('schema transition validation mirrors every wire kind and payload rejection', () => {
+  const eventId = 90;
+  const goal = createGoalResult({
+    eventId,
+    team: 'blue',
+    kickoffEpoch: 3,
+    blueScore: 6,
+    orangeScore: 4,
+  });
+  const regulationTerminal = createTerminalResult({
+    eventId,
+    reason: 'regulation-target-and-margin',
+    winner: 'blue',
+    blueScore: 6,
+    orangeScore: 4,
+    goal,
+  });
+  const cutoffTerminal = createTerminalResult({
+    eventId,
+    reason: 'hard-regulation-cutoff',
+    winner: 'blue',
+    blueScore: 6,
+    orangeScore: 4,
+    goal,
+  });
+
+  const invalidTransitions: readonly MatchTransitionSnapshot[] = [
+    { eventId, kind: 'countdown', goal, terminal: null },
+    { eventId, kind: 'countdown', goal, terminal: cutoffTerminal },
+    { eventId, kind: 'regulation-goal-reset', goal: null, terminal: null },
+    { eventId, kind: 'regulation-goal-reset', goal, terminal: regulationTerminal },
+    { eventId, kind: 'regulation-terminal-goal', goal, terminal: null },
+    { eventId, kind: 'regulation-terminal-goal', goal, terminal: cutoffTerminal },
+    { eventId, kind: 'hard-cutoff', goal: null, terminal: null },
+    { eventId, kind: 'hard-cutoff', goal, terminal: regulationTerminal },
+    { eventId, kind: 'overtime-entry', goal, terminal: cutoffTerminal },
+    { eventId, kind: 'overtime-terminal-goal', goal, terminal: null },
+    { eventId, kind: 'overtime-terminal-goal', goal, terminal: regulationTerminal },
+  ];
+
+  for (const transition of invalidTransitions) {
+    const state = new GameState();
+    assertProjectionRejectedWithoutMutation(state, projectionForTransition(transition));
+  }
+});
+
+test('schema terminal transitions require symmetric and identical goal payloads', () => {
+  const eventId = 91;
+  const goal = createGoalResult({
+    eventId,
+    team: 'blue',
+    kickoffEpoch: 3,
+    blueScore: 5,
+    orangeScore: 4,
+  });
+  const terminalWithGoal = createTerminalResult({
+    eventId,
+    reason: 'hard-regulation-cutoff',
+    winner: 'blue',
+    blueScore: 5,
+    orangeScore: 4,
+    goal,
+  });
+  const terminalWithoutGoal = createTerminalResult({
+    eventId,
+    reason: 'hard-regulation-cutoff',
+    winner: 'blue',
+    blueScore: 5,
+    orangeScore: 4,
+    goal: null,
+  });
+  const unequalGoal = createGoalResult({ ...goal, kickoffEpoch: 2 });
+
+  const invalidPairs: readonly {
+    readonly terminal: Readonly<TerminalResult>;
+    readonly transitionGoal: Readonly<GoalResult> | null;
+  }[] = [
+    { terminal: terminalWithGoal, transitionGoal: null },
+    { terminal: terminalWithoutGoal, transitionGoal: goal },
+    { terminal: terminalWithGoal, transitionGoal: unequalGoal },
+  ];
+
+  for (const pair of invalidPairs) {
+    const transition: MatchTransitionSnapshot = {
+      eventId,
+      kind: 'hard-cutoff',
+      goal: pair.transitionGoal,
+      terminal: pair.terminal,
+    };
+    const state = new GameState();
+    assertProjectionRejectedWithoutMutation(
+      state,
+      makeEndedProjectionForTransition(pair.terminal, transition),
+    );
+  }
+});
+
+test('schema rejects terminal transition data outside Ended state without mutation', () => {
+  const terminal = makeTerminal(92, 'hard-regulation-cutoff');
+  const transition = terminalTransition(terminal);
+  const state = new GameState();
+
+  assertProjectionRejectedWithoutMutation(state, {
+    ...makeNonTerminalProjection(),
+    phase: 'playing',
+    latestTransition: transition,
+    transitionSequence: transition.eventId,
+  });
+});
+
+test('authoritative projection preflights roster team, capacity, and Host state atomically', () => {
+  const invalidTeamState = new GameState();
+  const invalidTeamPlayer = addSchemaPlayer(invalidTeamState, 0, 'blue');
+  invalidTeamState.applyAuthoritativeProjection(makeNonTerminalProjection());
+  (invalidTeamPlayer as unknown as { team: string }).team = 'spectator';
+  assertProjectionRejectedWithoutMutation(
+    invalidTeamState,
+    makeChangedNonTerminalProjection(ROOM_POLICIES.quick),
+  );
+
+  const teamCapacityState = new GameState();
+  for (let index = 0; index < 4; index += 1) {
+    addSchemaPlayer(teamCapacityState, index, 'blue');
+  }
+  teamCapacityState.applyAuthoritativeProjection(makeNonTerminalProjection());
+  assertProjectionRejectedWithoutMutation(
+    teamCapacityState,
+    makeChangedNonTerminalProjection(ROOM_POLICIES.quick),
+  );
+
+  const totalCapacityState = new GameState();
+  for (let index = 0; index < 7; index += 1) {
+    addSchemaPlayer(totalCapacityState, index, index < 4 ? 'blue' : 'orange');
+  }
+  totalCapacityState.applyAuthoritativeProjection(makeNonTerminalProjection());
+  assertProjectionRejectedWithoutMutation(
+    totalCapacityState,
+    makeChangedNonTerminalProjection(ROOM_POLICIES.quick),
+  );
+
+  const quickHostState = new GameState();
+  addSchemaPlayer(quickHostState, 0, 'blue', true);
+  quickHostState.applyAuthoritativeProjection(makeNonTerminalProjection());
+  assertProjectionRejectedWithoutMutation(
+    quickHostState,
+    makeChangedNonTerminalProjection(ROOM_POLICIES.quick),
+  );
+
+  const multipleHostsState = new GameState();
+  addSchemaPlayer(multipleHostsState, 0, 'blue', true);
+  const secondHost = addSchemaPlayer(multipleHostsState, 1, 'orange');
+  multipleHostsState.applyAuthoritativeProjection(makeNonTerminalProjection());
+  secondHost.isHost = true;
+  assertProjectionRejectedWithoutMutation(
+    multipleHostsState,
+    makeChangedNonTerminalProjection(ROOM_POLICIES.custom),
+  );
+});
+
+
+test('schema terminal goal equality is independent of object key insertion order', () => {
+  const goal = createGoalResult({
+    eventId: 93,
+    team: 'blue',
+    kickoffEpoch: 3,
+    blueScore: 5,
+    orangeScore: 4,
+  });
+  const terminal = createTerminalResult({
+    eventId: goal.eventId,
+    reason: 'hard-regulation-cutoff',
+    winner: 'blue',
+    blueScore: goal.blueScore,
+    orangeScore: goal.orangeScore,
+    goal,
+  });
+  const reorderedGoal: GoalResult = {
+    orangeScore: goal.orangeScore,
+    blueScore: goal.blueScore,
+    kickoffEpoch: goal.kickoffEpoch,
+    team: goal.team,
+    eventId: goal.eventId,
+  };
+  const transition: MatchTransitionSnapshot = {
+    eventId: goal.eventId,
+    kind: 'hard-cutoff',
+    goal: reorderedGoal,
+    terminal,
+  };
+  const state = new GameState();
+
+  assert.doesNotThrow(() => {
+    state.applyAuthoritativeProjection(makeEndedProjectionForTransition(terminal, transition));
+  });
+});

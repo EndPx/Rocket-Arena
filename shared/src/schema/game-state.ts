@@ -144,6 +144,18 @@ defineTypes(TerminalResultState, {
   goal: GoalResultState,
 });
 
+function contractValuesEqual(
+  left: Readonly<GoalResult> | null,
+  right: Readonly<GoalResult> | null,
+): boolean {
+  if (left === null || right === null) return left === right;
+  return left.eventId === right.eventId
+    && left.team === right.team
+    && left.kickoffEpoch === right.kickoffEpoch
+    && left.blueScore === right.blueScore
+    && left.orangeScore === right.orangeScore;
+}
+
 function validateTransition(transition: MatchTransitionSnapshot): MatchTransitionSnapshot {
   if (!isAuthoritativeEventId(transition.eventId)) {
     throw new TypeError('latestTransition.eventId must be a non-negative safe integer.');
@@ -159,6 +171,50 @@ function validateTransition(transition: MatchTransitionSnapshot): MatchTransitio
   if (terminal !== null && terminal.eventId !== transition.eventId) {
     throw new TypeError('Transition and terminal event IDs must agree.');
   }
+
+  switch (transition.kind) {
+    case 'countdown':
+      if (goal !== null || terminal !== null) {
+        throw new TypeError('Countdown transitions cannot carry goal or terminal data.');
+      }
+      break;
+    case 'regulation-goal-reset':
+      if (goal === null || terminal !== null) {
+        throw new TypeError('Regulation goal-reset transitions require one non-terminal goal.');
+      }
+      break;
+    case 'regulation-terminal-goal':
+      if (goal === null || terminal === null || terminal.reason !== 'regulation-target-and-margin') {
+        throw new TypeError(
+          'Regulation terminal-goal transitions require matching goal and terminal data.',
+        );
+      }
+      break;
+    case 'hard-cutoff':
+      if (terminal === null || terminal.reason !== 'hard-regulation-cutoff') {
+        throw new TypeError('Hard-cutoff transitions require a hard-cutoff terminal result.');
+      }
+      break;
+    case 'overtime-entry':
+      if (terminal !== null) {
+        throw new TypeError('Overtime-entry transitions cannot carry terminal data.');
+      }
+      break;
+    case 'overtime-terminal-goal':
+      if (goal === null || terminal === null || terminal.reason !== 'overtime-goal') {
+        throw new TypeError(
+          'Overtime terminal-goal transitions require matching goal and terminal data.',
+        );
+      }
+      break;
+  }
+
+  if (terminal !== null && !contractValuesEqual(goal, terminal.goal)) {
+    throw new TypeError(
+      'Transition goal and terminal goal must be identically present and equal.',
+    );
+  }
+
   return Object.freeze({ eventId: transition.eventId, kind: transition.kind, goal, terminal });
 }
 
@@ -221,6 +277,54 @@ export interface AuthoritativeGameProjection {
   readonly terminalResult: TerminalResult | null;
   readonly latestTransition: MatchTransitionSnapshot | null;
   readonly transitionSequence: number;
+}
+
+interface AuthoritativeOccupancyProjection {
+  readonly totalOccupancy: number;
+  readonly blueOccupancy: number;
+  readonly orangeOccupancy: number;
+  readonly hostSessionId: string;
+}
+
+function deriveAuthoritativeOccupancy(
+  players: MapSchema<PlayerState>,
+  policy: RoomPolicy,
+): Readonly<AuthoritativeOccupancyProjection> {
+  const canonical = validateRoomPolicy(policy);
+  let blueOccupancy = 0;
+  let orangeOccupancy = 0;
+  let hostSessionId = '';
+  let hostCount = 0;
+
+  for (const [sessionId, player] of players) {
+    if (player.team === 'blue') blueOccupancy += 1;
+    else if (player.team === 'orange') orangeOccupancy += 1;
+    else throw new TypeError(`Player ${sessionId} has an invalid authoritative team.`);
+    if (player.isHost) {
+      hostCount += 1;
+      hostSessionId = sessionId;
+    }
+  }
+
+  const totalOccupancy = blueOccupancy + orangeOccupancy;
+  if (
+    totalOccupancy > canonical.totalCapacity
+    || blueOccupancy > canonical.teamCapacity
+    || orangeOccupancy > canonical.teamCapacity
+  ) {
+    throw new RangeError('Authoritative occupancy exceeds the selected room policy.');
+  }
+  if (canonical.mode === 'quick' && hostCount !== 0) {
+    throw new TypeError('Quick Match cannot project Host metadata.');
+  }
+  if (hostCount > 1) throw new TypeError('At most one authoritative Host is allowed.');
+
+  return Object.freeze({
+    totalOccupancy,
+    blueOccupancy,
+    orangeOccupancy,
+    hostSessionId,
+  });
 }
 
 /** Internal authoritative state projection; client messages never assign it. */
@@ -305,35 +409,11 @@ export class GameState extends Schema {
 
   /** Derive occupancy and Host identity from server-owned roster entries only. */
   refreshAuthoritativeOccupancy(policy: RoomPolicy = ROOM_POLICIES[this.roomMode]): void {
-    const canonical = validateRoomPolicy(policy);
-    let blue = 0;
-    let orange = 0;
-    let hostSessionId = '';
-    let hostCount = 0;
-
-    for (const [sessionId, player] of this.players) {
-      if (player.team === 'blue') blue += 1;
-      else if (player.team === 'orange') orange += 1;
-      else throw new TypeError(`Player ${sessionId} has an invalid authoritative team.`);
-      if (player.isHost) {
-        hostCount += 1;
-        hostSessionId = sessionId;
-      }
-    }
-
-    const total = blue + orange;
-    if (total > canonical.totalCapacity || blue > canonical.teamCapacity || orange > canonical.teamCapacity) {
-      throw new RangeError('Authoritative occupancy exceeds the selected room policy.');
-    }
-    if (canonical.mode === 'quick' && hostCount !== 0) {
-      throw new TypeError('Quick Match cannot project Host metadata.');
-    }
-    if (hostCount > 1) throw new TypeError('At most one authoritative Host is allowed.');
-
-    this.totalOccupancy = total;
-    this.blueOccupancy = blue;
-    this.orangeOccupancy = orange;
-    this.hostSessionId = hostSessionId;
+    const occupancy = deriveAuthoritativeOccupancy(this.players, policy);
+    this.totalOccupancy = occupancy.totalOccupancy;
+    this.blueOccupancy = occupancy.blueOccupancy;
+    this.orangeOccupancy = occupancy.orangeOccupancy;
+    this.hostSessionId = occupancy.hostSessionId;
   }
 
   /** Validate a complete server-owned match projection before committing it. */
@@ -406,20 +486,31 @@ export class GameState extends Schema {
     }
 
     if (projection.phase === 'ended') {
-      if (winner === null || terminal === null || transition?.terminal === null || transition === null) {
+      if (winner === null || terminal === null || transition === null || transition.terminal === null) {
         throw new TypeError('Ended state requires winner, terminal result, and terminal transition.');
       }
+      const expectedKind: MatchTransitionKind = terminal.reason === 'hard-regulation-cutoff'
+        ? 'hard-cutoff'
+        : terminal.reason === 'overtime-goal'
+          ? 'overtime-terminal-goal'
+          : 'regulation-terminal-goal';
       if (
         terminal.winner !== winner
         || terminal.blueScore !== blueScore
         || terminal.orangeScore !== orangeScore
         || transition.eventId !== terminal.eventId
+        || transition.kind !== expectedKind
         || !terminalResultsEqual(transition.terminal, terminal)
       ) {
         throw new TypeError('Ended score, winner, terminal result, and transition must agree.');
       }
-    } else if (winner !== null || terminal !== null) {
-      throw new TypeError('Only Ended state may project winner or terminal result.');
+    } else {
+      if (winner !== null || terminal !== null) {
+        throw new TypeError('Only Ended state may project winner or terminal result.');
+      }
+      if (transition !== null && transition.terminal !== null) {
+        throw new TypeError('Only Ended state may project terminal transition data.');
+      }
     }
 
     const existingTerminal = this.terminalResult?.toContract() ?? null;
@@ -439,6 +530,14 @@ export class GameState extends Schema {
       throw new TypeError('Authoritative transition IDs cannot decrease.');
     }
 
+    const occupancy = deriveAuthoritativeOccupancy(this.players, policy);
+    const terminalState = terminal === null ? null : TerminalResultState.fromContract(terminal);
+    const transitionState = transition === null ? null : MatchTransitionState.fromContract(transition);
+    const regulationSecondsRemaining = regulationStepsRemaining / MATCH_RULES.fixedStepsPerSecond;
+    const timeRemaining = projection.phase === 'countdown' || projection.phase === 'goal-reset'
+      ? phaseSecondsRemaining
+      : regulationSecondsRemaining;
+
     this.protocolVersion = SNAPSHOT_PROTOCOL_VERSION;
     this.policyVersion = policy.version;
     this.roomMode = policy.mode;
@@ -451,20 +550,21 @@ export class GameState extends Schema {
     this.goalResetStepsRemaining = goalResetStepsRemaining;
     this.regulationStepsRemaining = regulationStepsRemaining;
     this.regulationActivePlayStepsCompleted = regulationActivePlayStepsCompleted;
-    this.regulationSecondsRemaining = regulationStepsRemaining / MATCH_RULES.fixedStepsPerSecond;
+    this.regulationSecondsRemaining = regulationSecondsRemaining;
     this.regulationStarted = projection.regulationStarted;
     this.regulationCutoffResolved = projection.regulationCutoffResolved;
     this.kickoffEpoch = kickoffEpoch;
     this.blueScore = blueScore;
     this.orangeScore = orangeScore;
     this.winner = winner;
-    this.terminalResult = terminal === null ? null : TerminalResultState.fromContract(terminal);
-    this.latestTransition = transition === null ? null : MatchTransitionState.fromContract(transition);
+    this.terminalResult = terminalState;
+    this.latestTransition = transitionState;
     this.transitionSequence = transitionSequence;
-    this.timeRemaining = projection.phase === 'countdown' || projection.phase === 'goal-reset'
-      ? phaseSecondsRemaining
-      : this.regulationSecondsRemaining;
-    this.refreshAuthoritativeOccupancy(policy);
+    this.timeRemaining = timeRemaining;
+    this.totalOccupancy = occupancy.totalOccupancy;
+    this.blueOccupancy = occupancy.blueOccupancy;
+    this.orangeOccupancy = occupancy.orangeOccupancy;
+    this.hostSessionId = occupancy.hostSessionId;
     return this;
   }
 }

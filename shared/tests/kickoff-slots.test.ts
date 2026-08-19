@@ -16,6 +16,7 @@ import {
   mirrorBlueKickoffSlot,
   resolveCarColliderDimensions,
   validateKickoffSlotTable,
+  type KickoffSlot,
   type KickoffSlotValidationCode,
   type KickoffSlotValidationOptions,
   type RegistryEntrySource,
@@ -61,6 +62,15 @@ function createColliderRegistry(
   });
 }
 
+function createColliderRegistryWithEntry(id: string, entry: unknown): RegistryEntrySource {
+  const canonicalRegistry = createColliderRegistry();
+  return Object.freeze({
+    get(candidateId: string): unknown {
+      return candidateId === id ? entry : canonicalRegistry.get(candidateId);
+    },
+  });
+}
+
 const VALIDATION_OPTIONS: KickoffSlotValidationOptions = Object.freeze({
   arenaBounds: METRIC_ARENA_BOUNDS,
   tuningRegistry: createColliderRegistry(),
@@ -92,6 +102,40 @@ function cloneCanonicalTable(): MutableTable {
     blue: KICKOFF_SLOTS.blue.map(cloneSlot),
     orange: KICKOFF_SLOTS.orange.map(cloneSlot),
   };
+}
+
+function sparseTuple(values: readonly number[], missingIndex: number): number[] {
+  const sparse = new Array<number>(values.length);
+  for (let index = 0; index < values.length; index += 1) {
+    if (index !== missingIndex) sparse[index] = values[index];
+  }
+  return sparse;
+}
+
+function replaceMirroredSlotPair(
+  table: MutableTable,
+  index: (typeof KICKOFF_SLOT_INDEXES)[number],
+  position: readonly [number, number, number],
+): void {
+  const yaw = Math.atan2(-position[0], -position[2]);
+  const blueSlot: KickoffSlot = {
+    id: `blue-${index}`,
+    index,
+    team: 'blue',
+    position,
+    rotation: [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)],
+  };
+  const orangeSlot = mirrorBlueKickoffSlot(blueSlot, METRIC_ARENA_BOUNDS.center);
+  const mutableSlot = (slot: KickoffSlot): MutableSlot => ({
+    id: slot.id,
+    index: slot.index,
+    team: slot.team,
+    position: [...slot.position],
+    rotation: [...slot.rotation],
+  });
+
+  table.blue[index] = mutableSlot(blueSlot);
+  table.orange[index] = mutableSlot(orangeSlot);
 }
 
 function assertValidationCode(
@@ -230,6 +274,31 @@ test('rejects incomplete, malformed, non-mirrored, non-facing, and uncontained t
   assert.equal(isValidKickoffSlotTable(incomplete, VALIDATION_OPTIONS), false);
 });
 
+test('rejects sparse arena bounds and slot transforms', () => {
+  for (const field of ['min', 'max', 'center'] as const) {
+    const arenaBounds = {
+      ...METRIC_ARENA_BOUNDS,
+      [field]: sparseTuple(METRIC_ARENA_BOUNDS[field], 1),
+    } as unknown as typeof METRIC_ARENA_BOUNDS;
+    const options = { ...VALIDATION_OPTIONS, arenaBounds };
+
+    assertValidationCode(KICKOFF_SLOTS, 'invalid-bounds', options);
+    assert.equal(isValidKickoffSlotTable(KICKOFF_SLOTS, options), false);
+  }
+
+  const sparsePosition = cloneCanonicalTable();
+  sparsePosition.blue[0].position = sparseTuple(sparsePosition.blue[0].position, 1);
+  sparsePosition.orange[0].position = sparseTuple(sparsePosition.orange[0].position, 1);
+  assertValidationCode(sparsePosition, 'invalid-transform');
+  assert.equal(isValidKickoffSlotTable(sparsePosition, VALIDATION_OPTIONS), false);
+
+  const sparseRotation = cloneCanonicalTable();
+  sparseRotation.blue[0].rotation = sparseTuple(sparseRotation.blue[0].rotation, 0);
+  sparseRotation.orange[0].rotation = sparseTuple(sparseRotation.orange[0].rotation, 0);
+  assertValidationCode(sparseRotation, 'invalid-transform');
+  assert.equal(isValidKickoffSlotTable(sparseRotation, VALIDATION_OPTIONS), false);
+});
+
 test('rejects non-finite arena bounds and missing or invalid collider registry entries', () => {
   assert.throws(
     () => createKickoffArenaBounds({
@@ -277,4 +346,99 @@ test('rejects non-finite arena bounds and missing or invalid collider registry e
       },
     },
   );
+});
+
+test('requires finite inclusive validated collider ranges containing each value', () => {
+  const invalidLengthEntries: readonly unknown[] = [
+    { kind: 'scalar', value: 1.18 },
+    {
+      kind: 'scalar',
+      value: 1.18,
+      validatedRange: { min: Number.NaN, max: 2 },
+    },
+    {
+      kind: 'scalar',
+      value: 1.18,
+      validatedRange: { min: 0.1, max: Number.POSITIVE_INFINITY },
+    },
+    {
+      kind: 'scalar',
+      value: 1.18,
+      validatedRange: { min: 2, max: 1 },
+    },
+    {
+      kind: 'scalar',
+      value: 1.18,
+      validatedRange: { min: 1.19, max: 2 },
+    },
+    {
+      kind: 'scalar',
+      value: 1.18,
+      validatedRange: { min: 0.1, max: 1.17 },
+    },
+  ];
+
+  for (const entry of invalidLengthEntries) {
+    assertValidationCode(
+      KICKOFF_SLOTS,
+      'invalid-collider-tuning',
+      {
+        ...VALIDATION_OPTIONS,
+        tuningRegistry: createColliderRegistryWithEntry(
+          CAR_COLLIDER_TUNING_IDS.length,
+          entry,
+        ),
+      },
+    );
+  }
+
+  const inclusiveEndpointRegistry = createColliderRegistryWithEntry(
+    CAR_COLLIDER_TUNING_IDS.length,
+    {
+      kind: 'scalar',
+      value: 1.18,
+      validatedRange: { min: 1.18, max: 1.18 },
+    },
+  );
+  assert.deepEqual(
+    resolveCarColliderDimensions(inclusiveEndpointRegistry),
+    { length: 1.18, width: 0.84, height: 0.36 },
+  );
+  assert.doesNotThrow(() => validateKickoffSlotTable(KICKOFF_SLOTS, {
+    ...VALIDATION_OPTIONS,
+    tuningRegistry: inclusiveEndpointRegistry,
+  }));
+});
+
+test('rejects oriented colliders entering each 45-degree corner-cut exclusion', () => {
+  const dimensions = resolveCarColliderDimensions(VALIDATION_OPTIONS.tuningRegistry);
+  const cornerCenters = [
+    [-40, 0.26, -40],
+    [40, 0.26, -40],
+    [-40, 0.26, 40],
+    [40, 0.26, 40],
+  ] as const;
+
+  for (const position of cornerCenters) {
+    const cornerIntrusion = cloneCanonicalTable();
+    replaceMirroredSlotPair(cornerIntrusion, 0, position);
+
+    // These colliders fit the old outer-rectangle check. Only the exact
+    // oriented-box test against the diagonal cut planes rejects them.
+    for (const slot of [cornerIntrusion.blue[0], cornerIntrusion.orange[0]]) {
+      const rotation = [
+        slot.rotation[0],
+        slot.rotation[1],
+        slot.rotation[2],
+        slot.rotation[3],
+      ] as const;
+      const halfExtents = colliderWorldHalfExtents(rotation, dimensions);
+      for (const axis of [0, 2] as const) {
+        assert.ok(slot.position[axis] - halfExtents[axis] >= METRIC_ARENA_BOUNDS.min[axis]);
+        assert.ok(slot.position[axis] + halfExtents[axis] <= METRIC_ARENA_BOUNDS.max[axis]);
+      }
+    }
+
+    assertValidationCode(cornerIntrusion, 'outside-arena');
+  }
 });

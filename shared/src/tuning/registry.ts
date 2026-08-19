@@ -378,7 +378,8 @@ export function validateTuningEntries(
         || value.length === 0 || value.length !== ranges.length) {
         issues.push(issue('vector-length', id, 'Vector value and range arrays must have equal non-zero lengths.'));
       } else {
-        value.forEach((component, index) => {
+        for (let index = 0; index < value.length; index += 1) {
+          const component = value[index];
           const range = ranges[index];
           if (typeof component !== 'number' || !Number.isFinite(component)) {
             issues.push(issue('non-finite-value', id, `Vector component ${index} must be finite.`));
@@ -389,7 +390,7 @@ export function validateTuningEntries(
             && (component < range.min || component > range.max)) {
             issues.push(issue('value-out-of-range', id, `Vector component ${index} is outside its inclusive range.`));
           }
-        });
+        }
       }
     } else if (rawEntry.kind === 'curve') {
       const value = rawEntry.value;

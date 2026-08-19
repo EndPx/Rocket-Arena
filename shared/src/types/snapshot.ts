@@ -327,11 +327,28 @@ function assertMatchCoherence(snapshot: SnapshotEnvelopeV2): void {
     if (snapshot.latestTransition.kind !== expectedKind) {
       fail('snapshot.latestTransition.kind', `terminal reason requires ${expectedKind}`);
     }
-  } else if (snapshot.winner !== null || snapshot.terminalResult !== null) {
-    fail('snapshot', 'non-ended phases cannot carry a winner or terminalResult');
+  } else {
+    if (snapshot.winner !== null || snapshot.terminalResult !== null) {
+      fail('snapshot', 'non-ended phases cannot carry a winner or terminalResult');
+    }
+    if (snapshot.latestTransition !== null && snapshot.latestTransition.terminal !== null) {
+      fail('snapshot.latestTransition.terminal', 'non-ended phases cannot carry terminal data');
+    }
   }
 
-  const goal = snapshot.latestTransition?.goal ?? null;
+  const transition = snapshot.latestTransition;
+  if (
+    transition !== null
+    && transition.terminal !== null
+    && !sameValue(transition.goal, transition.terminal.goal)
+  ) {
+    fail(
+      'snapshot.latestTransition',
+      'transition goal and terminal goal must be identically present and equal',
+    );
+  }
+
+  const goal = transition?.goal ?? null;
   if (goal !== null) {
     if (goal.blueScore !== snapshot.blueScore || goal.orangeScore !== snapshot.orangeScore) {
       fail('snapshot.latestTransition.goal', 'goal score must match the envelope score');

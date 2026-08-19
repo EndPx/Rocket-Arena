@@ -1,5 +1,6 @@
 import { TUNING_IDS } from '../tuning/model.js';
 import type { Team } from '../types/room.js';
+import { ARENA_GEOMETRY_SPEC } from './arena-spec.js';
 
 export type Vector3Tuple = readonly [number, number, number];
 export type QuaternionTuple = readonly [number, number, number, number];
@@ -256,8 +257,13 @@ function finiteTuple(
   if (!Array.isArray(value) || value.length !== length) {
     fail(code, `${label} must contain exactly ${length} numeric components.`);
   }
-  if (!value.every((component) => typeof component === 'number' && Number.isFinite(component))) {
-    fail(code, `${label} must contain only finite numeric components.`);
+  for (let index = 0; index < length; index += 1) {
+    const component = value[index];
+    if (!Object.prototype.hasOwnProperty.call(value, index)
+      || typeof component !== 'number'
+      || !Number.isFinite(component)) {
+      fail(code, `${label} must contain only finite numeric components.`);
+    }
   }
   return value as readonly number[];
 }
@@ -297,21 +303,22 @@ function readScalarRegistryEntry(
     fail('invalid-collider-tuning', `Collider tuning "${id}" must have a finite positive value.`);
   }
 
-  if ('validatedRange' in entry) {
-    const range = entry.validatedRange;
-    if (!isRecord(range)
-      || typeof range.min !== 'number'
-      || typeof range.max !== 'number'
-      || !Number.isFinite(range.min)
-      || !Number.isFinite(range.max)
-      || range.min > range.max
-      || entry.value < range.min
-      || entry.value > range.max) {
-      fail(
-        'invalid-collider-tuning',
-        `Collider tuning "${id}" has an invalid range or an out-of-range value.`,
-      );
-    }
+  const hasValidatedRange = Object.prototype.hasOwnProperty.call(entry, 'validatedRange');
+  const range = entry.validatedRange;
+  if (!hasValidatedRange
+    || !isRecord(range)
+    || Array.isArray(range)
+    || typeof range.min !== 'number'
+    || typeof range.max !== 'number'
+    || !Number.isFinite(range.min)
+    || !Number.isFinite(range.max)
+    || range.min > range.max
+    || entry.value < range.min
+    || entry.value > range.max) {
+    fail(
+      'invalid-collider-tuning',
+      `Collider tuning "${id}" must include a finite inclusive validated range containing its value.`,
+    );
   }
 
   return entry.value;
@@ -464,8 +471,50 @@ function validateSlotShape(
 }
 
 function equalTuple(left: readonly number[], right: readonly number[]): boolean {
-  return left.length === right.length
-    && left.every((component, index) => component === right[index]);
+  if (left.length !== right.length) return false;
+
+  for (let index = 0; index < left.length; index += 1) {
+    if (!Object.prototype.hasOwnProperty.call(left, index)
+      || !Object.prototype.hasOwnProperty.call(right, index)
+      || left[index] !== right[index]) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function colliderSupportRadiusOnHorizontalNormal(
+  rotation: QuaternionTuple,
+  dimensions: CarColliderDimensions,
+  normalX: number,
+  normalZ: number,
+): number {
+  const magnitude = quaternionMagnitude(rotation);
+  if (!Number.isFinite(magnitude) || magnitude === 0) {
+    fail('invalid-transform', 'Cannot resolve collider support from an invalid quaternion.');
+  }
+
+  const x = rotation[0] / magnitude;
+  const y = rotation[1] / magnitude;
+  const z = rotation[2] / magnitude;
+  const w = rotation[3] / magnitude;
+
+  // Matrix columns are the local width/up/length axes in world space.
+  const r00 = 1 - 2 * (y * y + z * z);
+  const r01 = 2 * (x * y - z * w);
+  const r02 = 2 * (x * z + y * w);
+  const r20 = 2 * (x * z - y * w);
+  const r21 = 2 * (y * z + x * w);
+  const r22 = 1 - 2 * (x * x + y * y);
+
+  const widthProjection = normalX * r00 + normalZ * r20;
+  const heightProjection = normalX * r01 + normalZ * r21;
+  const lengthProjection = normalX * r02 + normalZ * r22;
+
+  return Math.abs(widthProjection) * dimensions.width / 2
+    + Math.abs(heightProjection) * dimensions.height / 2
+    + Math.abs(lengthProjection) * dimensions.length / 2;
 }
 
 function validateContained(
@@ -480,6 +529,31 @@ function validateContained(
     if (slotMin < bounds.min[axis] - CONTAINMENT_TOLERANCE_METERS
       || slotMax > bounds.max[axis] + CONTAINMENT_TOLERANCE_METERS) {
       fail('outside-arena', `${slot.id} collider lies outside the playable arena bounds.`);
+    }
+  }
+
+  for (const cornerCut of ARENA_GEOMETRY_SPEC.cornerCuts) {
+    const normalX = cornerCut.xSign * Math.SQRT1_2;
+    const normalZ = cornerCut.zSign * Math.SQRT1_2;
+    const rectangleCornerX = cornerCut.xSign < 0 ? bounds.min[0] : bounds.max[0];
+    const rectangleCornerZ = cornerCut.zSign < 0 ? bounds.min[2] : bounds.max[2];
+    const cutPlaneLimit = normalX * rectangleCornerX
+      + normalZ * rectangleCornerZ
+      - cornerCut.horizontalLength * Math.SQRT1_2;
+    const colliderMaxProjection = normalX * slot.position[0]
+      + normalZ * slot.position[2]
+      + colliderSupportRadiusOnHorizontalNormal(
+        slot.rotation,
+        dimensions,
+        normalX,
+        normalZ,
+      );
+
+    if (colliderMaxProjection > cutPlaneLimit + CONTAINMENT_TOLERANCE_METERS) {
+      fail(
+        'outside-arena',
+        `${slot.id} collider enters the ${cornerCut.id} corner-cut exclusion.`,
+      );
     }
   }
 }
