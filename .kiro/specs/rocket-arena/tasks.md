@@ -243,7 +243,7 @@ Every implementation task must leave its code wired into the preceding increment
     - _Depends on: 1.6, 4.5_
     - _Requirements: 13.3, 13.5-13.8, 13.15-13.16, 18.22-18.23, 18.25_
 
-  - [ ] 4.11 Checkpoint the room, transport, kickoff, and timing increment
+  - [x] 4.11 Checkpoint the room, transport, kickoff, and timing increment
     - Run the focused shared/server/client tests added in Stages 1-4, `npm run typecheck`, and `npm run build`; resolve only feature-caused failures before physics replacement begins.
     - Confirm V2 maximum-capacity and terminal-aware transport, all rejection atomicity assertions, exact 3+3/8+4 limits, deterministic kickoff mappings, and 180/120-step tests pass together.
     - Ensure all tests pass, ask the user if questions arise.
