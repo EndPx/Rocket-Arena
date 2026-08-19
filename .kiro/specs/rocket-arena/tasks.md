@@ -155,21 +155,21 @@ Every implementation task must leave its code wired into the preceding increment
     - _Depends on: 1.5_
     - _Requirements: 1.4-1.12, 6.8_
 
-  - [ ] 3.7 Implement generated Property 7 coverage for snapshot round trip and identity completeness
+  - [x] 3.7 Implement generated Property 7 coverage for snapshot round trip and identity completeness
     - Add `server/src/systems/snapshot-builder.property.test.ts` with at least 100 generated valid rosters/snapshots per recorded seed across both room modes; serialize/deserialize and verify identity-associated fields, finite bounds, disconnect omission, and coherent terminal final score, winner, reason, and stable event ID across repeated snapshots.
     - **Property 7: Snapshot round trip and identity completeness**
     - **Validates: Requirements 6.1-6.8, 13.14, 13.19, 13.25, 18.17**
     - _Depends on: 1.6, 3.1, 3.5_
     - _Requirements: 6.1-6.8, 13.14, 13.19, 13.25, 18.17, 18.25_
 
-  - [ ] 3.8 Implement generated Property 8 coverage for atomic client acceptance and rejection
+  - [x] 3.8 Implement generated Property 8 coverage for atomic client acceptance and rejection
     - Add `client/tests/snapshot-acceptance.property.test.ts` with at least 100 generated valid and malformed payloads per recorded seed; snapshot every committed client subsystem before rejection and require exact preservation.
     - **Property 8: Atomic client snapshot acceptance and rejection**
     - **Validates: Requirements 6.9-6.12**
     - _Depends on: 1.6, 3.4, 3.5_
     - _Requirements: 6.9-6.12, 18.25_
 
-  - [ ] 3.9 Implement generated Property 25 coverage for transport and interpolation bounds
+  - [x] 3.9 Implement generated Property 25 coverage for transport and interpolation bounds
     - Add `client/tests/transport-interpolation.property.test.ts` with at least 100 generated increasing snapshot streams and callback partitions per recorded seed, checking nominal cadence independence, 24 greatest sequences, 100-millisecond delay, shortest-path normalized slerp, and 80-millisecond extrapolation hold.
     - **Property 25: Bounded transport and interpolation baseline**
     - **Validates: Requirements 1.8-1.12, 6.8**
@@ -189,7 +189,7 @@ Every implementation task must leave its code wired into the preceding increment
     - _Depends on: 2.2, 4.1_
     - _Requirements: 5.5-5.12_
 
-  - [ ] 4.3 Integrate kickoff epochs and atomic placements into the room core
+  - [x] 4.3 Integrate kickoff epochs and atomic placements into the room core
     - Refactor `server/src/rooms/authoritative-room-core.ts` and the reset compatibility path in `server/src/systems/scoring.ts` so no body moves until every current roster identity has a valid slot; cache assignments by roster/team/order and zero body motion atomically at placement.
     - Add integration tests proving three Quick teammates and four Custom teammates receive distinct transforms, unchanged goal resets preserve mappings, and replacement failure leaves the last complete assignment and bodies untouched.
     - _Depends on: 3.5, 4.2_
