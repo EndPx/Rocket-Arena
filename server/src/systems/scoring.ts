@@ -1,4 +1,9 @@
 import RAPIER from '@dimforge/rapier3d-compat';
+import {
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  TUNING_IDS,
+  getScalarTuningValue,
+} from '@rocket-arena/shared';
 import { getConstant } from '@rocket-arena/shared/constants';
 import { resetCarPhysicsState, type CarPhysicsState } from '../physics/car.js';
 import type { KickoffAssignment } from './kickoff-slots.js';
@@ -226,7 +231,18 @@ export function prepareResetToKickoff(
   ballBody: RAPIER.RigidBody,
   carBodies: ReadonlyMap<string, KickoffCarBody>,
   assignments: ReadonlyMap<string, Readonly<KickoffAssignment>>,
+  ballRadius: number = getScalarTuningValue(
+    DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+    TUNING_IDS.ball.radius,
+  ),
 ): PreparedKickoffReset {
+  const defaultBallRadius = getScalarTuningValue(
+    DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+    TUNING_IDS.ball.radius,
+  );
+  const finiteBallRadius = Number.isFinite(ballRadius) && ballRadius > 0
+    ? ballRadius
+    : defaultBallRadius;
   if (carBodies.size === 0 || assignments.size !== carBodies.size) {
     throw new TypeError('Kickoff reset requires one assignment for every current car.');
   }
@@ -252,14 +268,12 @@ export function prepareResetToKickoff(
       }),
     });
   });
-  const ballRadius = getConstant('BALL.RADIUS');
-
   return new PreparedKickoffResetImpl(
     ballBody,
     captureBody(ballBody),
     Object.freeze({
       x: 0,
-      y: ballRadius + getConstant('BALL.SPAWN_CLEARANCE'),
+      y: finiteBallRadius + getConstant('BALL.SPAWN_CLEARANCE'),
       z: 0,
     }),
     Object.freeze(cars),
@@ -271,6 +285,7 @@ export function resetToKickoff(
   ballBody: RAPIER.RigidBody,
   carBodies: ReadonlyMap<string, KickoffCarBody>,
   assignments: ReadonlyMap<string, Readonly<KickoffAssignment>>,
+  ballRadius?: number,
 ): void {
-  prepareResetToKickoff(ballBody, carBodies, assignments).apply();
+  prepareResetToKickoff(ballBody, carBodies, assignments, ballRadius).apply();
 }

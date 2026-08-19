@@ -4,7 +4,10 @@ import {
   INPUT_PROTOCOL_VERSION,
   MATCH_RULES,
   ROOM_POLICIES,
+  TUNING_IDS,
+  getScalarTuningValue,
   type InputCommandV2,
+  type RoomPinnedTuningSnapshot,
   type RosterEntry,
 } from '@rocket-arena/shared';
 import { GameState, PlayerState } from '@rocket-arena/shared/schema';
@@ -16,11 +19,17 @@ import {
 } from '@rocket-arena/shared/constants';
 import type { InputPayload } from '@rocket-arena/shared/types';
 import { createArenaColliders } from '../physics/arena.js';
-import { createBall } from '../physics/ball.js';
+import {
+  createBall,
+  recoverBallAfterStep,
+  recoverBallBeforeStep,
+} from '../physics/ball.js';
 import {
   applyCarPhysics,
   createCar,
   createCarPhysicsState,
+  recoverCarBodyAfterStep,
+  recoverCarBodyBeforeStep,
   synchronizeCarInputState,
   type CarPhysicsState,
 } from '../physics/car.js';
@@ -72,12 +81,15 @@ export function createQuickMatchCore<TWorld, TCar, TBall>(
   });
 }
 
-function legacyKickoffPosition(entry: Pick<RosterEntry, 'acceptedJoinOrdinal' | 'team'>): {
+function legacyKickoffPosition(
+  entry: Pick<RosterEntry, 'acceptedJoinOrdinal' | 'team'>,
+  tuning: RoomPinnedTuningSnapshot,
+): {
   readonly x: number;
   readonly y: number;
   readonly z: number;
 } {
-  const y = getConstant('CAR.BODY.HEIGHT') / 2
+  const y = getScalarTuningValue(tuning, TUNING_IDS.car.collider.height) / 2
     + getConstant('ARENA.KICKOFF.SPAWN_CLEARANCE');
   const slot = entry.acceptedJoinOrdinal % QUICK_MATCH_POLICY.teamCapacity;
   const horizontalSlot = slot === 0 ? 1 : slot === 1 ? -1 : 0;
@@ -106,83 +118,110 @@ function toLegacyInput(input: Readonly<InputCommandV2>): InputPayload {
  * bodies, inputs, projection, and disposal; later stages replace only these
  * callback implementations without changing the Quick policy adapter.
  */
-async function initializeQuickWorld(): Promise<
-  AuthoritativeRoomWorldBundle<RAPIER.World, QuickCar, RAPIER.RigidBody>
-> {
+async function initializeQuickWorld(
+  { tuning }: { readonly tuning: RoomPinnedTuningSnapshot },
+): Promise<AuthoritativeRoomWorldBundle<RAPIER.World, QuickCar, RAPIER.RigidBody>> {
   await initPhysics();
-  const world = createWorld();
-  createArenaColliders(world);
-  const ball = createBall(world);
+  let world: RAPIER.World | null = null;
+  let ownershipTransferred = false;
 
-  return {
-    world,
-    ball,
-    mutationResources: {
-      prepareJoin: ({ entry }, scope) => {
-        const position = legacyKickoffPosition(entry);
-        const rotation = entry.team === 'orange'
-          ? { x: 0, y: 1, z: 0, w: 0 }
-          : { x: 0, y: 0, z: 0, w: 1 };
-        const car = scope.track<QuickCar>(
-          {
-            body: createCar(world, position, rotation),
-            jumpState: createCarPhysicsState(),
-          },
-          ({ body }) => { world.removeRigidBody(body); },
-        );
-        return { car, input: createNeutralInputCommandV2() };
+  try {
+    const initializedWorld = createWorld(tuning);
+    world = initializedWorld;
+    createArenaColliders(initializedWorld);
+    const ball = createBall(initializedWorld, undefined, tuning);
+
+    const bundle: AuthoritativeRoomWorldBundle<
+      RAPIER.World,
+      QuickCar,
+      RAPIER.RigidBody
+    > = {
+      world: initializedWorld,
+      ball,
+      mutationResources: {
+        prepareJoin: ({ entry }, scope) => {
+          const position = legacyKickoffPosition(entry, tuning);
+          const rotation = entry.team === 'orange'
+            ? { x: 0, y: 1, z: 0, w: 0 }
+            : { x: 0, y: 0, z: 0, w: 1 };
+          const car = scope.track<QuickCar>(
+            {
+              body: createCar(initializedWorld, position, rotation, tuning),
+              jumpState: createCarPhysicsState(),
+            },
+            ({ body }) => { initializedWorld.removeRigidBody(body); },
+          );
+          return { car, input: createNeutralInputCommandV2() };
+        },
+        prepareLeave: ({ car }) => ({
+          commitRemoval: () => { initializedWorld.removeRigidBody(car.body); },
+        }),
       },
-      prepareLeave: ({ car }) => ({
-        commitRemoval: () => { world.removeRigidBody(car.body); },
-      }),
-    },
-    prepareKickoffPlacement: ({ ball: authoritativeBall, cars, assignmentSet }) => (
-      prepareResetToKickoff(
-        authoritativeBall,
-        new Map([...cars].map(([sessionId, car]) => [
-          sessionId,
-          { body: car.body, jumpState: car.jumpState },
-        ])),
-        assignmentSet.assignments,
-      )
-    ),
-    fixedStep: ({ state }) => {
-      const activePlay = state.phase === 'playing' || state.phase === 'overtime';
-      for (const [sessionId, car] of state.cars) {
-        const input = state.inputs.get(sessionId) ?? createNeutralInputCommandV2();
-        if (activePlay) applyCarPhysics(world, car.body, toLegacyInput(input), car.jumpState);
-        else synchronizeCarInputState(car.jumpState, toLegacyInput(input));
-      }
+      prepareKickoffPlacement: ({ ball: authoritativeBall, cars, assignmentSet }) => (
+        prepareResetToKickoff(
+          authoritativeBall,
+          new Map([...cars].map(([sessionId, car]) => [
+            sessionId,
+            { body: car.body, jumpState: car.jumpState },
+          ])),
+          assignmentSet.assignments,
+          getScalarTuningValue(tuning, TUNING_IDS.ball.radius),
+        )
+      ),
+      fixedStep: ({ state }) => {
+        const activePlay = state.phase === 'playing' || state.phase === 'overtime';
+        recoverBallBeforeStep(ball);
+        for (const [sessionId, car] of state.cars) {
+          recoverCarBodyBeforeStep(car.body);
+          const input = state.inputs.get(sessionId) ?? createNeutralInputCommandV2();
+          if (activePlay) {
+            applyCarPhysics(initializedWorld, car.body, toLegacyInput(input), car.jumpState);
+          } else {
+            synchronizeCarInputState(car.jumpState, toLegacyInput(input));
+          }
+        }
 
-      if (activePlay || state.phase === 'goal-reset') world.step();
-    },
-    projectCar: ({ car }) => {
-      const position = car.body.translation();
-      const rotation = car.body.rotation();
-      const linearVelocity = car.body.linvel();
-      const angularVelocity = car.body.angvel();
-      return {
-        position: [position.x, position.y, position.z],
-        rotation: [rotation.x, rotation.y, rotation.z, rotation.w],
-        linearVelocity: [linearVelocity.x, linearVelocity.y, linearVelocity.z],
-        angularVelocity: [angularVelocity.x, angularVelocity.y, angularVelocity.z],
-        boost: car.jumpState.boostAmount,
-      };
-    },
-    projectBall: ({ ball: authoritativeBall }) => {
-      const position = authoritativeBall.translation();
-      const rotation = authoritativeBall.rotation();
-      const linearVelocity = authoritativeBall.linvel();
-      const angularVelocity = authoritativeBall.angvel();
-      return {
-        position: [position.x, position.y, position.z],
-        rotation: [rotation.x, rotation.y, rotation.z, rotation.w],
-        linearVelocity: [linearVelocity.x, linearVelocity.y, linearVelocity.z],
-        angularVelocity: [angularVelocity.x, angularVelocity.y, angularVelocity.z],
-      };
-    },
-    dispose: () => { world.free(); },
-  };
+        if (activePlay || state.phase === 'goal-reset') {
+          initializedWorld.step();
+          for (const car of state.cars.values()) recoverCarBodyAfterStep(car.body);
+          recoverBallAfterStep(ball);
+        }
+      },
+      projectCar: ({ car }) => {
+        recoverCarBodyAfterStep(car.body);
+        const position = car.body.translation();
+        const rotation = car.body.rotation();
+        const linearVelocity = car.body.linvel();
+        const angularVelocity = car.body.angvel();
+        return {
+          position: [position.x, position.y, position.z],
+          rotation: [rotation.x, rotation.y, rotation.z, rotation.w],
+          linearVelocity: [linearVelocity.x, linearVelocity.y, linearVelocity.z],
+          angularVelocity: [angularVelocity.x, angularVelocity.y, angularVelocity.z],
+          boost: car.jumpState.boostAmount,
+        };
+      },
+      projectBall: ({ ball: authoritativeBall }) => {
+        recoverBallAfterStep(authoritativeBall);
+        const position = authoritativeBall.translation();
+        const rotation = authoritativeBall.rotation();
+        const linearVelocity = authoritativeBall.linvel();
+        const angularVelocity = authoritativeBall.angvel();
+        return {
+          position: [position.x, position.y, position.z],
+          rotation: [rotation.x, rotation.y, rotation.z, rotation.w],
+          linearVelocity: [linearVelocity.x, linearVelocity.y, linearVelocity.z],
+          angularVelocity: [angularVelocity.x, angularVelocity.y, angularVelocity.z],
+        };
+      },
+      dispose: () => { initializedWorld.free(); },
+    };
+
+    ownershipTransferred = true;
+    return bundle;
+  } finally {
+    if (!ownershipTransferred) world?.free();
+  }
 }
 
 interface LegacyInputEdgeState {

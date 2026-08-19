@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
 import type RAPIER from '@dimforge/rapier3d-compat';
+import {
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  TUNING_IDS,
+  getScalarTuningValue,
+} from '@rocket-arena/shared';
 import { getConstant } from '../../../shared/src/constants/index.js';
 import type { InputPayload } from '../../../shared/src/types/input.js';
 import { createArenaColliders } from './arena.js';
@@ -7,6 +12,8 @@ import {
   applyCarPhysics,
   createCar,
   createCarPhysicsState,
+  recoverCarBodyAfterStep,
+  recoverCarBodyBeforeStep,
   resetCarPhysicsState,
   synchronizeCarInputState,
   type CarPhysicsState,
@@ -20,7 +27,10 @@ interface Scenario {
   groundY: number;
 }
 
-const TIMESTEP = getConstant('PHYSICS.TIMESTEP');
+const TIMESTEP = getScalarTuningValue(
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  TUNING_IDS.physics.fixedStepSeconds,
+);
 const NEUTRAL: InputPayload = {
   throttle: 0,
   steer: 0,
@@ -33,23 +43,44 @@ function input(jump: boolean, jumpSequence?: number): InputPayload {
 }
 
 function step(scenario: Scenario, payload: InputPayload): void {
+  recoverCarBodyBeforeStep(scenario.car);
   applyCarPhysics(scenario.world, scenario.car, payload, scenario.state);
   scenario.world.step();
+  recoverCarBodyAfterStep(scenario.car);
 }
 
 function createScenario(): Scenario {
   const world = createWorld();
-  createArenaColliders(world);
-  const groundY = getConstant('CAR.BODY.HEIGHT') / 2
-    + getConstant('ARENA.KICKOFF.SPAWN_CLEARANCE');
-  const car = createCar(world, { x: 0, y: groundY, z: 0 });
-  const state = createCarPhysicsState();
+  let ownershipTransferred = false;
+  try {
+    createArenaColliders(world);
+    const groundY = getScalarTuningValue(
+      DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+      TUNING_IDS.car.collider.height,
+    ) / 2 + getConstant('ARENA.KICKOFF.SPAWN_CLEARANCE');
+    const car = createCar(world, { x: 0, y: groundY, z: 0 });
+    const state = createCarPhysicsState();
 
-  for (let frame = 0; frame < Math.round(0.5 / TIMESTEP); frame++) {
-    world.step();
+    for (let frame = 0; frame < Math.round(0.5 / TIMESTEP); frame++) {
+      recoverCarBodyBeforeStep(car);
+      world.step();
+      recoverCarBodyAfterStep(car);
+    }
+    resetCarPhysicsState(state);
+    ownershipTransferred = true;
+    return { world, car, state, groundY };
+  } finally {
+    if (!ownershipTransferred) world.free();
   }
-  resetCarPhysicsState(state);
-  return { world, car, state, groundY };
+}
+
+function withScenario<T>(run: (scenario: Scenario) => T): T {
+  const scenario = createScenario();
+  try {
+    return run(scenario);
+  } finally {
+    scenario.world.free();
+  }
 }
 
 function holdThroughLanding(scenario: Scenario, sequence: number): number {
@@ -72,9 +103,7 @@ function holdThroughLanding(scenario: Scenario, sequence: number): number {
 
   assert.ok(rearmed, `sequence ${sequence} did not land and rearm`);
   const landingY = scenario.car.translation().y;
-  for (let frame = 0; frame < Math.round(0.25 / TIMESTEP); frame++) {
-    step(scenario, held);
-  }
+  for (let frame = 0; frame < Math.round(0.25 / TIMESTEP); frame++) step(scenario, held);
   assert.equal(scenario.state.count, 0, 'held Space must not retrigger after landing');
   assert.ok(
     scenario.car.translation().y <= landingY + getConstant('CAR.GROUND.CONTACT_MARGIN'),
@@ -86,104 +115,100 @@ function holdThroughLanding(scenario: Scenario, sequence: number): number {
 }
 
 function runRepeatedLandingCycles(): { cycles: number; fifthApex: number; minApex: number } {
-  const scenario = createScenario();
-  const apexes: number[] = [];
+  return withScenario((scenario) => {
+    const apexes: number[] = [];
 
-  // **Validates: Requirements 4**
-  for (let sequence = 1; sequence <= 10; sequence++) {
-    apexes.push(holdThroughLanding(scenario, sequence));
-  }
+    // **Validates: Requirements 4**
+    for (let sequence = 1; sequence <= 10; sequence++) {
+      apexes.push(holdThroughLanding(scenario, sequence));
+    }
 
-  assert.ok(apexes.every((apex) => apex > 1), `weak repeated jump: ${apexes.join(', ')}`);
-  scenario.world.free();
-  return {
-    cycles: apexes.length,
-    fifthApex: apexes[4],
-    minApex: Math.min(...apexes),
-  };
+    assert.ok(apexes.every((apex) => apex > 1), `weak repeated jump: ${apexes.join(', ')}`);
+    return {
+      cycles: apexes.length,
+      fifthApex: apexes[4],
+      minApex: Math.min(...apexes),
+    };
+  });
 }
 
 function runCollapsedRapidTap(): number {
-  const scenario = createScenario();
-
-  // Keyup won the boolean race, but the incremented sequence must survive.
-  step(scenario, input(false, 1));
-  const verticalVelocity = scenario.car.linvel().y;
-  assert.ok(verticalVelocity > 2, 'collapsed rapid tap did not trigger a jump');
-  assert.equal(scenario.state.lastJumpSequence, 1);
-
-  scenario.world.free();
-  return verticalVelocity;
+  return withScenario((scenario) => {
+    // Keyup won the boolean race, but the incremented sequence must survive.
+    step(scenario, input(false, 1));
+    const verticalVelocity = scenario.car.linvel().y;
+    assert.ok(verticalVelocity > 2, 'collapsed rapid tap did not trigger a jump');
+    assert.equal(scenario.state.lastJumpSequence, 1);
+    return verticalVelocity;
+  });
 }
 
 function runAirbornePressDiscard(): number {
-  const scenario = createScenario();
-  step(scenario, input(false, 1));
-  for (let frame = 0; frame < 5; frame++) step(scenario, input(false, 1));
-  assert.equal(scenario.state.grounded, false, 'scenario must be airborne before second press');
+  return withScenario((scenario) => {
+    step(scenario, input(false, 1));
+    for (let frame = 0; frame < 5; frame++) step(scenario, input(false, 1));
+    assert.equal(scenario.state.grounded, false, 'scenario must be airborne before second press');
 
-  step(scenario, input(false, 2));
-  assert.equal(scenario.state.lastJumpSequence, 2, 'airborne sequence was not consumed');
-
-  let landed = false;
-  for (let frame = 0; frame < Math.round(4 / TIMESTEP); frame++) {
     step(scenario, input(false, 2));
-    if (scenario.state.grounded && scenario.state.count === 0) {
-      landed = true;
-      break;
+    assert.equal(scenario.state.lastJumpSequence, 2, 'airborne sequence was not consumed');
+
+    let landed = false;
+    for (let frame = 0; frame < Math.round(4 / TIMESTEP); frame++) {
+      step(scenario, input(false, 2));
+      if (scenario.state.grounded && scenario.state.count === 0) {
+        landed = true;
+        break;
+      }
     }
-  }
-  assert.ok(landed, 'airborne-press scenario did not land');
+    assert.ok(landed, 'airborne-press scenario did not land');
 
-  let postLandingApex = scenario.car.translation().y;
-  for (let frame = 0; frame < Math.round(0.5 / TIMESTEP); frame++) {
-    step(scenario, input(false, 2));
-    postLandingApex = Math.max(postLandingApex, scenario.car.translation().y);
-  }
-  assert.ok(
-    postLandingApex <= scenario.groundY + getConstant('CAR.GROUND.CONTACT_MARGIN'),
-    'airborne press queued an automatic landing jump',
-  );
-
-  scenario.world.free();
-  return postLandingApex;
+    let postLandingApex = scenario.car.translation().y;
+    for (let frame = 0; frame < Math.round(0.5 / TIMESTEP); frame++) {
+      step(scenario, input(false, 2));
+      postLandingApex = Math.max(postLandingApex, scenario.car.translation().y);
+    }
+    assert.ok(
+      postLandingApex <= scenario.groundY + getConstant('CAR.GROUND.CONTACT_MARGIN'),
+      'airborne press queued an automatic landing jump',
+    );
+    return postLandingApex;
+  });
 }
 
 function runKickoffSynchronization(): void {
-  const scenario = createScenario();
-  const heldAtReset = input(true, 7);
-  synchronizeCarInputState(scenario.state, heldAtReset);
-  resetCarPhysicsState(scenario.state);
-  step(scenario, heldAtReset);
+  withScenario((scenario) => {
+    const heldAtReset = input(true, 7);
+    synchronizeCarInputState(scenario.state, heldAtReset);
+    resetCarPhysicsState(scenario.state);
+    step(scenario, heldAtReset);
 
-  assert.equal(scenario.state.count, 0, 'kickoff/reset must not replay a held sequence');
-  assert.ok(scenario.car.linvel().y < 2, 'kickoff/reset auto-jumped');
-  scenario.world.free();
+    assert.equal(scenario.state.count, 0, 'kickoff/reset must not replay a held sequence');
+    assert.ok(scenario.car.linvel().y < 2, 'kickoff/reset auto-jumped');
+  });
 }
 
 function runBooleanFallback(): number {
-  const scenario = createScenario();
-  step(scenario, input(true));
-  const firstJumpVelocity = scenario.car.linvel().y;
-  assert.ok(firstJumpVelocity > 2, 'legacy boolean press did not jump');
-
-  let landed = false;
-  for (let frame = 0; frame < Math.round(4 / TIMESTEP); frame++) {
+  return withScenario((scenario) => {
     step(scenario, input(true));
-    if (scenario.state.grounded && scenario.state.count === 0) {
-      landed = true;
-      break;
-    }
-  }
-  assert.ok(landed, 'legacy held jump did not land');
-  step(scenario, input(true));
-  assert.equal(scenario.state.count, 0, 'legacy held boolean retriggered');
-  step(scenario, input(false));
-  step(scenario, input(true));
-  assert.equal(scenario.state.count, 1, 'legacy release/press did not retrigger');
+    const firstJumpVelocity = scenario.car.linvel().y;
+    assert.ok(firstJumpVelocity > 2, 'legacy boolean press did not jump');
 
-  scenario.world.free();
-  return firstJumpVelocity;
+    let landed = false;
+    for (let frame = 0; frame < Math.round(4 / TIMESTEP); frame++) {
+      step(scenario, input(true));
+      if (scenario.state.grounded && scenario.state.count === 0) {
+        landed = true;
+        break;
+      }
+    }
+    assert.ok(landed, 'legacy held jump did not land');
+    step(scenario, input(true));
+    assert.equal(scenario.state.count, 0, 'legacy held boolean retriggered');
+    step(scenario, input(false));
+    step(scenario, input(true));
+    assert.equal(scenario.state.count, 1, 'legacy release/press did not retrigger');
+    return firstJumpVelocity;
+  });
 }
 
 async function main(): Promise<void> {

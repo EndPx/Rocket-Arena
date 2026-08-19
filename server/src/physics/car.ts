@@ -1,6 +1,12 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import { PHYSICS, getConstant } from '../../../shared/src/constants/index.js';
 import type { InputPayload } from '../../../shared/src/types/input.js';
+import {
+  createCarBody,
+  recoverCarBodyAfterStep,
+  recoverCarBodyBeforeStep,
+  type PhysicsTuningSnapshot,
+} from './car-body.js';
 
 interface Vec3 {
   x: number;
@@ -166,48 +172,16 @@ export function resetCarPhysicsState(
   }
 }
 
-/** Create a rounded dynamic chassis with stable, low-friction contacts. */
+export { recoverCarBodyAfterStep, recoverCarBodyBeforeStep };
+
+/** Backwards-compatible facade for the metric plain-box car constructor. */
 export function createCar(
   world: RAPIER.World,
   position: Vec3,
   rotation?: Quaternion,
+  tuning?: PhysicsTuningSnapshot,
 ): RAPIER.RigidBody {
-  const width = getConstant('CAR.BODY.WIDTH');
-  const height = getConstant('CAR.BODY.HEIGHT');
-  const length = getConstant('CAR.BODY.LENGTH');
-  const cornerRadius = getConstant('CAR.BODY.CORNER_RADIUS');
-
-  const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
-    .setTranslation(position.x, position.y, position.z)
-    .setLinearDamping(getConstant('CAR.DAMPING.LINEAR'))
-    .setAngularDamping(getConstant('CAR.DAMPING.ANGULAR'))
-    .setCcdEnabled(true)
-    .setSoftCcdPrediction(getConstant('CAR.BODY.SOFT_CCD_PREDICTION'))
-    .setAdditionalSolverIterations(Math.round(
-      getConstant('CAR.BODY.ADDITIONAL_SOLVER_ITERATIONS'),
-    ));
-
-  if (rotation) bodyDesc.setRotation(rotation);
-  const body = world.createRigidBody(bodyDesc);
-
-  world.createCollider(
-    RAPIER.ColliderDesc.roundCuboid(
-      width / 2 - cornerRadius,
-      height / 2 - cornerRadius,
-      length / 2 - cornerRadius,
-      cornerRadius,
-    )
-      .setMass(getConstant('CAR.BODY.MASS'))
-      .setFriction(getConstant('CAR.BODY.FRICTION'))
-      .setRestitution(getConstant('CAR.BODY.RESTITUTION'))
-      .setContactSkin(getConstant('CAR.BODY.CONTACT_SKIN'))
-      .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min)
-      .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Max),
-    body,
-  );
-
-  world.updateSceneQueries();
-  return body;
+  return createCarBody(world, position, rotation, tuning);
 }
 
 /** Read local motion components used by the controller and test harnesses. */

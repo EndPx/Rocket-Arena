@@ -1,26 +1,39 @@
 import assert from 'node:assert/strict';
+import type RAPIER from '@dimforge/rapier3d-compat';
+import {
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  TUNING_IDS,
+  getScalarTuningValue,
+} from '@rocket-arena/shared';
 import { getConstant } from '../../../shared/src/constants/index.js';
 import { createArenaColliders } from './arena.js';
-import { createBall } from './ball.js';
+import {
+  createBall,
+  recoverBallAfterStep,
+  recoverBallBeforeStep,
+} from './ball.js';
 import { createWorld, initPhysics } from './world.js';
 
 const TEST_SECONDS = 2.5;
 // Allows Rapier's brief high-speed contact penetration while still rejecting escape/tunneling.
 const PENETRATION_TOLERANCE = 0.25;
 
-async function main(): Promise<void> {
-  await initPhysics();
-  const timestep = getConstant('PHYSICS.TIMESTEP');
-  const frameCount = Math.round(TEST_SECONDS / timestep);
-  const radius = getConstant('BALL.RADIUS');
-  const goalWidth = getConstant('ARENA.GOAL.WIDTH');
-  const goalHeight = getConstant('ARENA.GOAL.HEIGHT');
-  const goalDepth = getConstant('ARENA.GOAL.DEPTH');
-  const length = getConstant('ARENA.LENGTH');
+function tuning(id: string): number {
+  return getScalarTuningValue(DEFAULT_TUNING_REGISTRY_SNAPSHOT, id);
+}
 
-  for (const zSign of [-1, 1]) {
-    const world = createWorld();
+function runGoalInterior(zSign: number): void {
+  let world: RAPIER.World | null = null;
+  try {
+    world = createWorld();
     createArenaColliders(world);
+    const timestep = tuning(TUNING_IDS.physics.fixedStepSeconds);
+    const frameCount = Math.round(TEST_SECONDS / timestep);
+    const radius = tuning(TUNING_IDS.ball.radius);
+    const goalWidth = getConstant('ARENA.GOAL.WIDTH');
+    const goalHeight = getConstant('ARENA.GOAL.HEIGHT');
+    const goalDepth = getConstant('ARENA.GOAL.DEPTH');
+    const length = getConstant('ARENA.LENGTH');
     const ball = createBall(world, {
       x: 0,
       y: radius + getConstant('BALL.SPAWN_CLEARANCE'),
@@ -32,8 +45,10 @@ async function main(): Promise<void> {
     let minimumY = Number.POSITIVE_INFINITY;
     let maximumY = Number.NEGATIVE_INFINITY;
     for (let frame = 0; frame < frameCount; frame++) {
+      recoverBallBeforeStep(ball);
       world.step();
-      const position = ball.translation();
+      const state = recoverBallAfterStep(ball);
+      const position = state.translation;
       maxAbsX = Math.max(maxAbsX, Math.abs(position.x));
       minimumY = Math.min(minimumY, position.y);
       maximumY = Math.max(maximumY, position.y);
@@ -52,9 +67,14 @@ async function main(): Promise<void> {
       maximumY <= goalHeight - radius + PENETRATION_TOLERANCE,
       `goal roof containment failed at sign ${zSign}: y=${maximumY.toFixed(3)}`,
     );
-    world.free();
+  } finally {
+    world?.free();
   }
+}
 
+async function main(): Promise<void> {
+  await initPhysics();
+  for (const zSign of [-1, 1]) runGoalInterior(zSign);
   console.log('=== GOAL TUNNEL HARNESS: PASS ===');
 }
 

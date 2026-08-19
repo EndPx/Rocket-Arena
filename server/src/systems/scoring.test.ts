@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import RAPIER from '@dimforge/rapier3d-compat';
 import {
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
   KICKOFF_SLOTS,
+  TUNING_IDS,
+  getConstant,
+  getScalarTuningValue,
   type KickoffSlotIndex,
   type Team,
 } from '@rocket-arena/shared';
@@ -101,7 +105,11 @@ test('prepared scoring reset applies complete kickoff transforms and can restore
       orangeState,
     });
 
-    const prepared = prepareResetToKickoff(ball, cars, assignments);
+    const ballRadius = getScalarTuningValue(
+      DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+      TUNING_IDS.ball.radius,
+    );
+    const prepared = prepareResetToKickoff(ball, cars, assignments, ballRadius);
     assert.deepEqual(structuredClone({
       ball: bodySnapshot(ball),
       blue: bodySnapshot(blueBody),
@@ -111,6 +119,11 @@ test('prepared scoring reset applies complete kickoff transforms and can restore
     }), before, 'preparation captures state without moving any body');
 
     prepared.apply();
+    assertVectorNear(ball.translation(), [
+      0,
+      ballRadius + getConstant('BALL.SPAWN_CLEARANCE'),
+      0,
+    ]);
     for (const [sessionId, entry] of cars) {
       const expected = assignments.get(sessionId)!;
       assertVectorNear(entry.body.translation(), expected.position);
@@ -131,6 +144,11 @@ test('prepared scoring reset applies complete kickoff transforms and can restore
     }), before);
 
     resetToKickoff(ball, cars, assignments);
+    assertVectorNear(ball.translation(), [
+      0,
+      ballRadius + getConstant('BALL.SPAWN_CLEARANCE'),
+      0,
+    ]);
     assertVectorNear(blueBody.linvel(), [0, 0, 0]);
     assertVectorNear(orangeBody.angvel(), [0, 0, 0]);
   } finally {

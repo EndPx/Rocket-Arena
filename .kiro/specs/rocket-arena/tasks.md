@@ -251,7 +251,7 @@ Every implementation task must leave its code wired into the preceding increment
     - _Requirements: 1.4-1.12, 2.1-2.10, 3.1-3.15, 4.1-4.20, 5.1-5.12, 6.1-6.12, 13.1-13.8, 13.15-13.16, 13.22-13.23_
 
 - [ ] 5. Replace legacy mechanics with metric bodies, scripted control, and Core grounding
-  - [ ] 5.1 Build metric Rapier bodies and finite-state recovery
+  - [x] 5.1 Build metric Rapier bodies and finite-state recovery
     - Add `server/src/physics/car-body.ts` and `server/src/physics/finite-state.ts`; refactor `server/src/physics/world.ts`, `server/src/physics/ball.ts`, and the compatibility facade in `server/src/physics/car.ts` for gravity `(0,-6.5,0)`, a plain 150 kg box car, a 0.9125 m/25 kg/0.60 ball, CCD, registry damping, last-finite recovery, and post-step speed/angular caps.
     - Extend `server/src/physics/test-ball.ts`, `test-car.ts`, and `test-impact.ts` for exact construction, 6:1 mass ratio, finite fallback, caps, collision-owned ball spin, and zero additional scripted ball angular impulse.
     - Wrap every Rapier world/body setup in `try/finally`, free all created resources after success, assertion failure, or setup failure, and add a cleanup assertion or tracked disposal spy.
