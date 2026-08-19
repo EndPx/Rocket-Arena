@@ -215,28 +215,28 @@ Every implementation task must leave its code wired into the preceding increment
     - _Depends on: 4.2, 4.3_
     - _Requirements: 5.13_
 
-  - [ ] 4.7 Implement generated Property 6 coverage for kickoff bijection and unique spawn
+  - [x] 4.7 Implement generated Property 6 coverage for kickoff bijection and unique spawn
     - Add `server/src/systems/kickoff-slots.property.test.ts` and enumerate every capacity-valid team-size/order shape plus at least 100 generated identity/order cases per recorded seed; verify mirroring, facing, OBB separation, completeness, and repeatability.
     - **Property 6: Deterministic kickoff-slot bijection and unique spawn**
     - **Validates: Requirements 5.1-5.12, 18.16**
     - _Depends on: 1.6, 4.3_
     - _Requirements: 5.1-5.12, 18.16, 18.25_
 
-  - [ ] 4.8 Implement generated Property 4 coverage for Quick countdown gating
+  - [x] 4.8 Implement generated Property 4 coverage for Quick countdown gating
     - Add `server/src/rooms/quick-countdown.property.test.ts` with at least 100 generated pre-active roster sequences per recorded seed, checking iff start gating, cancellation before play, and full-duration restart.
     - **Property 4: Quick Match countdown gate and cancellation**
     - **Validates: Requirements 3.9-3.13, 18.13**
     - _Depends on: 1.6, 4.5_
     - _Requirements: 3.9-3.13, 18.13, 18.25_
 
-  - [ ] 4.9 Implement generated Property 5 coverage for Custom Host authority and succession
+  - [x] 4.9 Implement generated Property 5 coverage for Custom Host authority and succession
     - Add `server/src/rooms/custom-host.property.test.ts` with at least 100 generated waiting/countdown rosters and requests per recorded seed; assert sole-Host start authority, deterministic succession, rejection atomicity, and countdown preservation.
     - **Property 5: Custom Host authority and succession**
     - **Validates: Requirements 4.2, 4.13-4.17**
     - _Depends on: 1.6, 4.5_
     - _Requirements: 4.2, 4.13-4.17, 18.15, 18.25_
 
-  - [ ] 4.10 Implement generated Property 14 coverage for kickoff and reset timing
+  - [x] 4.10 Implement generated Property 14 coverage for kickoff and reset timing
     - Add `server/src/systems/match-flow-timing.property.test.ts` with at least 100 generated callback partitions and legal phase states per recorded seed; require 180/120 completed fixed steps, disabled controls, deterministic restoration, preserved scores/regulation time, and no early Active_Play.
     - **Property 14: Fixed-step kickoff and reset timing**
     - **Validates: Requirements 13.3, 13.5-13.8, 13.15-13.16, 18.22-18.23**
