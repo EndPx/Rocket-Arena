@@ -284,7 +284,7 @@ Every implementation task must leave its code wired into the preceding increment
     - Refactor `server/src/physics/arena.ts` only enough to tag the current floor, lower ramps, and solid goal-interior Core surfaces; keep Advanced surfaces capability-gated and explicitly disabled for the staging increment.
     - Add `server/src/physics/test-grounding.ts` for rotated cars, floor/ramp/goal support, adjacent surfaces, dynamic/ball/sensor/disabled exclusions, all-miss airborne behavior, surface-relative commands, and guaranteed Rapier cleanup.
     - _Depends on: 1.3, 5.1_
-    - _Requirements: 10.1-10.5, 10.10-10.12, 18.19, 18.26_
+    - _Requirements: 10.1-10.5, 10.11-10.12, 18.19, 18.26_
 
   - [x] 5.6 Wire the ordered scripted simulation pipeline into the room core
     - Refactor `server/src/rooms/authoritative-room-core.ts` to execute mutation drain, phase gate, input recovery, body recovery, grounding, Stable_Roster_Order command planning, Rapier step, post-step bounds, event extraction, match reduction, and schema projection in the exact design order.
@@ -293,42 +293,43 @@ Every implementation task must leave its code wired into the preceding increment
     - _Depends on: 4.5, 5.2, 5.3, 5.4, 5.5_
     - _Requirements: 1.1-1.3, 7.8-7.12, 8.4-8.17, 9.4-9.17, 10.3-10.5, 10.11-10.12, 11.9-11.11_
 
-  - [ ] 5.7 Implement generated Property 23 coverage for physics construction and collision-owned spin
+  - [x] 5.7 Implement generated Property 23 coverage for physics construction and collision-owned spin
     - Add `server/src/physics/physics-construction.property.test.ts` with at least 100 generated body/world configurations inside validated ranges per recorded seed, exact construction assertions, contact traces, and `try/finally` resource cleanup.
     - **Property 23: Physics construction and collision-owned ball spin**
     - **Validates: Requirements 7.1-7.7, 11.1-11.10, 18.7**
     - _Depends on: 1.6, 5.6_
     - _Requirements: 7.1-7.7, 11.1-11.10, 18.7, 18.25-18.26_
 
-  - [ ] 5.8 Implement generated Property 9 coverage for throttle monotonicity and scaling
+  - [x] 5.8 Implement generated Property 9 coverage for throttle monotonicity and scaling
     - Add `server/src/physics/throttle.property.test.ts` with at least 100 generated finite speeds and normalized inputs per recorded seed, including exact target boundaries and boost/no-boost cases.
     - **Property 9: Throttle curve monotonicity and input scaling**
     - **Validates: Requirements 8.4-8.7, 18.1-18.2**
     - _Depends on: 1.6, 5.6_
     - _Requirements: 8.4-8.7, 18.1-18.2, 18.25_
 
-  - [ ] 5.9 Implement generated Property 11 coverage for grip and powerslide ordering
+  - [x] 5.9 Implement generated Property 11 coverage for grip and powerslide ordering
     - Add `server/src/physics/grip-powerslide.property.test.ts` with at least 100 generated grounded velocities, speeds, normals, and steering inputs per recorded seed; require finite lateral decay and strict configured ordering.
     - **Property 11: Grip and powerslide ordering**
     - **Validates: Requirements 8.11-8.16, 18.3-18.4**
     - _Depends on: 1.6, 5.6_
     - _Requirements: 8.11-8.16, 18.3-18.4, 18.25_
 
-  - [ ] 5.10 Implement generated Property 13 coverage for local-down grounding
+  - [x] 5.10 Implement generated Property 13 coverage for local-down grounding
     - Add `server/src/physics/grounding.property.test.ts` with at least 100 generated car orientations/contact sets per recorded seed; exercise enabled Core surfaces and rejected dynamic/sensor/disabled/all-miss cases, record deterministic normals, and free every world in `finally`.
     - **Property 13: Local-down grounding classification**
-    - **Validates: Requirements 10.1-10.5, 10.10-10.12, 18.19**
+    - **Validates: Requirements 10.1-10.5, 10.11-10.12, 18.19**
+    - **Wave 1 traceability:** Requirement 10.10 remains owned by unchecked Task 9.1's typed staging `Feature_Status_Record`; Property 13 does not claim that separate status-record obligation.
     - _Depends on: 1.6, 5.6_
-    - _Requirements: 10.1-10.5, 10.10-10.12, 18.19, 18.25-18.26_
+    - _Requirements: 10.1-10.5, 10.11-10.12, 18.19, 18.25-18.26_
 
-  - [ ] 5.11 Implement generated Property 10 coverage for finite output and speed bounds
+  - [x] 5.11 Implement generated Property 10 coverage for finite output and speed bounds
     - Add `server/src/physics/finite-bounds.property.test.ts` with at least 100 generated finite/non-finite input, tuning, and observed-state cases per recorded seed; verify every exposed scalar/vector and all car/ball caps after recovery.
     - **Property 10: Finite authoritative output and body speed bounds**
     - **Validates: Requirements 7.8-7.12, 8.10, 9.16, 11.4-11.5, 11.11, 18.11**
     - _Depends on: 1.6, 5.6_
     - _Requirements: 7.8-7.12, 8.10, 9.16, 11.4-11.5, 11.11, 18.11, 18.25_
 
-  - [ ] 5.12 Implement generated Property 19 coverage for server authority preservation
+  - [x] 5.12 Implement generated Property 19 coverage for server authority preservation
     - Add `server/src/rooms/server-authority.property.test.ts` with at least 100 generated valid controls plus forged transform/contact/inventory/score/team/phase fields per recorded seed; compare the next authoritative snapshot to a control-only run.
     - **Property 19: Server authority preservation**
     - **Validates: Requirements 1.1-1.3, 18.18**
@@ -339,6 +340,7 @@ Every implementation task must leave its code wired into the preceding increment
   - [ ] 6.1 Generate the closed Rapier arena and solid goal interiors from the shared spec
     - Refactor `server/src/physics/arena.ts` to build exact floor, ramps, side/end walls, four corner cuts, transitions, ceiling, goal floor/sides/roof/back, openings, and semantic contact metadata from `ArenaGeometrySpec`.
     - Replace obsolete goal sensors where they conflict with center-plane scoring, retain only required sensors such as pads, and add `server/src/physics/test-metric-arena.ts` for exact extents, closed containment through 60 m/s, solid goal interiors, openings, Core tags, and resource cleanup in `finally`.
+    - **Wave 1 status:** Blocked -- `ArenaGeometrySpec` does not provide an approved ramp run/pitch/profile, wall-to-ceiling transition profile, unambiguous corner-cut endpoint semantics, or canonical primitive/extrusion representation. The legacy server's assumed 45-degree ramp and thickness are non-authoritative and were not promoted into shared geometry.
     - _Depends on: 5.6_
     - _Requirements: 12.1-12.9, 12.15, 18.8, 18.26_
 

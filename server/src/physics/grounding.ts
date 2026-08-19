@@ -128,10 +128,10 @@ function compareRegisteredSurfaces(
 }
 
 function compareHits(left: GroundingHit, right: GroundingHit): number {
-  return compareText(left.surfaceId, right.surfaceId)
+  return left.contactPointIndex - right.contactPointIndex
     || left.colliderHandle - right.colliderHandle
-    || left.contactPointIndex - right.contactPointIndex
-    || left.distance - right.distance;
+    || left.distance - right.distance
+    || compareText(left.surfaceId, right.surfaceId);
 }
 
 function finiteVector(value: GroundingVector3 | undefined): GroundingVector3 | null {
@@ -146,6 +146,32 @@ function normalize(
   const length = Math.hypot(value.x, value.y, value.z);
   if (!Number.isFinite(length) || length <= EPSILON) return { ...fallback };
   return { x: value.x / length, y: value.y / length, z: value.z / length };
+}
+
+function normalizeFinite(value: GroundingVector3 | undefined): GroundingVector3 | null {
+  const finite = finiteVector(value);
+  if (finite === null) return null;
+  const length = Math.hypot(finite.x, finite.y, finite.z);
+  if (!Number.isFinite(length) || length <= EPSILON) return null;
+  return { x: finite.x / length, y: finite.y / length, z: finite.z / length };
+}
+
+/**
+ * Combine already-sorted support normals. Invalid candidates are ignored and a
+ * degenerate sum retains the first valid normal in deterministic hit order.
+ */
+export function combineGroundingNormals(
+  sortedNormals: readonly GroundingVector3[],
+): GroundingVector3 | null {
+  let firstValid: GroundingVector3 | null = null;
+  let normalSum: GroundingVector3 = { x: 0, y: 0, z: 0 };
+  for (const candidate of sortedNormals) {
+    const normal = normalizeFinite(candidate);
+    if (normal === null) continue;
+    firstValid ??= normal;
+    normalSum = add(normalSum, normal);
+  }
+  return firstValid === null ? null : normalize(normalSum, firstValid);
 }
 
 function finiteQuaternion(value: GroundingQuaternion): GroundingQuaternion {
@@ -338,9 +364,8 @@ export function detectGroundSupport(
     );
     if (hit === null || !Number.isFinite(hit.timeOfImpact)) continue;
     if (hit.timeOfImpact < 0 || hit.timeOfImpact > rayDistance + EPSILON) continue;
-    const normalCandidate = finiteVector(hit.normal);
-    if (normalCandidate === null) continue;
-    const normal = normalize(normalCandidate);
+    const normal = normalizeFinite(hit.normal);
+    if (normal === null) continue;
     if (dot(normal, localRoof) + EPSILON < minimumNormalDot) continue;
     const surface = surfaces.get(hit.collider);
     if (surface === null) continue;
@@ -359,9 +384,10 @@ export function detectGroundSupport(
     return { grounded: false, normal: null, basis: null, acceptedHits: [] };
   }
 
-  let normalSum: GroundingVector3 = { x: 0, y: 0, z: 0 };
-  for (const hit of acceptedHits) normalSum = add(normalSum, hit.normal);
-  const normal = normalize(normalSum);
+  const normal = combineGroundingNormals(acceptedHits.map((hit) => hit.normal));
+  if (normal === null) {
+    return { grounded: false, normal: null, basis: null, acceptedHits: [] };
+  }
   return {
     grounded: true,
     normal,

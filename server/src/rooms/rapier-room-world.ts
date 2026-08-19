@@ -116,11 +116,21 @@ export async function initializeAuthoritativeRapierWorld(
           const rotation = entry.team === 'orange'
             ? { x: 0, y: 1, z: 0, w: 0 }
             : { x: 0, y: 0, z: 0, w: 1 };
+          let lastFiniteBoostAmount = initialBoostAmount();
           const car = scope.track<AuthoritativeRapierCar>(
             {
               body: createCarBody(initializedWorld, position, rotation, tuning),
               jumpAirState: createCarJumpAirState(),
-              boostAmount: initialBoostAmount(),
+              get boostAmount(): number {
+                return lastFiniteBoostAmount;
+              },
+              set boostAmount(value: number) {
+                if (!Number.isFinite(value)) return;
+                lastFiniteBoostAmount = Math.max(
+                  0,
+                  Math.min(value, getConstant('CAR.BOOST.MAX_AMOUNT')),
+                );
+              },
             },
             (temporary) => {
               carsBySessionId.delete(entry.sessionId);

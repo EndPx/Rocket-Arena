@@ -235,9 +235,14 @@ function runAdjacentAndConfiguredCases(): void {
     const result = detectGroundSupport(adjacentWorld, probe, registry);
     assert.equal(result.grounded, true, 'adjacent Core surfaces must combine support');
     assert.deepEqual(
-      [...new Set(result.acceptedHits.map((hit) => hit.surfaceId))],
+      result.acceptedHits.map((hit) => hit.contactPointIndex),
+      [0, 1, 2, 3],
+      'accepted normals must retain stable contact-point-index order',
+    );
+    assert.deepEqual(
+      [...new Set(result.acceptedHits.map((hit) => hit.surfaceId))].sort(),
       ['field.floor', 'goal.blue.floor'],
-      'accepted normals must be combined in stable semantic-ID order',
+      'adjacent support must include both Core surfaces independent of hit order',
     );
     assertFiniteResultGeometry(result);
   } finally {
