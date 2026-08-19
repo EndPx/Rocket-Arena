@@ -271,7 +271,7 @@ Every implementation task must leave its code wired into the preceding increment
     - _Depends on: 5.2_
     - _Requirements: 7.4, 8.11-8.16_
 
-  - [ ] 5.4 Implement jump/flip/air state and expanded client controls
+  - [x] 5.4 Implement jump/flip/air state and expanded client controls
     - Extend `server/src/physics/car-controller.ts` with per-car consumed edge state, first jump, bounded hold, inclusive second-jump window, directional flip/deadzone/window, stale/late edge consumption, grounded reset, local-axis pitch/yaw/roll, and combined 5.5 rad/s bound.
     - Refactor `client/src/input/input-controller.ts` and `client/src/input/keyboard-handler.ts` to emit V2 powerslide/air axes and monotonic edges while retaining editable-target rules, neutral synchronization, and the 250-millisecond heartbeat.
     - Extend `server/src/physics/test-jump-sequence.ts` and `client/tests/input-controller.test.ts` for before/at/after boundaries, held/released jump, repeated heartbeats, malformed-axis neutrality, grounded-vs-air mapping, and Rapier cleanup in `finally`.

@@ -1,5 +1,5 @@
 import type { Room } from 'colyseus.js';
-import type { InputPayload } from '@rocket-arena/shared';
+import type { InputCommandV2, InputPayload } from '@rocket-arena/shared';
 import { InputController, isEditableTarget } from './input-controller.js';
 
 const controller = new InputController();
@@ -40,8 +40,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   });
 }
 
-/** Read a fresh immutable view of the current local controls for presentation systems. */
+/** Read a fresh immutable legacy view for presentation systems only. */
 export function getCurrentInput(): Readonly<InputPayload> {
+  const command = controller.getPayload();
+  return Object.freeze({
+    throttle: command.throttle,
+    steer: command.steer,
+    jump: command.jumpHeld,
+    boost: command.boostHeld,
+    jumpSequence: command.jumpSequence,
+  });
+}
+
+/** Read the exact V2 command sent to the authoritative server. */
+export function getCurrentInputCommandV2(): Readonly<InputCommandV2> {
   return controller.getPayload();
 }
 

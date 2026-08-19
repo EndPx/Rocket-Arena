@@ -1,232 +1,726 @@
 import assert from 'node:assert/strict';
-import type RAPIER from '@dimforge/rapier3d-compat';
+import RAPIER from '@dimforge/rapier3d-compat';
 import {
+  ARENA_GEOMETRY_SPEC,
   DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  INPUT_PROTOCOL_VERSION,
   TUNING_IDS,
   getScalarTuningValue,
+  type InputCommandV2,
 } from '@rocket-arena/shared';
-import { getConstant } from '../../../shared/src/constants/index.js';
-import type { InputPayload } from '../../../shared/src/types/input.js';
-import { createArenaColliders } from './arena.js';
 import {
-  applyCarPhysics,
-  createCar,
-  createCarPhysicsState,
-  recoverCarBodyAfterStep,
-  recoverCarBodyBeforeStep,
-  resetCarPhysicsState,
-  synchronizeCarInputState,
-  type CarPhysicsState,
-} from './car.js';
-import { createWorld, initPhysics } from './world.js';
+  createCarJumpAirState,
+  planCarControllerCommand,
+  planJumpAirControl,
+  synchronizeCarJumpAirState,
+  type CarControllerObservation,
+  type CarJumpAirState,
+  type ControllerQuaternion,
+  type ControllerVector3,
+  type JumpAirControlPlan,
+} from './car-controller.js';
+import { ArenaSurfaceRegistry, detectGroundSupport } from './grounding.js';
+import { initPhysics } from './world.js';
 
-interface Scenario {
-  world: RAPIER.World;
-  car: RAPIER.RigidBody;
-  state: CarPhysicsState;
-  groundY: number;
-}
-
+const EPSILON = 1e-8;
 const TIMESTEP = getScalarTuningValue(
   DEFAULT_TUNING_REGISTRY_SNAPSHOT,
   TUNING_IDS.physics.fixedStepSeconds,
 );
-const NEUTRAL: InputPayload = {
+const FIRST_JUMP_DELTA = getScalarTuningValue(
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  TUNING_IDS.car.jump.firstVelocityChange,
+);
+const HOLD_FORCE = getScalarTuningValue(
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  TUNING_IDS.car.jump.holdForce,
+);
+const CAR_MASS = getScalarTuningValue(
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  TUNING_IDS.car.mass,
+);
+const CAR_HALF_HEIGHT = 0.18;
+const MAX_ANGULAR_SPEED = getScalarTuningValue(
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  TUNING_IDS.car.maxAngularSpeed,
+);
+const IDENTITY: ControllerQuaternion = { x: 0, y: 0, z: 0, w: 1 };
+const NEUTRAL: Readonly<InputCommandV2> = Object.freeze({
+  protocolVersion: INPUT_PROTOCOL_VERSION,
   throttle: 0,
   steer: 0,
-  jump: false,
-  boost: false,
-};
+  pitch: 0,
+  yaw: 0,
+  roll: 0,
+  jumpHeld: false,
+  jumpSequence: 0,
+  boostHeld: false,
+  powerslideHeld: false,
+  cameraToggleSequence: 0,
+});
+const disposalTracker = { created: 0, freed: 0 };
 
-function input(jump: boolean, jumpSequence?: number): InputPayload {
-  return { ...NEUTRAL, jump, ...(jumpSequence === undefined ? {} : { jumpSequence }) };
+function command(patch: Partial<InputCommandV2>): Readonly<InputCommandV2> {
+  return Object.freeze({ ...NEUTRAL, ...patch });
 }
 
-function step(scenario: Scenario, payload: InputPayload): void {
-  recoverCarBodyBeforeStep(scenario.car);
-  applyCarPhysics(scenario.world, scenario.car, payload, scenario.state);
-  scenario.world.step();
-  recoverCarBodyAfterStep(scenario.car);
+function observation(
+  grounded: boolean,
+  rotation: ControllerQuaternion = IDENTITY,
+  linearVelocity: ControllerVector3 = { x: 0, y: 0, z: 0 },
+  angularVelocity: ControllerVector3 = { x: 0, y: 0, z: 0 },
+): CarControllerObservation {
+  return {
+    rotation,
+    linearVelocity,
+    angularVelocity,
+    grounded,
+    surfaceBasis: grounded
+      ? {
+        normal: { x: 0, y: 1, z: 0 },
+        forward: { x: 0, y: 0, z: 1 },
+        right: { x: 1, y: 0, z: 0 },
+      }
+      : null,
+  };
 }
 
-function createScenario(): Scenario {
-  const world = createWorld();
-  let ownershipTransferred = false;
-  try {
-    createArenaColliders(world);
-    const groundY = getScalarTuningValue(
-      DEFAULT_TUNING_REGISTRY_SNAPSHOT,
-      TUNING_IDS.car.collider.height,
-    ) / 2 + getConstant('ARENA.KICKOFF.SPAWN_CLEARANCE');
-    const car = createCar(world, { x: 0, y: groundY, z: 0 });
-    const state = createCarPhysicsState();
-
-    for (let frame = 0; frame < Math.round(0.5 / TIMESTEP); frame++) {
-      recoverCarBodyBeforeStep(car);
-      world.step();
-      recoverCarBodyAfterStep(car);
-    }
-    resetCarPhysicsState(state);
-    ownershipTransferred = true;
-    return { world, car, state, groundY };
-  } finally {
-    if (!ownershipTransferred) world.free();
-  }
+function planAt(
+  input: Readonly<InputCommandV2>,
+  state: Readonly<CarJumpAirState>,
+  fixedStepIndex: number,
+  grounded: boolean,
+  rotation: ControllerQuaternion = IDENTITY,
+): Readonly<JumpAirControlPlan> {
+  return planJumpAirControl(input, state, {
+    observation: observation(grounded, rotation),
+    fixedStepIndex,
+    timestepSeconds: TIMESTEP,
+  });
 }
 
-function withScenario<T>(run: (scenario: Scenario) => T): T {
-  const scenario = createScenario();
-  try {
-    return run(scenario);
-  } finally {
-    scenario.world.free();
-  }
-}
-
-function holdThroughLanding(scenario: Scenario, sequence: number): number {
-  const held = input(true, sequence);
-  step(scenario, held);
-  assert.ok(scenario.car.linvel().y > 2, `sequence ${sequence} did not launch`);
-
-  let apex = scenario.car.translation().y;
-  let airborneSeen = false;
-  let rearmed = false;
-  for (let frame = 0; frame < Math.round(4 / TIMESTEP); frame++) {
-    step(scenario, held);
-    apex = Math.max(apex, scenario.car.translation().y);
-    airborneSeen ||= !scenario.state.grounded;
-    if (airborneSeen && scenario.state.grounded && scenario.state.count === 0) {
-      rearmed = true;
-      break;
-    }
-  }
-
-  assert.ok(rearmed, `sequence ${sequence} did not land and rearm`);
-  const landingY = scenario.car.translation().y;
-  for (let frame = 0; frame < Math.round(0.25 / TIMESTEP); frame++) step(scenario, held);
-  assert.equal(scenario.state.count, 0, 'held Space must not retrigger after landing');
+function assertApproximately(actual: number, expected: number, label: string): void {
   assert.ok(
-    scenario.car.translation().y <= landingY + getConstant('CAR.GROUND.CONTACT_MARGIN'),
-    'held Space launched the car again after landing',
+    Math.abs(actual - expected) <= EPSILON,
+    `${label}: expected ${expected}, received ${actual}`,
+  );
+}
+
+function assertVectorApproximately(
+  actual: ControllerVector3,
+  expected: ControllerVector3,
+  label: string,
+): void {
+  assertApproximately(actual.x, expected.x, `${label}.x`);
+  assertApproximately(actual.y, expected.y, `${label}.y`);
+  assertApproximately(actual.z, expected.z, `${label}.z`);
+}
+
+function vectorMagnitude(vector: ControllerVector3): number {
+  return Math.hypot(vector.x, vector.y, vector.z);
+}
+
+function vectorDot(left: ControllerVector3, right: ControllerVector3): number {
+  return left.x * right.x + left.y * right.y + left.z * right.z;
+}
+
+function startFirstJump(jumpHeld = true): Readonly<JumpAirControlPlan> {
+  return planAt(
+    command({ jumpHeld, jumpSequence: 1 }),
+    createCarJumpAirState(),
+    0,
+    true,
+  );
+}
+
+function runFirstJumpAndHoldCases(): void {
+  const first = startFirstJump(true);
+  assert.equal(first.event, 'first-jump');
+  assertVectorApproximately(
+    first.jumpDeltaVelocity,
+    { x: 0, y: FIRST_JUMP_DELTA, z: 0 },
+    'first jump Local_Roof delta',
+  );
+  assert.equal(first.nextState.lastConsumedJumpSequence, 1);
+  assert.equal(first.nextState.firstJumpAcceptedAtStep, 0);
+  assert.equal(first.nextState.airborneSinceFirstJump, false);
+  assert.equal(first.nextState.secondJumpAvailable, true);
+  assert.ok(Object.isFrozen(first.nextState));
+  assertVectorApproximately(first.holdForce, { x: 0, y: HOLD_FORCE, z: 0 }, 'first hold force');
+  assertApproximately(
+    first.holdDeltaVelocity.y,
+    HOLD_FORCE / CAR_MASS * TIMESTEP,
+    'first hold integration',
   );
 
-  step(scenario, input(false, sequence));
-  return apex - scenario.groundY;
+  const repeated = planAt(
+    command({ jumpHeld: true, jumpSequence: 1 }),
+    first.nextState,
+    1,
+    false,
+  );
+  assert.equal(repeated.event, 'none');
+  assert.equal(repeated.nextState.airborneSinceFirstJump, true);
+  assert.equal(vectorMagnitude(repeated.jumpDeltaVelocity), 0, 'repeated heartbeat cannot jump');
+
+  const atEleven = planAt(
+    command({ jumpHeld: true, jumpSequence: 1 }),
+    first.nextState,
+    11,
+    false,
+  );
+  assert.ok(atEleven.holdDeltaVelocity.y > 0, 'hold must remain active immediately before expiry');
+  const atTwelve = planAt(
+    command({ jumpHeld: true, jumpSequence: 1 }),
+    first.nextState,
+    12,
+    false,
+  );
+  assert.equal(vectorMagnitude(atTwelve.holdDeltaVelocity), 0, 'hold must stop at exact 0.2s');
+  assert.equal(atTwelve.nextState.firstJumpHeld, false, 'expired hold latch must clear');
+
+  const released = planAt(
+    command({ jumpHeld: false, jumpSequence: 1 }),
+    first.nextState,
+    5,
+    false,
+  );
+  assert.equal(released.nextState.firstJumpHeld, false);
+  const cannotResume = planAt(
+    command({ jumpHeld: true, jumpSequence: 1 }),
+    released.nextState,
+    6,
+    false,
+  );
+  assert.equal(vectorMagnitude(cannotResume.holdDeltaVelocity), 0, 'same edge cannot resume hold');
+
+  const rapidTap = startFirstJump(false);
+  assert.equal(rapidTap.event, 'first-jump');
+  assert.equal(vectorMagnitude(rapidTap.jumpDeltaVelocity), FIRST_JUMP_DELTA);
+  assert.equal(vectorMagnitude(rapidTap.holdDeltaVelocity), 0);
+
+  const rotated = planAt(
+    command({ jumpSequence: 1 }),
+    createCarJumpAirState(),
+    0,
+    true,
+    { x: 0, y: 0, z: Math.SQRT1_2, w: Math.SQRT1_2 },
+  );
+  assertVectorApproximately(
+    rotated.jumpDeltaVelocity,
+    { x: -FIRST_JUMP_DELTA, y: 0, z: 0 },
+    'rotated Local_Roof jump',
+  );
 }
 
-function runRepeatedLandingCycles(): { cycles: number; fifthApex: number; minApex: number } {
-  return withScenario((scenario) => {
-    const apexes: number[] = [];
-
-    // **Validates: Requirements 4**
-    for (let sequence = 1; sequence <= 10; sequence++) {
-      apexes.push(holdThroughLanding(scenario, sequence));
-    }
-
-    assert.ok(apexes.every((apex) => apex > 1), `weak repeated jump: ${apexes.join(', ')}`);
-    return {
-      cycles: apexes.length,
-      fifthApex: apexes[4],
-      minApex: Math.min(...apexes),
-    };
-  });
-}
-
-function runCollapsedRapidTap(): number {
-  return withScenario((scenario) => {
-    // Keyup won the boolean race, but the incremented sequence must survive.
-    step(scenario, input(false, 1));
-    const verticalVelocity = scenario.car.linvel().y;
-    assert.ok(verticalVelocity > 2, 'collapsed rapid tap did not trigger a jump');
-    assert.equal(scenario.state.lastJumpSequence, 1);
-    return verticalVelocity;
-  });
-}
-
-function runAirbornePressDiscard(): number {
-  return withScenario((scenario) => {
-    step(scenario, input(false, 1));
-    for (let frame = 0; frame < 5; frame++) step(scenario, input(false, 1));
-    assert.equal(scenario.state.grounded, false, 'scenario must be airborne before second press');
-
-    step(scenario, input(false, 2));
-    assert.equal(scenario.state.lastJumpSequence, 2, 'airborne sequence was not consumed');
-
-    let landed = false;
-    for (let frame = 0; frame < Math.round(4 / TIMESTEP); frame++) {
-      step(scenario, input(false, 2));
-      if (scenario.state.grounded && scenario.state.count === 0) {
-        landed = true;
-        break;
-      }
-    }
-    assert.ok(landed, 'airborne-press scenario did not land');
-
-    let postLandingApex = scenario.car.translation().y;
-    for (let frame = 0; frame < Math.round(0.5 / TIMESTEP); frame++) {
-      step(scenario, input(false, 2));
-      postLandingApex = Math.max(postLandingApex, scenario.car.translation().y);
-    }
-    assert.ok(
-      postLandingApex <= scenario.groundY + getConstant('CAR.GROUND.CONTACT_MARGIN'),
-      'airborne press queued an automatic landing jump',
+function runSecondJumpBoundaryCases(): void {
+  for (const [offset, expectedEvent] of [
+    [74, 'second-jump'],
+    [75, 'second-jump'],
+    [76, 'edge-discarded'],
+  ] as const) {
+    const first = startFirstJump(false);
+    const second = planAt(
+      command({ jumpSequence: 2 }),
+      first.nextState,
+      offset,
+      false,
     );
-    return postLandingApex;
-  });
+    assert.equal(second.event, expectedEvent, `second jump boundary offset ${offset}`);
+    assert.equal(second.nextState.lastConsumedJumpSequence, 2);
+    assert.equal(
+      vectorMagnitude(second.jumpDeltaVelocity),
+      expectedEvent === 'second-jump' ? FIRST_JUMP_DELTA : 0,
+    );
+    const repeat = planAt(command({ jumpSequence: 2 }), second.nextState, offset, false);
+    assert.equal(repeat.event, 'none', 'repeated second edge must be idempotent');
+    assert.equal(vectorMagnitude(repeat.jumpDeltaVelocity), 0);
+  }
 }
 
-function runKickoffSynchronization(): void {
-  withScenario((scenario) => {
-    const heldAtReset = input(true, 7);
-    synchronizeCarInputState(scenario.state, heldAtReset);
-    resetCarPhysicsState(scenario.state);
-    step(scenario, heldAtReset);
+function runFlipCases(): { activeAngularSpeed: number } {
+  const first = startFirstJump(false);
+  const belowDeadzone = planAt(
+    command({ jumpSequence: 2, pitch: 0.299999 }),
+    first.nextState,
+    10,
+    false,
+  );
+  assert.equal(belowDeadzone.event, 'second-jump');
 
-    assert.equal(scenario.state.count, 0, 'kickoff/reset must not replay a held sequence');
-    assert.ok(scenario.car.linvel().y < 2, 'kickoff/reset auto-jumped');
-  });
+  const exactDeadzone = planAt(
+    command({ jumpSequence: 2, pitch: 0.3 }),
+    first.nextState,
+    10,
+    false,
+  );
+  assert.equal(exactDeadzone.event, 'flip-start');
+  assert.equal(exactDeadzone.flipActive, true);
+  assertApproximately(vectorMagnitude(exactDeadzone.jumpDeltaVelocity), FIRST_JUMP_DELTA, 'flip delta bound');
+
+  const directional = planAt(
+    command({ jumpSequence: 2, pitch: 0.3, roll: 0.4 }),
+    first.nextState,
+    10,
+    false,
+  );
+  assert.equal(directional.event, 'flip-start');
+  assert.deepEqual(directional.nextState.activeFlipDirection, [0.6, 0.8]);
+  assert.equal(directional.nextState.secondJumpAvailable, false);
+
+  const locked = planAt(
+    command({ jumpSequence: 2, pitch: -1, roll: -1 }),
+    directional.nextState,
+    11,
+    false,
+  );
+  assert.deepEqual(locked.nextState.activeFlipDirection, [0.6, 0.8]);
+  assert.ok(vectorDot(locked.airAngularTarget, locked.localRight) > 0);
+  assert.ok(vectorDot(locked.airAngularTarget, locked.localForward) > 0);
+
+  const beforeExpiry = planAt(
+    command({ jumpSequence: 2 }),
+    directional.nextState,
+    48,
+    false,
+  );
+  assert.equal(beforeExpiry.flipActive, true, 'flip must actuate through offset 38');
+  assert.ok(vectorMagnitude(beforeExpiry.airAngularTarget) > 0);
+  const atExpiry = planAt(
+    command({ jumpSequence: 2 }),
+    directional.nextState,
+    49,
+    false,
+  );
+  assert.equal(atExpiry.flipActive, false, 'flip must stop at exact offset 39');
+  assert.equal(atExpiry.nextState.activeFlipStartedAtStep, null);
+  assert.equal(vectorMagnitude(atExpiry.airAngularTarget), 0);
+  assert.equal(atExpiry.nextState.secondJumpAvailable, false);
+
+  const lateDuringFlip = planAt(
+    command({ jumpSequence: 3 }),
+    directional.nextState,
+    12,
+    false,
+  );
+  assert.equal(lateDuringFlip.event, 'edge-discarded');
+  assert.equal(lateDuringFlip.nextState.lastConsumedJumpSequence, 3);
+  assert.equal(lateDuringFlip.nextState.activeFlipStartedAtStep, 10);
+
+  return { activeAngularSpeed: vectorMagnitude(locked.airAngularTarget) };
 }
 
-function runBooleanFallback(): number {
-  return withScenario((scenario) => {
-    step(scenario, input(true));
-    const firstJumpVelocity = scenario.car.linvel().y;
-    assert.ok(firstJumpVelocity > 2, 'legacy boolean press did not jump');
+function runGroundResetAndSynchronizationCases(): void {
+  const first = startFirstJump(true);
+  const flip = planAt(
+    command({ jumpSequence: 2, pitch: 1 }),
+    first.nextState,
+    10,
+    false,
+  );
+  const grounded = planAt(
+    command({ jumpHeld: true, jumpSequence: 2, pitch: 1 }),
+    flip.nextState,
+    20,
+    true,
+  );
+  assert.equal(grounded.event, 'none');
+  assert.equal(grounded.nextState.lastConsumedJumpSequence, 2);
+  assert.equal(grounded.nextState.firstJumpAcceptedAtStep, null);
+  assert.equal(grounded.nextState.activeFlipStartedAtStep, null);
+  assert.equal(grounded.nextState.secondJumpAvailable, true);
+  assert.equal(vectorMagnitude(grounded.holdDeltaVelocity), 0);
+  assert.equal(vectorMagnitude(grounded.airAngularTarget), 0);
 
-    let landed = false;
-    for (let frame = 0; frame < Math.round(4 / TIMESTEP); frame++) {
-      step(scenario, input(true));
-      if (scenario.state.grounded && scenario.state.count === 0) {
-        landed = true;
-        break;
+  const sameHeldEdge = planAt(
+    command({ jumpHeld: true, jumpSequence: 2 }),
+    grounded.nextState,
+    21,
+    true,
+  );
+  assert.equal(sameHeldEdge.event, 'none', 'landing must not replay held edge');
+  const nextEdge = planAt(
+    command({ jumpHeld: true, jumpSequence: 3 }),
+    sameHeldEdge.nextState,
+    22,
+    true,
+  );
+  assert.equal(nextEdge.event, 'first-jump');
+
+  const synchronized = synchronizeCarJumpAirState(
+    flip.nextState,
+    command({ jumpHeld: true, jumpSequence: 9 }),
+  );
+  assert.equal(synchronized.lastConsumedJumpSequence, 9);
+  assert.equal(synchronized.firstJumpAcceptedAtStep, null);
+  assert.equal(synchronized.activeFlipStartedAtStep, null);
+  assert.equal(synchronized.secondJumpAvailable, false);
+  const disabledReplay = planAt(
+    command({ jumpHeld: true, jumpSequence: 9 }),
+    synchronized,
+    30,
+    true,
+  );
+  assert.equal(disabledReplay.event, 'none');
+}
+
+function runAirAxisCases(): void {
+  const state = createCarJumpAirState(5);
+  const pitch = planAt(command({ pitch: 1, jumpSequence: 5 }), state, 0, false);
+  const yaw = planAt(command({ yaw: 1, jumpSequence: 5 }), state, 0, false);
+  const roll = planAt(command({ roll: 1, jumpSequence: 5 }), state, 0, false);
+  assertVectorApproximately(pitch.airAngularTarget, { x: 5.5, y: 0, z: 0 }, 'identity pitch');
+  assertVectorApproximately(yaw.airAngularTarget, { x: 0, y: 5.5, z: 0 }, 'identity yaw');
+  assertVectorApproximately(roll.airAngularTarget, { x: 0, y: 0, z: 5.5 }, 'identity roll');
+
+  const diagonal = planAt(
+    command({ pitch: 1, yaw: 1, roll: 1, jumpSequence: 5 }),
+    state,
+    0,
+    false,
+  );
+  assertApproximately(vectorMagnitude(diagonal.airAngularTarget), MAX_ANGULAR_SPEED, 'combined air cap');
+
+  const rotated = planAt(
+    command({ yaw: 1, jumpSequence: 5 }),
+    state,
+    0,
+    false,
+    { x: 0, y: 0, z: Math.SQRT1_2, w: Math.SQRT1_2 },
+  );
+  assert.ok(vectorDot(rotated.airAngularTarget, rotated.localRoof) > 5.49);
+
+  const grounded = planAt(
+    command({ pitch: 1, yaw: 1, roll: 1, jumpSequence: 5 }),
+    state,
+    0,
+    true,
+  );
+  assert.equal(vectorMagnitude(grounded.airAngularTarget), 0, 'grounded axes must not actuate air control');
+
+  const malformed = planAt(
+    command({ pitch: Number.NaN, yaw: 0.5, roll: -0.25, jumpSequence: Number.NaN }),
+    state,
+    0,
+    false,
+  );
+  assert.equal(malformed.normalizedPitch, 0);
+  assert.equal(malformed.nextState.lastConsumedJumpSequence, 5);
+  assert.equal(malformed.event, 'none');
+  assertApproximately(vectorDot(malformed.airAngularTarget, malformed.localRight), 0, 'bad pitch neutral');
+  assert.ok(vectorDot(malformed.airAngularTarget, malformed.localRoof) > 0);
+  assert.ok(vectorDot(malformed.airAngularTarget, malformed.localForward) < 0);
+  assert.ok([
+    malformed.airAngularTarget.x,
+    malformed.airAngularTarget.y,
+    malformed.airAngularTarget.z,
+  ].every(Number.isFinite));
+}
+
+function runIntegratedPlannerCase(): void {
+  const result = planCarControllerCommand(command({ jumpHeld: true, jumpSequence: 1 }), {
+    observation: observation(true),
+    availableBoost: 0,
+    dragEnabled: false,
+    timestepSeconds: TIMESTEP,
+    jumpAir: { state: createCarJumpAirState(), fixedStepIndex: 0 },
+  });
+  assert.equal(result.jumpAirControl?.event, 'first-jump');
+  assertApproximately(
+    result.projectedVelocity.y,
+    FIRST_JUMP_DELTA + HOLD_FORCE / CAR_MASS * TIMESTEP,
+    'integrated first jump plus hold',
+  );
+  assert.equal(result.nextJumpAirState?.lastConsumedJumpSequence, 1);
+  assert.equal(vectorMagnitude(result.projectedAngularVelocity), 0);
+
+  const recoveredRotation: ControllerQuaternion = {
+    x: 0,
+    y: 0,
+    z: Math.SQRT1_2,
+    w: Math.SQRT1_2,
+  };
+  const recovered = planCarControllerCommand(command({ yaw: 1, jumpSequence: 5 }), {
+    observation: observation(false, { x: Number.NaN, y: 0, z: 0, w: 1 }),
+    previousFiniteState: {
+      rotation: recoveredRotation,
+      linearVelocity: { x: 0, y: 0, z: 0 },
+      angularVelocity: { x: 0, y: 0, z: 0 },
+    },
+    availableBoost: 0,
+    dragEnabled: false,
+    timestepSeconds: TIMESTEP,
+    jumpAir: { state: createCarJumpAirState(5), fixedStepIndex: 1 },
+  });
+  if (recovered.jumpAirControl === null) throw new Error('jump/air plan was not produced');
+  assertVectorApproximately(
+    recovered.jumpAirControl.localRoof,
+    { x: -1, y: 0, z: 0 },
+    'last-finite recovered Local_Roof',
+  );
+  assertVectorApproximately(
+    recovered.projectedAngularVelocity,
+    { x: -MAX_ANGULAR_SPEED, y: 0, z: 0 },
+    'last-finite recovered yaw',
+  );
+  assertVectorApproximately(
+    recovered.nextFiniteState.rotation,
+    recoveredRotation,
+    'last-finite recovered rotation',
+  );
+}
+
+function createTrackedWorld(): RAPIER.World {
+  disposalTracker.created += 1;
+  return new RAPIER.World({ x: 0, y: 0, z: 0 });
+}
+
+function freeTrackedWorld(world: RAPIER.World): void {
+  world.free();
+  disposalTracker.freed += 1;
+}
+
+function runRealGroundingLifecycle(): { residualSupportSteps: number; airborneStep: number } {
+  const world = createTrackedWorld();
+  try {
+    world.timestep = TIMESTEP;
+    const floorDescriptor = ARENA_GEOMETRY_SPEC.surfaces.find(
+      (surface) => surface.id === 'field.floor',
+    );
+    if (floorDescriptor === undefined) throw new Error('field.floor descriptor is unavailable');
+
+    const surfaces = new ArenaSurfaceRegistry(world);
+    const floor = world.createCollider(
+      RAPIER.ColliderDesc.cuboid(2, 0.05, 2).setTranslation(0, -0.05, 0),
+    );
+    surfaces.register(floor, floorDescriptor);
+    const body = world.createRigidBody(
+      RAPIER.RigidBodyDesc.dynamic().setTranslation(0, CAR_HALF_HEIGHT, 0),
+    );
+    world.createCollider(
+      RAPIER.ColliderDesc.cuboid(0.42, CAR_HALF_HEIGHT, 0.59).setMass(CAR_MASS),
+      body,
+    );
+
+    let state = createCarJumpAirState();
+    let residualSupportSteps = 0;
+    let airborneStep: number | null = null;
+    let secondJumpAccepted = false;
+    let lastStep = 0;
+
+    for (let step = 0; step < 30; step += 1) {
+      lastStep = step;
+      world.updateSceneQueries();
+      const support = detectGroundSupport(world, body, surfaces);
+      const firstEdge = step === 0;
+      const firstAirborneSample = !support.grounded && airborneStep === null;
+      const secondEdge = airborneStep !== null
+        && step === airborneStep + 1
+        && !secondJumpAccepted;
+      const input = command({
+        jumpHeld: (airborneStep === null && !firstAirborneSample) || secondEdge,
+        jumpSequence: firstEdge ? 1 : secondEdge ? 2 : state.lastConsumedJumpSequence,
+      });
+      const result = planCarControllerCommand(input, {
+        observation: {
+          rotation: body.rotation(),
+          linearVelocity: body.linvel(),
+          angularVelocity: body.angvel(),
+          grounded: support.grounded,
+          surfaceBasis: support.basis,
+        },
+        previousFiniteState: {
+          rotation: body.rotation(),
+          linearVelocity: body.linvel(),
+          angularVelocity: body.angvel(),
+        },
+        availableBoost: 0,
+        dragEnabled: false,
+        timestepSeconds: TIMESTEP,
+        jumpAir: { state, fixedStepIndex: step },
+      });
+      state = result.nextJumpAirState ?? state;
+
+      if (firstEdge) {
+        assert.equal(support.grounded, true, 'launch must begin on registered floor support');
+        assert.equal(result.jumpAirControl?.event, 'first-jump');
+      } else if (support.grounded && airborneStep === null) {
+        residualSupportSteps += 1;
+        assert.equal(result.jumpAirControl?.event, 'none');
+        assert.equal(state.firstJumpAcceptedAtStep, 0, 'residual support must preserve launch origin');
+        assert.equal(state.airborneSinceFirstJump, false);
+        assert.ok(
+          (result.jumpAirControl?.holdDeltaVelocity.y ?? 0) > 0,
+          'residual support must not truncate held jump force',
+        );
       }
+
+      if (firstAirborneSample) {
+        airborneStep = step;
+        assert.equal(result.jumpAirControl?.event, 'none');
+        assert.equal(state.firstJumpAcceptedAtStep, 0);
+        assert.equal(state.airborneSinceFirstJump, true);
+        assert.equal(state.secondJumpAvailable, true);
+        assert.equal(vectorMagnitude(result.jumpAirControl?.holdDeltaVelocity ?? { x: 0, y: 0, z: 0 }), 0);
+      }
+      if (secondEdge) {
+        assert.equal(support.grounded, false);
+        assert.equal(result.jumpAirControl?.event, 'second-jump');
+        assert.equal(state.secondJumpAvailable, false);
+        secondJumpAccepted = true;
+      }
+
+      body.setLinvel(result.projectedVelocity, true);
+      body.setAngvel(result.projectedAngularVelocity, true);
+      world.step();
+      if (secondJumpAccepted) break;
     }
-    assert.ok(landed, 'legacy held jump did not land');
-    step(scenario, input(true));
-    assert.equal(scenario.state.count, 0, 'legacy held boolean retriggered');
-    step(scenario, input(false));
-    step(scenario, input(true));
-    assert.equal(scenario.state.count, 1, 'legacy release/press did not retrigger');
-    return firstJumpVelocity;
-  });
+
+    assert.ok(residualSupportSteps > 0, 'Rapier probe must expose residual launch support');
+    assert.ok(airborneStep !== null, 'Rapier probe must leave support range');
+    assert.equal(secondJumpAccepted, true, 'second jump must survive residual support');
+
+    body.setTranslation({ x: 0, y: CAR_HALF_HEIGHT, z: 0 }, true);
+    body.setRotation(IDENTITY, true);
+    body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    world.updateSceneQueries();
+    const landingSupport = detectGroundSupport(world, body, surfaces);
+    assert.equal(landingSupport.grounded, true, 'teleported probe must reacquire floor support');
+    const landing = planCarControllerCommand(
+      command({ jumpHeld: true, jumpSequence: state.lastConsumedJumpSequence }),
+      {
+        observation: {
+          rotation: body.rotation(),
+          linearVelocity: body.linvel(),
+          angularVelocity: body.angvel(),
+          grounded: landingSupport.grounded,
+          surfaceBasis: landingSupport.basis,
+        },
+        availableBoost: 0,
+        dragEnabled: false,
+        timestepSeconds: TIMESTEP,
+        jumpAir: { state, fixedStepIndex: lastStep + 1 },
+      },
+    );
+    assert.equal(landing.jumpAirControl?.event, 'none');
+    assert.equal(landing.nextJumpAirState?.firstJumpAcceptedAtStep, null);
+    assert.equal(landing.nextJumpAirState?.airborneSinceFirstJump, false);
+    assert.equal(landing.nextJumpAirState?.secondJumpAvailable, true);
+    assert.equal(landing.nextJumpAirState?.lastConsumedJumpSequence, 2);
+
+    return { residualSupportSteps, airborneStep };
+  } finally {
+    freeTrackedWorld(world);
+  }
+}
+
+function runRapierSmoke(): { peakHeight: number; peakAngularSpeed: number } {
+  const world = createTrackedWorld();
+  try {
+    world.timestep = TIMESTEP;
+    const body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic());
+    world.createCollider(RAPIER.ColliderDesc.cuboid(0.42, 0.18, 0.59).setMass(CAR_MASS), body);
+    let state = createCarJumpAirState();
+    let peakHeight = 0;
+    let peakAngularSpeed = 0;
+
+    for (let step = 0; step < 55; step += 1) {
+      const firstJump = step === 0;
+      const flip = step === 5;
+      const input = command({
+        jumpHeld: step < 8,
+        jumpSequence: flip ? 2 : firstJump ? 1 : state.lastConsumedJumpSequence,
+        pitch: flip ? 1 : 0,
+        yaw: step > 5 ? 0.25 : 0,
+      });
+      const result = planCarControllerCommand(input, {
+        observation: observation(
+          firstJump,
+          body.rotation(),
+          body.linvel(),
+          body.angvel(),
+        ),
+        previousFiniteState: {
+          rotation: body.rotation(),
+          linearVelocity: body.linvel(),
+          angularVelocity: body.angvel(),
+        },
+        availableBoost: 0,
+        dragEnabled: false,
+        timestepSeconds: TIMESTEP,
+        jumpAir: { state, fixedStepIndex: step },
+      });
+      state = result.nextJumpAirState ?? state;
+      body.setLinvel(result.projectedVelocity, true);
+      body.setAngvel(result.projectedAngularVelocity, true);
+      const appliedAngularSpeed = vectorMagnitude(body.angvel());
+      assert.ok(
+        appliedAngularSpeed <= MAX_ANGULAR_SPEED + EPSILON * 100,
+        `applied Rapier angular speed ${appliedAngularSpeed} exceeded ${MAX_ANGULAR_SPEED}`,
+      );
+      world.step();
+      peakHeight = Math.max(peakHeight, body.translation().y);
+      const angularSpeed = vectorMagnitude(body.angvel());
+      peakAngularSpeed = Math.max(peakAngularSpeed, angularSpeed);
+      assert.ok([
+        body.linvel().x,
+        body.linvel().y,
+        body.linvel().z,
+        body.angvel().x,
+        body.angvel().y,
+        body.angvel().z,
+      ].every(Number.isFinite));
+    }
+
+    assert.ok(peakHeight > 0.5, 'Rapier jump trace must move the body');
+    assert.ok(peakAngularSpeed > 1, 'Rapier flip trace must rotate the body');
+    return { peakHeight, peakAngularSpeed };
+  } finally {
+    freeTrackedWorld(world);
+  }
+}
+
+function assertSetupFailureCleanup(): void {
+  assert.throws(() => {
+    const world = createTrackedWorld();
+    try {
+      world.createRigidBody(RAPIER.RigidBodyDesc.dynamic());
+      throw new Error('synthetic jump setup assertion failure');
+    } finally {
+      freeTrackedWorld(world);
+    }
+  }, /synthetic jump setup assertion failure/);
 }
 
 async function main(): Promise<void> {
   await initPhysics();
-  const repeated = runRepeatedLandingCycles();
-  const rapidTapVelocity = runCollapsedRapidTap();
-  const postLandingApex = runAirbornePressDiscard();
-  runKickoffSynchronization();
-  const fallbackVelocity = runBooleanFallback();
+  runFirstJumpAndHoldCases();
+  runSecondJumpBoundaryCases();
+  const flip = runFlipCases();
+  runGroundResetAndSynchronizationCases();
+  runAirAxisCases();
+  runIntegratedPlannerCase();
+  const groundingLifecycle = runRealGroundingLifecycle();
+  const rapier = runRapierSmoke();
+  assertSetupFailureCleanup();
+  assert.equal(
+    disposalTracker.freed,
+    disposalTracker.created,
+    'every jump-harness Rapier world must be freed',
+  );
 
-  console.log('=== JUMP SEQUENCE HARNESS: PASS ===');
-  console.log(`cycles=${repeated.cycles} fifthApex=${repeated.fifthApex.toFixed(3)}m minApex=${repeated.minApex.toFixed(3)}m`);
-  console.log(`rapidTapVy=${rapidTapVelocity.toFixed(3)}m/s airbornePostLandingY=${postLandingApex.toFixed(3)}m`);
-  console.log(`legacyFallbackVy=${fallbackVelocity.toFixed(3)}m/s kickoffAutoJump=false`);
+  console.log('=== JUMP / FLIP / AIR HARNESS: PASS ===');
+  console.log(`flipAngular=${flip.activeAngularSpeed.toFixed(5)}rad/s`);
+  console.log(
+    `groundingResidual=${groundingLifecycle.residualSupportSteps} steps airborneAt=${groundingLifecycle.airborneStep}`,
+  );
+  console.log(`rapierPeakY=${rapier.peakHeight.toFixed(5)}m peakAngular=${rapier.peakAngularSpeed.toFixed(5)}rad/s`);
+  console.log(`cleanup=${disposalTracker.freed}/${disposalTracker.created} worlds`);
 }
 
 main().catch((error: unknown) => {
-  console.error('=== JUMP SEQUENCE HARNESS: FAIL ===');
+  console.error('=== JUMP / FLIP / AIR HARNESS: FAIL ===');
   console.error(error);
   process.exitCode = 1;
 });

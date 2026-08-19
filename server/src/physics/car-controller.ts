@@ -43,6 +43,52 @@ export interface CarControllerFiniteState {
 
 export type CarControllerTuningSnapshot = Pick<TuningRegistrySnapshot, 'get'>;
 
+export interface CarJumpAirState {
+  readonly lastConsumedJumpSequence: number;
+  readonly firstJumpAcceptedAtStep: number | null;
+  /** Distinguishes residual launch support from a later landing contact. */
+  readonly airborneSinceFirstJump: boolean;
+  readonly firstJumpHeld: boolean;
+  readonly secondJumpAvailable: boolean;
+  readonly activeFlipStartedAtStep: number | null;
+  readonly activeFlipDirection: readonly [pitch: number, roll: number] | null;
+}
+
+export type JumpAirEvent =
+  | 'none'
+  | 'first-jump'
+  | 'second-jump'
+  | 'flip-start'
+  | 'edge-discarded';
+
+export interface JumpAirPlanningContext {
+  readonly observation: CarControllerObservation;
+  readonly fixedStepIndex: number;
+  readonly timestepSeconds?: number;
+  readonly tuning?: CarControllerTuningSnapshot;
+}
+
+export interface JumpAirControlPlan {
+  readonly event: JumpAirEvent;
+  readonly localForward: ControllerVector3;
+  readonly localRight: ControllerVector3;
+  readonly localRoof: ControllerVector3;
+  readonly normalizedPitch: number;
+  readonly normalizedYaw: number;
+  readonly normalizedRoll: number;
+  readonly jumpDeltaVelocity: ControllerVector3;
+  readonly holdForce: ControllerVector3;
+  readonly holdDeltaVelocity: ControllerVector3;
+  readonly airAngularTarget: ControllerVector3;
+  readonly flipActive: boolean;
+  readonly nextState: Readonly<CarJumpAirState>;
+}
+
+export interface CarJumpAirPlanningBundle {
+  readonly state: Readonly<CarJumpAirState>;
+  readonly fixedStepIndex: number;
+}
+
 export interface CarControllerPlanningContext {
   readonly observation: CarControllerObservation;
   /** Authoritative inventory supplied by the caller. This planner never mutates it. */
@@ -51,6 +97,8 @@ export interface CarControllerPlanningContext {
   readonly tuning?: CarControllerTuningSnapshot;
   readonly timestepSeconds?: number;
   readonly dragEnabled?: boolean;
+  /** Optional until Wave 17 owns one immutable action state per live car. */
+  readonly jumpAir?: CarJumpAirPlanningBundle;
 }
 
 export interface GroundedControlPlan {
@@ -88,6 +136,8 @@ export interface CarControllerPlan {
   readonly propulsionProjectedForwardSpeed: number;
   readonly boostActuated: boolean;
   readonly groundedControl: GroundedControlPlan | null;
+  readonly jumpAirControl: JumpAirControlPlan | null;
+  readonly nextJumpAirState: Readonly<CarJumpAirState> | null;
   readonly nextFiniteState: CarControllerFiniteState;
 }
 
@@ -373,6 +423,372 @@ function limitPropulsionProjection(
   ) - currentProjection;
 }
 
+interface JumpAirTuning {
+  readonly mass: number;
+  readonly firstJumpVelocityChange: number;
+  readonly holdForce: number;
+  readonly holdDuration: number;
+  readonly secondJumpWindow: number;
+  readonly flipActuationWindow: number;
+  readonly directionalDeadzone: number;
+  readonly maximumAngularSpeed: number;
+}
+
+function readJumpAirTuning(tuning: CarControllerTuningSnapshot): JumpAirTuning {
+  return {
+    mass: getScalarTuningValue(tuning, TUNING_IDS.car.mass),
+    firstJumpVelocityChange: getScalarTuningValue(
+      tuning,
+      TUNING_IDS.car.jump.firstVelocityChange,
+    ),
+    holdForce: getScalarTuningValue(tuning, TUNING_IDS.car.jump.holdForce),
+    holdDuration: getScalarTuningValue(tuning, TUNING_IDS.car.jump.holdDuration),
+    secondJumpWindow: getScalarTuningValue(tuning, TUNING_IDS.car.jump.secondJumpWindow),
+    flipActuationWindow: getScalarTuningValue(
+      tuning,
+      TUNING_IDS.car.jump.flipActuationWindow,
+    ),
+    directionalDeadzone: getScalarTuningValue(
+      tuning,
+      TUNING_IDS.car.jump.directionalDeadzone,
+    ),
+    maximumAngularSpeed: getScalarTuningValue(tuning, TUNING_IDS.car.maxAngularSpeed),
+  };
+}
+
+function validJumpAirTuning(candidate: JumpAirTuning): boolean {
+  return Object.values(candidate).every(Number.isFinite)
+    && candidate.mass > 0
+    && candidate.firstJumpVelocityChange > 0
+    && candidate.holdForce >= 0
+    && candidate.holdDuration >= 0
+    && candidate.secondJumpWindow >= 0
+    && candidate.flipActuationWindow >= 0
+    && candidate.directionalDeadzone >= 0
+    && candidate.directionalDeadzone <= 1
+    && candidate.maximumAngularSpeed > 0;
+}
+
+function resolveJumpAirTuning(tuning: CarControllerTuningSnapshot): JumpAirTuning {
+  const fallback = readJumpAirTuning(DEFAULT_TUNING_REGISTRY_SNAPSHOT);
+  try {
+    const candidate = readJumpAirTuning(tuning);
+    if (validJumpAirTuning(candidate)) return candidate;
+  } catch {
+    // Fall through to the immutable grouped fallback.
+  }
+  return fallback;
+}
+
+function finiteAxis(value: number): number {
+  return Number.isFinite(value) ? clamp(value, -1, 1) : 0;
+}
+
+function finiteSequence(value: number, fallback: number): number {
+  return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+}
+
+function finiteStep(value: number): number {
+  return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+function optionalStep(value: number | null): number | null {
+  return value !== null && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function normalizedFlipDirection(
+  value: readonly [number, number] | null,
+): readonly [number, number] | null {
+  if (value === null || !value.every(Number.isFinite)) return null;
+  const magnitude = Math.hypot(value[0], value[1]);
+  if (magnitude <= CURVE_EPSILON) return null;
+  return Object.freeze([value[0] / magnitude, value[1] / magnitude] as const);
+}
+
+function immutableJumpAirState(state: CarJumpAirState): Readonly<CarJumpAirState> {
+  return Object.freeze({
+    ...state,
+    activeFlipDirection: normalizedFlipDirection(state.activeFlipDirection),
+  });
+}
+
+function sanitizeJumpAirState(state: Readonly<CarJumpAirState>): Readonly<CarJumpAirState> {
+  const lastConsumedJumpSequence = finiteSequence(state.lastConsumedJumpSequence, 0);
+  const firstJumpAcceptedAtStep = optionalStep(state.firstJumpAcceptedAtStep);
+  const airborneSinceFirstJump = firstJumpAcceptedAtStep !== null
+    && state.airborneSinceFirstJump === true;
+  const activeFlipDirection = normalizedFlipDirection(state.activeFlipDirection);
+  const activeFlipStartedAtStep = activeFlipDirection === null
+    ? null
+    : optionalStep(state.activeFlipStartedAtStep);
+  return immutableJumpAirState({
+    lastConsumedJumpSequence,
+    firstJumpAcceptedAtStep,
+    airborneSinceFirstJump,
+    firstJumpHeld: state.firstJumpHeld === true,
+    secondJumpAvailable: state.secondJumpAvailable === true,
+    activeFlipStartedAtStep,
+    activeFlipDirection: activeFlipStartedAtStep === null ? null : activeFlipDirection,
+  });
+}
+
+export function createCarJumpAirState(
+  consumedFloor = 0,
+): Readonly<CarJumpAirState> {
+  return immutableJumpAirState({
+    lastConsumedJumpSequence: finiteSequence(consumedFloor, 0),
+    firstJumpAcceptedAtStep: null,
+    airborneSinceFirstJump: false,
+    firstJumpHeld: false,
+    secondJumpAvailable: false,
+    activeFlipStartedAtStep: null,
+    activeFlipDirection: null,
+  });
+}
+
+/** Consume disabled-phase edges without queueing jump, hold, or flip actuation. */
+export function synchronizeCarJumpAirState(
+  state: Readonly<CarJumpAirState>,
+  input: Readonly<InputCommandV2>,
+): Readonly<CarJumpAirState> {
+  const safeState = sanitizeJumpAirState(state);
+  return immutableJumpAirState({
+    lastConsumedJumpSequence: Math.max(
+      safeState.lastConsumedJumpSequence,
+      finiteSequence(input.jumpSequence, safeState.lastConsumedJumpSequence),
+    ),
+    firstJumpAcceptedAtStep: null,
+    airborneSinceFirstJump: false,
+    firstJumpHeld: false,
+    secondJumpAvailable: false,
+    activeFlipStartedAtStep: null,
+    activeFlipDirection: null,
+  });
+}
+
+function boundedAngularTarget(
+  raw: ControllerVector3,
+  maximumAngularSpeed: number,
+): ControllerVector3 {
+  const magnitude = Math.hypot(raw.x, raw.y, raw.z);
+  if (!Number.isFinite(magnitude) || magnitude <= CURVE_EPSILON) return ZERO_VECTOR;
+  return scale(raw, maximumAngularSpeed / Math.max(1, magnitude));
+}
+
+/** Plan one fixed-step jump, hold, flip, and local-axis air-control command. */
+export function planJumpAirControl(
+  input: Readonly<InputCommandV2>,
+  state: Readonly<CarJumpAirState>,
+  context: Readonly<JumpAirPlanningContext>,
+): Readonly<JumpAirControlPlan> {
+  const tuningSnapshot = context.tuning ?? DEFAULT_TUNING_REGISTRY_SNAPSHOT;
+  const tuning = resolveJumpAirTuning(tuningSnapshot);
+  const timestepSeconds = Number.isFinite(context.timestepSeconds)
+    && (context.timestepSeconds as number) > 0
+    ? context.timestepSeconds as number
+    : resolveScalar(
+      tuningSnapshot,
+      TUNING_IDS.physics.fixedStepSeconds,
+      (value) => value > 0,
+    );
+  const fixedStepIndex = finiteStep(context.fixedStepIndex);
+  const rotation = finiteQuaternion(context.observation.rotation) ?? IDENTITY_ROTATION;
+  const localForward = rotateVector(rotation, { x: 0, y: 0, z: 1 });
+  const localRight = rotateVector(rotation, { x: 1, y: 0, z: 0 });
+  const localRoof = rotateVector(rotation, { x: 0, y: 1, z: 0 });
+  const normalizedPitch = finiteAxis(input.pitch);
+  const normalizedYaw = finiteAxis(input.yaw);
+  const normalizedRoll = finiteAxis(input.roll);
+  let nextState = sanitizeJumpAirState(state);
+  let event: JumpAirEvent = 'none';
+  let jumpDeltaVelocity: ControllerVector3 = ZERO_VECTOR;
+
+  const firstJumpStepAtStart = nextState.firstJumpAcceptedAtStep;
+  const elapsedFirstAtStart = firstJumpStepAtStart === null
+    ? Number.POSITIVE_INFINITY
+    : (fixedStepIndex - firstJumpStepAtStart) * timestepSeconds;
+  const residualLaunchSupport = context.observation.grounded === true
+    && firstJumpStepAtStart !== null
+    && nextState.airborneSinceFirstJump === false
+    && elapsedFirstAtStart >= -CURVE_EPSILON
+    && elapsedFirstAtStart <= tuning.secondJumpWindow + CURVE_EPSILON;
+
+  if (context.observation.grounded === true && !residualLaunchSupport) {
+    nextState = immutableJumpAirState({
+      lastConsumedJumpSequence: nextState.lastConsumedJumpSequence,
+      firstJumpAcceptedAtStep: null,
+      airborneSinceFirstJump: false,
+      firstJumpHeld: false,
+      secondJumpAvailable: true,
+      activeFlipStartedAtStep: null,
+      activeFlipDirection: null,
+    });
+  } else if (context.observation.grounded !== true) {
+    if (
+      nextState.firstJumpAcceptedAtStep !== null
+      && nextState.airborneSinceFirstJump === false
+    ) {
+      nextState = immutableJumpAirState({
+        ...nextState,
+        airborneSinceFirstJump: true,
+      });
+    }
+    if (nextState.activeFlipStartedAtStep !== null) {
+      const elapsedFlip = (fixedStepIndex - nextState.activeFlipStartedAtStep) * timestepSeconds;
+      if (elapsedFlip + CURVE_EPSILON >= tuning.flipActuationWindow) {
+        nextState = immutableJumpAirState({
+          ...nextState,
+          activeFlipStartedAtStep: null,
+          activeFlipDirection: null,
+        });
+      }
+    }
+  }
+
+  if (input.jumpHeld !== true && nextState.firstJumpHeld) {
+    nextState = immutableJumpAirState({ ...nextState, firstJumpHeld: false });
+  }
+
+  const jumpSequence = finiteSequence(
+    input.jumpSequence,
+    nextState.lastConsumedJumpSequence,
+  );
+  if (jumpSequence > nextState.lastConsumedJumpSequence) {
+    nextState = immutableJumpAirState({
+      ...nextState,
+      lastConsumedJumpSequence: jumpSequence,
+      firstJumpHeld: false,
+    });
+
+    if (context.observation.grounded === true && !residualLaunchSupport) {
+      event = 'first-jump';
+      jumpDeltaVelocity = scale(localRoof, tuning.firstJumpVelocityChange);
+      nextState = immutableJumpAirState({
+        ...nextState,
+        firstJumpAcceptedAtStep: fixedStepIndex,
+        airborneSinceFirstJump: false,
+        firstJumpHeld: input.jumpHeld === true,
+        secondJumpAvailable: true,
+        activeFlipStartedAtStep: null,
+        activeFlipDirection: null,
+      });
+    } else if (context.observation.grounded !== true) {
+      const firstJumpStep = nextState.firstJumpAcceptedAtStep;
+      const elapsedFirst = firstJumpStep === null
+        ? Number.POSITIVE_INFINITY
+        : (fixedStepIndex - firstJumpStep) * timestepSeconds;
+      const secondJumpLegal = nextState.secondJumpAvailable
+        && firstJumpStep !== null
+        && elapsedFirst >= -CURVE_EPSILON
+        && elapsedFirst <= tuning.secondJumpWindow + CURVE_EPSILON;
+      if (secondJumpLegal) {
+        const directionMagnitude = Math.hypot(normalizedPitch, normalizedRoll);
+        const directional = directionMagnitude > CURVE_EPSILON
+          && directionMagnitude + CURVE_EPSILON >= tuning.directionalDeadzone;
+        if (directional) {
+          event = 'flip-start';
+          const lockedDirection = Object.freeze([
+            normalizedPitch / directionMagnitude,
+            normalizedRoll / directionMagnitude,
+          ] as const);
+          const planarDirection = normalizeVector(add(
+            scale(localForward, lockedDirection[0]),
+            scale(localRight, -lockedDirection[1]),
+          )) ?? localForward;
+          const flipDirection = normalizeVector(add(localRoof, planarDirection)) ?? localRoof;
+          jumpDeltaVelocity = scale(flipDirection, tuning.firstJumpVelocityChange);
+          nextState = immutableJumpAirState({
+            ...nextState,
+            secondJumpAvailable: false,
+            activeFlipStartedAtStep: fixedStepIndex,
+            activeFlipDirection: lockedDirection,
+          });
+        } else {
+          event = 'second-jump';
+          jumpDeltaVelocity = scale(localRoof, tuning.firstJumpVelocityChange);
+          nextState = immutableJumpAirState({
+            ...nextState,
+            secondJumpAvailable: false,
+            activeFlipStartedAtStep: null,
+            activeFlipDirection: null,
+          });
+        }
+      } else {
+        event = 'edge-discarded';
+      }
+    } else {
+      // A launch is already in flight even if support rays still reach the old surface.
+      event = 'edge-discarded';
+    }
+  }
+
+  let firstJumpStep = nextState.firstJumpAcceptedAtStep;
+  let elapsedFirst = firstJumpStep === null
+    ? Number.POSITIVE_INFINITY
+    : (fixedStepIndex - firstJumpStep) * timestepSeconds;
+  if (
+    nextState.firstJumpHeld
+    && elapsedFirst + CURVE_EPSILON >= tuning.holdDuration
+  ) {
+    nextState = immutableJumpAirState({ ...nextState, firstJumpHeld: false });
+    firstJumpStep = nextState.firstJumpAcceptedAtStep;
+    elapsedFirst = firstJumpStep === null
+      ? Number.POSITIVE_INFINITY
+      : (fixedStepIndex - firstJumpStep) * timestepSeconds;
+  }
+  const holdActive = nextState.firstJumpHeld
+    && input.jumpHeld === true
+    && elapsedFirst >= -CURVE_EPSILON
+    && elapsedFirst + CURVE_EPSILON < tuning.holdDuration;
+  const holdForce = holdActive ? scale(localRoof, tuning.holdForce) : ZERO_VECTOR;
+  const holdDeltaVelocity = holdActive
+    ? scale(localRoof, tuning.holdForce / tuning.mass * timestepSeconds)
+    : ZERO_VECTOR;
+
+  let flipActive = false;
+  let pitchCommand = normalizedPitch;
+  let rollCommand = normalizedRoll;
+  if (
+    context.observation.grounded !== true
+    && nextState.activeFlipStartedAtStep !== null
+    && nextState.activeFlipDirection !== null
+  ) {
+    const elapsedFlip = (fixedStepIndex - nextState.activeFlipStartedAtStep) * timestepSeconds;
+    flipActive = elapsedFlip >= -CURVE_EPSILON
+      && elapsedFlip + CURVE_EPSILON < tuning.flipActuationWindow;
+    if (flipActive) {
+      [pitchCommand, rollCommand] = nextState.activeFlipDirection;
+    }
+  }
+
+  const rawAirAngular = context.observation.grounded === true
+    ? ZERO_VECTOR
+    : add(
+      add(scale(localRight, pitchCommand), scale(localRoof, normalizedYaw)),
+      scale(localForward, rollCommand),
+    );
+  const airAngularTarget = boundedAngularTarget(
+    rawAirAngular,
+    tuning.maximumAngularSpeed,
+  );
+
+  return Object.freeze({
+    event,
+    localForward,
+    localRight,
+    localRoof,
+    normalizedPitch,
+    normalizedYaw,
+    normalizedRoll,
+    jumpDeltaVelocity,
+    holdForce,
+    holdDeltaVelocity,
+    airAngularTarget,
+    flipActive,
+    nextState,
+  });
+}
+
 /**
  * Produce one finite propulsion/drag command without touching Rapier, inventory,
  * jump state, room state, or process-global overrides.
@@ -527,15 +943,45 @@ export function planCarControllerCommand(
     };
   }
 
-  const projectedVelocity = add(
+  const baseProjectedVelocity = add(
     add(propulsionProjectedVelocity, dragDeltaVelocity),
     lateralGripDeltaVelocity,
   );
-  const deltaVelocity = add(
+  const baseDeltaVelocity = add(
     add(appliedPropulsionDeltaVelocity, dragDeltaVelocity),
     lateralGripDeltaVelocity,
   );
-  const projectedAngularVelocity = add(angularVelocity, angularDeltaVelocity);
+  let projectedVelocity = baseProjectedVelocity;
+  let deltaVelocity = baseDeltaVelocity;
+  let projectedAngularVelocity = add(angularVelocity, angularDeltaVelocity);
+  let finalAngularDeltaVelocity = angularDeltaVelocity;
+  let jumpAirControl: JumpAirControlPlan | null = null;
+  let nextJumpAirState: Readonly<CarJumpAirState> | null = null;
+
+  if (context.jumpAir !== undefined) {
+    jumpAirControl = planJumpAirControl(input, context.jumpAir.state, {
+      observation: {
+        ...context.observation,
+        rotation,
+        linearVelocity,
+        angularVelocity,
+      },
+      fixedStepIndex: context.jumpAir.fixedStepIndex,
+      timestepSeconds,
+      tuning,
+    });
+    nextJumpAirState = jumpAirControl.nextState;
+    const jumpLinearDelta = add(
+      jumpAirControl.jumpDeltaVelocity,
+      jumpAirControl.holdDeltaVelocity,
+    );
+    projectedVelocity = add(baseProjectedVelocity, jumpLinearDelta);
+    deltaVelocity = add(baseDeltaVelocity, jumpLinearDelta);
+    if (context.observation.grounded !== true) {
+      projectedAngularVelocity = jumpAirControl.airAngularTarget;
+      finalAngularDeltaVelocity = subtract(projectedAngularVelocity, angularVelocity);
+    }
+  }
 
   return {
     localForward,
@@ -551,13 +997,15 @@ export function planCarControllerCommand(
     dragDeltaVelocity,
     lateralGripDeltaVelocity,
     deltaVelocity,
-    angularDeltaVelocity,
+    angularDeltaVelocity: finalAngularDeltaVelocity,
     propulsionProjectedVelocity,
     projectedVelocity,
     projectedAngularVelocity,
     propulsionProjectedForwardSpeed,
     boostActuated,
     groundedControl,
+    jumpAirControl,
+    nextJumpAirState,
     nextFiniteState: {
       rotation,
       linearVelocity: projectedVelocity,

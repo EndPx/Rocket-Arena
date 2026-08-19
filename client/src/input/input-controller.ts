@@ -1,7 +1,11 @@
-import { NETCODE, type InputPayload } from '@rocket-arena/shared';
+import {
+  INPUT_PROTOCOL_VERSION,
+  NETCODE,
+  type InputCommandV2,
+} from '@rocket-arena/shared';
 
 export interface InputSink {
-  send(type: 'input', payload: InputPayload): void;
+  send(type: 'input', payload: InputCommandV2): void;
 }
 
 const GAMEPLAY_CODES = new Set([
@@ -9,6 +13,9 @@ const GAMEPLAY_CODES = new Set([
   'KeyA',
   'KeyS',
   'KeyD',
+  'KeyQ',
+  'KeyE',
+  'KeyC',
   'ArrowUp',
   'ArrowDown',
   'ArrowLeft',
@@ -16,6 +23,8 @@ const GAMEPLAY_CODES = new Set([
   'Space',
   'ShiftLeft',
   'ShiftRight',
+  'ControlLeft',
+  'ControlRight',
 ]);
 
 /** Return whether an event target is an editable control rather than gameplay. */
@@ -41,6 +50,7 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 export class InputController {
   private readonly heldCodes = new Set<string>();
   private jumpSequence = 0;
+  private cameraToggleSequence = 0;
   private lastRoom: InputSink | null = null;
   private lastPayload = '';
   private lastSentAt = Number.NEGATIVE_INFINITY;
@@ -49,9 +59,9 @@ export class InputController {
   handleKeyDown(code: string, repeat = false): boolean {
     if (!GAMEPLAY_CODES.has(code)) return false;
 
-    if (code === 'Space' && !repeat && !this.heldCodes.has(code)) {
-      this.jumpSequence += 1;
-    }
+    const newPhysicalPress = !repeat && !this.heldCodes.has(code);
+    if (code === 'Space' && newPhysicalPress) this.jumpSequence += 1;
+    if (code === 'KeyC' && newPhysicalPress) this.cameraToggleSequence += 1;
     this.heldCodes.add(code);
     return true;
   }
@@ -62,7 +72,7 @@ export class InputController {
     return true;
   }
 
-  /** Clear held controls without erasing the monotonic jump press id. */
+  /** Clear held controls without erasing monotonic physical-edge floors. */
   resetHeldKeys(): void {
     this.heldCodes.clear();
     this.forceNextSend = true;
@@ -76,9 +86,10 @@ export class InputController {
     this.forceNextSend = true;
   }
 
-  getPayload(): InputPayload {
+  getPayload(): Readonly<InputCommandV2> {
     let throttle = 0;
     let steer = 0;
+    let yaw = 0;
 
     if (this.heldCodes.has('KeyW') || this.heldCodes.has('ArrowUp')) throttle = 1;
     else if (this.heldCodes.has('KeyS') || this.heldCodes.has('ArrowDown')) throttle = -1;
@@ -86,13 +97,22 @@ export class InputController {
     if (this.heldCodes.has('KeyA') || this.heldCodes.has('ArrowLeft')) steer = 1;
     else if (this.heldCodes.has('KeyD') || this.heldCodes.has('ArrowRight')) steer = -1;
 
-    return {
+    if (this.heldCodes.has('KeyE')) yaw = 1;
+    else if (this.heldCodes.has('KeyQ')) yaw = -1;
+
+    return Object.freeze({
+      protocolVersion: INPUT_PROTOCOL_VERSION,
       throttle,
       steer,
-      jump: this.heldCodes.has('Space'),
-      boost: this.heldCodes.has('ShiftLeft') || this.heldCodes.has('ShiftRight'),
+      pitch: throttle,
+      yaw,
+      roll: steer,
+      jumpHeld: this.heldCodes.has('Space'),
       jumpSequence: this.jumpSequence,
-    };
+      boostHeld: this.heldCodes.has('ShiftLeft') || this.heldCodes.has('ShiftRight'),
+      powerslideHeld: this.heldCodes.has('ControlLeft') || this.heldCodes.has('ControlRight'),
+      cameraToggleSequence: this.cameraToggleSequence,
+    });
   }
 
   /** Send changes, room-initial state, forced neutral state, or a heartbeat. */
