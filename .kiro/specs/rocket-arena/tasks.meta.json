@@ -360,6 +360,16 @@
         "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
         "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
         "timestamp": 1787038355775
+      },
+      {
+        "executionId": "fd05602c-e4e7-46c1-a2b7-b9b929bfe47f",
+        "chatSessionId": "sess_67a0c054-b376-4ed8-89d4-7f53dccd8829",
+        "timestamp": 1787107389546
+      },
+      {
+        "executionId": "fd05602c-e4e7-46c1-a2b7-b9b929bfe47f",
+        "chatSessionId": "sess_67a0c054-b376-4ed8-89d4-7f53dccd8829",
+        "timestamp": 1787107948287
       }
     ],
     "3.2 Add the client V2 decoder, validator, and temporary V1 adapter": [
@@ -367,6 +377,16 @@
         "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
         "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
         "timestamp": 1787038355830
+      },
+      {
+        "executionId": "c51fbb65-0469-4ae5-864f-87d43e55f8b5",
+        "chatSessionId": "sess_67a0c054-b376-4ed8-89d4-7f53dccd8829",
+        "timestamp": 1787085803719
+      },
+      {
+        "executionId": "c51fbb65-0469-4ae5-864f-87d43e55f8b5",
+        "chatSessionId": "sess_67a0c054-b376-4ed8-89d4-7f53dccd8829",
+        "timestamp": 1787086447876
       }
     ],
     "3.3 Add a single immutable accepted-snapshot store": [
@@ -374,6 +394,41 @@
         "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
         "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
         "timestamp": 1787038355891
+      },
+      {
+        "executionId": "c51fbb65-0469-4ae5-864f-87d43e55f8b5",
+        "chatSessionId": "sess_67a0c054-b376-4ed8-89d4-7f53dccd8829",
+        "timestamp": 1787086474749
+      },
+      {
+        "executionId": "c51fbb65-0469-4ae5-864f-87d43e55f8b5",
+        "chatSessionId": "sess_67a0c054-b376-4ed8-89d4-7f53dccd8829",
+        "timestamp": 1787086716062
+      },
+      {
+        "executionId": "fd05602c-e4e7-46c1-a2b7-b9b929bfe47f",
+        "chatSessionId": "sess_67a0c054-b376-4ed8-89d4-7f53dccd8829",
+        "timestamp": 1787107987934
+      },
+      {
+        "executionId": "fd05602c-e4e7-46c1-a2b7-b9b929bfe47f",
+        "chatSessionId": "sess_67a0c054-b376-4ed8-89d4-7f53dccd8829",
+        "timestamp": 1787108407728
+      },
+      {
+        "executionId": "9914fd8a-b8c5-49bd-80c3-d2491b3b233b",
+        "chatSessionId": "sess_67a0c054-b376-4ed8-89d4-7f53dccd8829",
+        "timestamp": 1787109389193
+      },
+      {
+        "executionId": "b05a9204-3a18-4032-803d-178d46422775",
+        "chatSessionId": "sess_67a0c054-b376-4ed8-89d4-7f53dccd8829",
+        "timestamp": 1787113907042
+      },
+      {
+        "executionId": "b05a9204-3a18-4032-803d-178d46422775",
+        "chatSessionId": "sess_67a0c054-b376-4ed8-89d4-7f53dccd8829",
+        "timestamp": 1787114132684
       }
     ],
     "3.4 Refactor scene reconciliation into prepare-and-commit acceptance": [
@@ -381,6 +436,16 @@
         "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
         "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
         "timestamp": 1787038355974
+      },
+      {
+        "executionId": "fd05602c-e4e7-46c1-a2b7-b9b929bfe47f",
+        "chatSessionId": "sess_67a0c054-b376-4ed8-89d4-7f53dccd8829",
+        "timestamp": 1787107955081
+      },
+      {
+        "executionId": "fd05602c-e4e7-46c1-a2b7-b9b929bfe47f",
+        "chatSessionId": "sess_67a0c054-b376-4ed8-89d4-7f53dccd8829",
+        "timestamp": 1787107980386
       }
     ],
     "3.5 Switch both room adapters and the client connection path to V2": [
@@ -395,6 +460,16 @@
         "executionId": "e06dd4bc-b767-40db-a964-c90cd9f41274",
         "chatSessionId": "sess_ea1fe31b-3ad7-4b62-871c-d081a61e0205",
         "timestamp": 1787038356088
+      },
+      {
+        "executionId": "c51fbb65-0469-4ae5-864f-87d43e55f8b5",
+        "chatSessionId": "sess_67a0c054-b376-4ed8-89d4-7f53dccd8829",
+        "timestamp": 1787085809935
+      },
+      {
+        "executionId": "c51fbb65-0469-4ae5-864f-87d43e55f8b5",
+        "chatSessionId": "sess_67a0c054-b376-4ed8-89d4-7f53dccd8829",
+        "timestamp": 1787086456891
       }
     ],
     "3.7 Implement generated Property 7 coverage for snapshot round trip and identity completeness": [
@@ -781,6 +856,13 @@
         "executionId": "0d2ac2e8-98f3-4a93-9dc9-45a0d7e0fb0c",
         "chatSessionId": "sess_6cf1869c-e97b-4d2e-b29d-f27e714393d1",
         "timestamp": 1787077511079
+      }
+    ],
+    "4. Add deterministic kickoff slots and simulation-time pre-play phases": [
+      {
+        "executionId": "b071dacc-12d4-4b98-b4bd-10d7130dae73",
+        "chatSessionId": "sess_e641f3f1-ef18-4351-abe2-4e3f0e6477a1",
+        "timestamp": 1787109431022
       }
     ]
   }
