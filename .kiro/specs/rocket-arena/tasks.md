@@ -202,7 +202,7 @@ Every implementation task must leave its code wired into the preceding increment
     - _Depends on: 1.4, 2.3_
     - _Requirements: 13.1-13.8, 13.15-13.16, 13.22-13.23, 18.22-18.23_
 
-  - [ ] 4.5 Wire Quick cancellation and Custom Host start into fixed-step phases
+  - [x] 4.5 Wire Quick cancellation and Custom Host start into fixed-step phases
     - Remove room-owned countdown intervals from `server/src/rooms/arena-room.ts` and `server/src/rooms/custom-room.ts`; route start/cancel/disconnect events through `AuthoritativeRoomCore` and `MatchFlowReducer`.
     - Implement one fresh Quick countdown only at exact 3+3, cancellation below six before play, full restart when restored, Host-only Custom start for a capacity-valid roster, and countdown preservation after Custom Host succession.
     - Extend room integration tests with exact countdown values, reopened Quick admission, non-Host rejection atomicity, and active-play disconnect preservation.
