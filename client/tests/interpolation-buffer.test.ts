@@ -219,3 +219,37 @@ test('accepted snapshots are defensively owned against later caller mutation', (
   assert.equal(frame.kickoffEpoch, 3);
   assert.equal(frame.entities.car.x, 4);
 });
+
+test('prepared snapshot acceptance is invisible until commit and abort preserves all stats', () => {
+  const buffer = new SnapshotBuffer({ interpolationDelayMs: 0 });
+  assert.equal(buffer.accept(snapshot(1, 100, { x: 1 }), 100), true);
+  const beforeSequences = buffer.getSnapshotSequences();
+  const beforeStats = buffer.getStats();
+  const prepared = buffer.prepareAccept(snapshot(2, 200, { x: 2 }), 200);
+  assert.ok(prepared);
+
+  assert.deepEqual(buffer.getSnapshotSequences(), beforeSequences);
+  assert.deepEqual(buffer.getStats(), beforeStats);
+  assert.equal(prepared.abort(), true);
+  assert.equal(prepared.commit(), false);
+  assert.deepEqual(buffer.getSnapshotSequences(), beforeSequences);
+  assert.deepEqual(buffer.getStats(), beforeStats);
+});
+
+test('a wider transaction can roll a committed timeline back to its exact prior state', () => {
+  const buffer = new SnapshotBuffer({ interpolationDelayMs: 0 });
+  assert.equal(buffer.accept(snapshot(1, 100, { x: 1 }), 100), true);
+  const beforeStats = buffer.getStats();
+  const prepared = buffer.prepareAccept(snapshot(2, 200, { x: 2 }), 200);
+  assert.ok(prepared);
+
+  assert.equal(prepared.commit(), true);
+  assert.deepEqual(buffer.getSnapshotSequences(), [1, 2]);
+  assert.equal(prepared.rollback(), true);
+  assert.equal(prepared.rollback(), false);
+  assert.deepEqual(buffer.getSnapshotSequences(), [1]);
+  assert.deepEqual(buffer.getStats(), beforeStats);
+
+  assert.equal(buffer.accept(snapshot(2, 200, { x: 2 }), 200), true);
+  assert.deepEqual(buffer.getSnapshotSequences(), [1, 2]);
+});

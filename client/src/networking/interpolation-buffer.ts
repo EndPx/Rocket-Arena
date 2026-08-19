@@ -239,6 +239,16 @@ function distanceSquared(a: EntitySnapshot, b: EntitySnapshot): number {
   return x * x + y * y + z * z;
 }
 
+export interface PreparedSnapshotAcceptance {
+  readonly sequence: number;
+  /** Commit the prepared immutable timeline if the buffer has not changed. */
+  commit(): boolean;
+  /** Restore the exact pre-commit timeline when a wider transaction cannot publish. */
+  rollback(): boolean;
+  /** Discard an uncommitted preparation without changing any buffer state. */
+  abort(): boolean;
+}
+
 /** Immutable, sequence-ordered authoritative snapshot timeline. */
 export class SnapshotBuffer {
   private readonly capacity: number;
@@ -252,6 +262,7 @@ export class SnapshotBuffer {
   private underrunFrames = 0;
   private extrapolatedFrames = 0;
   private teleportFrames = 0;
+  private revision = 0;
 
   constructor(options: SnapshotBufferOptions = {}) {
     this.capacity = Math.max(1, Math.floor(options.capacity ?? NETCODE.SNAPSHOT_BUFFER_SIZE));
@@ -275,31 +286,77 @@ export class SnapshotBuffer {
     this.underrunFrames = 0;
     this.extrapolatedFrames = 0;
     this.teleportFrames = 0;
+    this.revision += 1;
   }
 
-  /** Accept a validated immutable timeline without mutating the caller's value. */
-  accept(snapshot: ValidatedTimelineSnapshot, receivedAtMs: number): boolean {
+  /**
+   * Validate and clone one timeline into detached state. Rejection, abort, and
+   * stale commit attempts leave every observable buffer field unchanged.
+   */
+  prepareAccept(
+    snapshot: ValidatedTimelineSnapshot,
+    receivedAtMs: number,
+  ): PreparedSnapshotAcceptance | null {
     const latest = this.snapshots.at(-1);
     if (
       !isValidSnapshot(snapshot)
       || !Number.isFinite(receivedAtMs)
       || (latest !== undefined && (
         snapshot.sequence <= latest.sequence
-        || snapshot.simulationTime <= latest.simulationTime
+        || snapshot.simulationTime < latest.simulationTime
         || snapshot.kickoffEpoch < latest.kickoffEpoch
       ))
     ) {
-      this.rejectedSnapshots += 1;
-      return false;
+      return null;
     }
 
     const copy = immutableSnapshot(snapshot);
-    this.snapshots = Object.freeze([...this.snapshots, copy].slice(-this.capacity));
+    const nextSnapshots = Object.freeze([...this.snapshots, copy].slice(-this.capacity));
     const offsetCandidate = receivedAtMs - snapshot.simulationTime;
-    this.localTimelineOffsetMs = this.localTimelineOffsetMs === null
+    const nextTimelineOffsetMs = this.localTimelineOffsetMs === null
       ? offsetCandidate
       : Math.min(this.localTimelineOffsetMs, offsetCandidate);
-    this.acceptedSnapshots += 1;
+    const previousSnapshots = this.snapshots;
+    const previousTimelineOffsetMs = this.localTimelineOffsetMs;
+    const previousAcceptedSnapshots = this.acceptedSnapshots;
+    const baseRevision = this.revision;
+    let status: 'prepared' | 'committed' | 'aborted' | 'rolled-back' = 'prepared';
+
+    return Object.freeze({
+      sequence: copy.sequence,
+      commit: (): boolean => {
+        if (status !== 'prepared' || this.revision !== baseRevision) return false;
+        this.snapshots = nextSnapshots;
+        this.localTimelineOffsetMs = nextTimelineOffsetMs;
+        this.acceptedSnapshots = previousAcceptedSnapshots + 1;
+        this.revision += 1;
+        status = 'committed';
+        return true;
+      },
+      rollback: (): boolean => {
+        if (status !== 'committed' || this.revision !== baseRevision + 1) return false;
+        this.snapshots = previousSnapshots;
+        this.localTimelineOffsetMs = previousTimelineOffsetMs;
+        this.acceptedSnapshots = previousAcceptedSnapshots;
+        this.revision += 1;
+        status = 'rolled-back';
+        return true;
+      },
+      abort: (): boolean => {
+        if (status !== 'prepared') return false;
+        status = 'aborted';
+        return true;
+      },
+    });
+  }
+
+  /** Accept a validated immutable timeline without mutating the caller's value. */
+  accept(snapshot: ValidatedTimelineSnapshot, receivedAtMs: number): boolean {
+    const prepared = this.prepareAccept(snapshot, receivedAtMs);
+    if (!prepared || !prepared.commit()) {
+      this.rejectedSnapshots += 1;
+      return false;
+    }
     return true;
   }
 

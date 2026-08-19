@@ -135,7 +135,7 @@ Every implementation task must leave its code wired into the preceding increment
     - _Depends on: 3.2_
     - _Requirements: 6.9-6.12_
 
-  - [ ] 3.4 Refactor scene reconciliation into prepare-and-commit acceptance
+  - [x] 3.4 Refactor scene reconciliation into prepare-and-commit acceptance
     - Refactor `client/src/networking/state-listener.ts` to validate before keying identities, ask the interpolation buffer to accept the candidate, prepare car additions/removals without touching the scene, and commit the buffer/store/local state/mesh ownership together.
     - Support exactly one rendered car per accepted identity through eight cars; dispose temporary resources on preparation failure and preserve the prior sequence, buffer, meshes, HUD/camera/audio inputs, and scene on any rejection.
     - Add `client/tests/state-listener.test.ts` with atomic-state assertions for duplicate, over-capacity, malformed, sequence-regressed, and mesh-preparation failures plus eight-car add/update/remove and leave/reconnect cleanup.
