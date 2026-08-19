@@ -46,7 +46,7 @@ interface TestWorld {
   disposeCount: number;
 }
 
-type TestCore = AuthoritativeRoomCore<TestWorld, TestCar, TestBall, string>;
+type TestCore = AuthoritativeRoomCore<TestWorld, TestCar, TestBall>;
 type TestState = Readonly<
   RoomMutationState<TestCar, InputCommandV2, TestBall, string>
 >;
@@ -87,7 +87,7 @@ function neutralInput(): InputCommandV2 {
 
 function makeBundle(
   world: TestWorld,
-): AuthoritativeRoomWorldBundle<TestWorld, TestCar, TestBall, string> {
+): AuthoritativeRoomWorldBundle<TestWorld, TestCar, TestBall> {
   const ball = makeBall();
   return {
     world,
@@ -141,7 +141,7 @@ function makeBundle(
 
 async function makeCore(): Promise<{ readonly core: TestCore; readonly world: TestWorld }> {
   const world = makeWorld();
-  const core = createQuickMatchCore<TestWorld, TestCar, TestBall, string>({
+  const core = createQuickMatchCore<TestWorld, TestCar, TestBall>({
     roomId: 'quick-room-test',
     initializeWorld: () => makeBundle(world),
     logger: { info: () => {}, error: () => {} },

@@ -25,6 +25,7 @@ import {
   type CarPhysicsState,
 } from '../physics/car.js';
 import { createWorld, initPhysics } from '../physics/world.js';
+import { prepareResetToKickoff } from '../systems/scoring.js';
 import {
   AuthoritativeRoomCore,
   createNeutralInputCommandV2,
@@ -55,24 +56,14 @@ type QuickRoomCore = AuthoritativeRoomCore<
  * tests. Caller-supplied capacity assertions still pass through the core's
  * canonical policy validation; callers cannot replace the Quick policy.
  */
-export type QuickMatchCoreOptions<
-  TWorld,
-  TCar,
-  TBall,
-  TKickoffAssignment = unknown,
-> = Omit<
-  AuthoritativeRoomCoreOptions<TWorld, TCar, TBall, TKickoffAssignment>,
+export type QuickMatchCoreOptions<TWorld, TCar, TBall> = Omit<
+  AuthoritativeRoomCoreOptions<TWorld, TCar, TBall>,
   'mode' | 'policy'
 >;
 
-export function createQuickMatchCore<
-  TWorld,
-  TCar,
-  TBall,
-  TKickoffAssignment = unknown,
->(
-  options: QuickMatchCoreOptions<TWorld, TCar, TBall, TKickoffAssignment>,
-): AuthoritativeRoomCore<TWorld, TCar, TBall, TKickoffAssignment> {
+export function createQuickMatchCore<TWorld, TCar, TBall>(
+  options: QuickMatchCoreOptions<TWorld, TCar, TBall>,
+): AuthoritativeRoomCore<TWorld, TCar, TBall> {
   return new AuthoritativeRoomCore({
     ...options,
     mode: QUICK_MATCH_POLICY.mode,
@@ -144,6 +135,16 @@ async function initializeQuickWorld(): Promise<
         commitRemoval: () => { world.removeRigidBody(car.body); },
       }),
     },
+    prepareKickoffPlacement: ({ ball: authoritativeBall, cars, assignmentSet }) => (
+      prepareResetToKickoff(
+        authoritativeBall,
+        new Map([...cars].map(([sessionId, car]) => [
+          sessionId,
+          { body: car.body, jumpState: car.jumpState },
+        ])),
+        assignmentSet.assignments,
+      )
+    ),
     fixedStep: ({ state }) => {
       const activePlay = state.phase === 'playing' || state.phase === 'overtime';
       for (const [sessionId, car] of state.cars) {
