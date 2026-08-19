@@ -10,13 +10,14 @@ import {
   type KickoffSlotId,
   type KickoffSlotIndex,
   type KickoffSlotTable,
-  type QuaternionTuple,
   type RegistryEntrySource,
   type RoomPolicy,
   type RosterEntry,
   type Team,
-  type Vector3Tuple,
 } from '@rocket-arena/shared';
+
+type Vector3Tuple = KickoffSlot['position'];
+type QuaternionTuple = KickoffSlot['rotation'];
 
 const OVERLAP_EPSILON = 1e-10;
 
@@ -347,16 +348,63 @@ function assignmentFromSlot(entry: Readonly<RosterEntry>, slot: KickoffSlot): Ki
     slotId: slot.id,
     slotIndex: slot.index,
     position: freezeVector3(slot.position),
-    rotation: normalizeQuaternion(slot.rotation),
+    rotation: freezeQuaternion(slot.rotation),
   });
 }
 
-/** Validate exact roster coverage, same-team uniqueness, and full OBB separation. */
+function exactFiniteNumericTupleEquals(
+  left: readonly number[],
+  right: readonly number[],
+  expectedLength: number,
+): boolean {
+  if (!Array.isArray(left)
+    || !Array.isArray(right)
+    || left.length !== expectedLength
+    || right.length !== expectedLength) {
+    return false;
+  }
+
+  for (let index = 0; index < expectedLength; index += 1) {
+    if (!Object.prototype.hasOwnProperty.call(left, index)
+      || !Object.prototype.hasOwnProperty.call(right, index)
+      || typeof left[index] !== 'number'
+      || typeof right[index] !== 'number'
+      || !Number.isFinite(left[index])
+      || !Number.isFinite(right[index])
+      || left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function snapshotKickoffSlot(slot: KickoffSlot): KickoffSlot {
+  return Object.freeze({
+    id: slot.id,
+    index: slot.index,
+    team: slot.team,
+    position: freezeVector3(slot.position),
+    rotation: freezeQuaternion(slot.rotation),
+  });
+}
+
+function snapshotKickoffSlotTable(slots: KickoffSlotTable): KickoffSlotTable {
+  return Object.freeze({
+    blue: Object.freeze(slots.blue.map(snapshotKickoffSlot)),
+    orange: Object.freeze(slots.orange.map(snapshotKickoffSlot)),
+  });
+}
+
+/**
+ * Validate exact roster coverage, configured slot transforms, same-team
+ * uniqueness, and full OBB separation.
+ */
 export function validateKickoffAssignmentBijection(
   assignments: ReadonlyMap<string, Readonly<KickoffAssignment>>,
   roster: readonly Readonly<RosterEntry>[],
   policy: RoomPolicy,
   dimensions: CarColliderDimensions,
+  slots: KickoffSlotTable,
 ): void {
   const orderedRoster = validateRoster(roster, policy);
   if (!isReadonlyMap(assignments) || assignments.size !== orderedRoster.length) {
@@ -376,15 +424,43 @@ export function validateKickoffAssignmentBijection(
   for (const [sessionId, assignment] of assignments) {
     const entry = rosterById.get(sessionId);
     const expectedSlotIndex = expectedSlotIndexById.get(sessionId);
-    if (entry === undefined || expectedSlotIndex === undefined || assignment.sessionId !== sessionId) {
+    if (
+      entry === undefined
+      || expectedSlotIndex === undefined
+      || typeof assignment !== 'object'
+      || assignment === null
+      || assignment.sessionId !== sessionId
+    ) {
       fail('incomplete-bijection', `Assignment ${sessionId} does not identify a current roster member.`);
+    }
+
+    const expectedSlot = slots?.[entry.team]?.[expectedSlotIndex];
+    if (
+      expectedSlot === undefined
+      || expectedSlot.team !== entry.team
+      || expectedSlot.index !== expectedSlotIndex
+      || expectedSlot.id !== `${entry.team}-${expectedSlotIndex}`
+    ) {
+      fail(
+        'invalid-slot-table',
+        `Configured ${entry.team} slot ${expectedSlotIndex} is missing or has inconsistent metadata.`,
+      );
     }
     if (assignment.team !== entry.team
       || assignment.slotIndex !== expectedSlotIndex
-      || assignment.slotId !== `${entry.team}-${expectedSlotIndex}`) {
+      || assignment.slotId !== expectedSlot.id) {
       fail(
         'incomplete-bijection',
         `${sessionId} must receive ${entry.team} slot ${expectedSlotIndex} from team-local Stable_Roster_Order.`,
+      );
+    }
+    if (
+      !exactFiniteNumericTupleEquals(assignment.position, expectedSlot.position, 3)
+      || !exactFiniteNumericTupleEquals(assignment.rotation, expectedSlot.rotation, 4)
+    ) {
+      fail(
+        'incomplete-bijection',
+        `${sessionId}/${assignment.slotId} must use the exact configured kickoff transform.`,
       );
     }
     if (usedSlots.has(assignment.slotId)) {
@@ -443,7 +519,13 @@ function buildAssignmentSet(
     });
   }
 
-  validateKickoffAssignmentBijection(assignments, orderedRoster, policy, dimensions);
+  validateKickoffAssignmentBijection(
+    assignments,
+    orderedRoster,
+    policy,
+    dimensions,
+    slots,
+  );
   return Object.freeze({
     epoch,
     rosterSignature: rosterSignature(orderedRoster),
@@ -457,6 +539,7 @@ class PreparedReplacement implements PreparedKickoffAssignmentReplacement {
   constructor(
     readonly candidate: Readonly<KickoffAssignmentSet>,
     readonly reusedAssignments: boolean,
+    private readonly assignmentSlots: KickoffSlotTable,
     private readonly expectedGeneration: number,
     private readonly service: DeterministicKickoffAssignmentService,
   ) {}
@@ -470,7 +553,11 @@ class PreparedReplacement implements PreparedKickoffAssignmentReplacement {
       fail('stale-transaction', 'A prepared kickoff replacement can be settled only once.');
     }
     this.isSettled = true;
-    return this.service.commitPrepared(this.candidate, this.expectedGeneration);
+    return this.service.commitPrepared(
+      this.candidate,
+      this.expectedGeneration,
+      this.assignmentSlots,
+    );
   }
 
   abort(): void {
@@ -491,6 +578,7 @@ export class DeterministicKickoffAssignmentService {
   readonly colliderDimensions: CarColliderDimensions;
 
   private currentValue: Readonly<KickoffAssignmentSet> | null = null;
+  private currentSlotsValue: KickoffSlotTable | null = null;
   private generation = 0;
 
   constructor(options: KickoffAssignmentServiceOptions) {
@@ -518,35 +606,46 @@ export class DeterministicKickoffAssignmentService {
     candidateSlots: KickoffSlotTable = this.slots,
   ): KickoffAssignmentPreparationResult {
     try {
-      validateKickoffSlotTable(candidateSlots, {
-        arenaBounds: this.arenaBounds,
-        tuningRegistry: this.tuningRegistry,
-      });
       const orderedRoster = validateRoster(roster, this.policy);
       const signature = rosterSignature(orderedRoster);
-      const candidate = this.currentValue !== null
-        && this.currentValue.rosterSignature === signature
-        ? this.currentValue.epoch === epoch
-          ? this.currentValue
+      const current = this.currentValue;
+      let assignmentSlots: KickoffSlotTable;
+      let candidate: Readonly<KickoffAssignmentSet>;
+
+      if (current !== null && current.rosterSignature === signature) {
+        if (this.currentSlotsValue === null) {
+          fail('invalid-slot-table', 'A committed assignment map has no owned source slot table.');
+        }
+        assignmentSlots = this.currentSlotsValue;
+        candidate = current.epoch === epoch
+          ? current
           : Object.freeze({
             epoch,
             rosterSignature: signature,
-            assignments: this.currentValue.assignments,
-          })
-        : buildAssignmentSet(
+            assignments: current.assignments,
+          });
+      } else {
+        validateKickoffSlotTable(candidateSlots, {
+          arenaBounds: this.arenaBounds,
+          tuningRegistry: this.tuningRegistry,
+        });
+        assignmentSlots = snapshotKickoffSlotTable(candidateSlots);
+        candidate = buildAssignmentSet(
           orderedRoster,
           epoch,
           this.policy,
-          candidateSlots,
+          assignmentSlots,
           this.colliderDimensions,
         );
+      }
 
-      // Revalidate reused maps against the current roster and active dimensions.
+      // Revalidate reused maps against their owned source table, current roster, and dimensions.
       validateKickoffAssignmentBijection(
         candidate.assignments,
         orderedRoster,
         this.policy,
         this.colliderDimensions,
+        assignmentSlots,
       );
 
       return Object.freeze({
@@ -554,6 +653,7 @@ export class DeterministicKickoffAssignmentService {
         prepared: new PreparedReplacement(
           candidate,
           this.currentValue?.assignments === candidate.assignments,
+          assignmentSlots,
           this.generation,
           this,
         ),
@@ -590,17 +690,20 @@ export class DeterministicKickoffAssignmentService {
   commitPrepared(
     candidate: Readonly<KickoffAssignmentSet>,
     expectedGeneration: number,
+    assignmentSlots: KickoffSlotTable,
   ): Readonly<KickoffAssignmentSet> {
     if (expectedGeneration !== this.generation) {
       fail('stale-transaction', 'Another kickoff replacement committed before this candidate.');
     }
     this.currentValue = candidate;
+    this.currentSlotsValue = assignmentSlots;
     this.generation += 1;
     return candidate;
   }
 
   clear(): void {
     this.currentValue = null;
+    this.currentSlotsValue = null;
     this.generation += 1;
   }
 }

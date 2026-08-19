@@ -84,6 +84,15 @@ function overlappingMirroredTable(): KickoffSlotTable {
   return Object.freeze({ blue, orange });
 }
 
+function mutableKickoffSlotTable(): KickoffSlotTable {
+  const cloneTeam = (team: Team) => KICKOFF_SLOTS[team].map((slot) => ({
+    ...slot,
+    position: [...slot.position] as [number, number, number],
+    rotation: [...slot.rotation] as [number, number, number, number],
+  }));
+  return { blue: cloneTeam('blue'), orange: cloneTeam('orange') };
+}
+
 // Validates: Requirements 5.5-5.9
 
 test('maps every one-through-four-player team shape by team-local Stable_Roster_Order', () => {
@@ -127,9 +136,59 @@ test('maps every one-through-four-player team shape by team-local Stable_Roster_
   );
 });
 
+test('breaks equal join ordinals by lexical session ID repeatably regardless of input order', () => {
+  const tiedRoster: RosterEntry[] = [
+    {
+      sessionId: 'zulu-blue',
+      acceptedJoinOrdinal: 7,
+      team: 'blue',
+      name: 'Zulu Blue',
+      isHost: false,
+    },
+    {
+      sessionId: 'yankee-orange',
+      acceptedJoinOrdinal: 7,
+      team: 'orange',
+      name: 'Yankee Orange',
+      isHost: false,
+    },
+    {
+      sessionId: 'alpha-blue',
+      acceptedJoinOrdinal: 7,
+      team: 'blue',
+      name: 'Alpha Blue',
+      isHost: true,
+    },
+    {
+      sessionId: 'bravo-orange',
+      acceptedJoinOrdinal: 7,
+      team: 'orange',
+      name: 'Bravo Orange',
+      isHost: false,
+    },
+  ];
+
+  const first = requirePrepared(service().prepare(tiedRoster, 1)).commit();
+  const second = requirePrepared(service().prepare([...tiedRoster].reverse(), 1)).commit();
+
+  assert.deepEqual(
+    ['alpha-blue', 'zulu-blue'].map((sessionId) => first.assignments.get(sessionId)?.slotIndex),
+    [0, 1],
+  );
+  assert.deepEqual(
+    ['bravo-orange', 'yankee-orange'].map((sessionId) => first.assignments.get(sessionId)?.slotIndex),
+    [0, 1],
+  );
+  assert.deepEqual(
+    [...second.assignments],
+    [...first.assignments],
+    'the lexical tie-break produces the same complete map for reversed input',
+  );
+});
+
 // Validates: Requirements 5.5-5.6, 5.9, 5.11
 
-test('rejects duplicate identities, outsiders, missing identities, duplicate slots, and OBB overlap', () => {
+test('rejects duplicate identities, outsiders, missing identities, duplicate slots, forged transforms, and OBB overlap', () => {
   const assignmentService = service();
   const roster = rosterShape(2, 2, 'bijection');
   const duplicateRoster = [...roster, { ...roster[0]! }];
@@ -148,7 +207,13 @@ test('rejects duplicate identities, outsiders, missing identities, duplicate slo
   const missing = new Map(valid.assignments);
   missing.delete(roster[0]!.sessionId);
   assert.throws(
-    () => validateKickoffAssignmentBijection(missing, roster, ROOM_POLICIES.custom, dimensions),
+    () => validateKickoffAssignmentBijection(
+      missing,
+      roster,
+      ROOM_POLICIES.custom,
+      dimensions,
+      KICKOFF_SLOTS,
+    ),
     (error: unknown) => error instanceof InvalidKickoffAssignmentError
       && error.code === 'incomplete-bijection',
   );
@@ -158,7 +223,13 @@ test('rejects duplicate identities, outsiders, missing identities, duplicate slo
   outsider.delete(roster[0]!.sessionId);
   outsider.set('outsider', { ...first, sessionId: 'outsider' });
   assert.throws(
-    () => validateKickoffAssignmentBijection(outsider, roster, ROOM_POLICIES.custom, dimensions),
+    () => validateKickoffAssignmentBijection(
+      outsider,
+      roster,
+      ROOM_POLICIES.custom,
+      dimensions,
+      KICKOFF_SLOTS,
+    ),
     (error: unknown) => error instanceof InvalidKickoffAssignmentError
       && error.code === 'incomplete-bijection',
   );
@@ -174,7 +245,13 @@ test('rejects duplicate identities, outsiders, missing identities, duplicate slo
     rotation: blueZero.rotation,
   }) as KickoffAssignment);
   assert.throws(
-    () => validateKickoffAssignmentBijection(duplicateSlot, roster, ROOM_POLICIES.custom, dimensions),
+    () => validateKickoffAssignmentBijection(
+      duplicateSlot,
+      roster,
+      ROOM_POLICIES.custom,
+      dimensions,
+      KICKOFF_SLOTS,
+    ),
     (error: unknown) => error instanceof InvalidKickoffAssignmentError
       && error.code === 'incomplete-bijection',
   );
@@ -190,10 +267,113 @@ test('rejects duplicate identities, outsiders, missing identities, duplicate slo
     sessionId: blue[1]!.sessionId,
   }));
   assert.throws(
-    () => validateKickoffAssignmentBijection(swappedSlots, roster, ROOM_POLICIES.custom, dimensions),
+    () => validateKickoffAssignmentBijection(
+      swappedSlots,
+      roster,
+      ROOM_POLICIES.custom,
+      dimensions,
+      KICKOFF_SLOTS,
+    ),
     (error: unknown) => error instanceof InvalidKickoffAssignmentError
       && error.code === 'incomplete-bijection',
     'same-team identities may not swap their Stable_Roster_Order slot indices',
+  );
+
+  const forgedPosition = new Map(valid.assignments);
+  forgedPosition.set(blue[0]!.sessionId, Object.freeze({
+    ...blueZero,
+    position: Object.freeze([
+      blueZero.position[0] + 1,
+      blueZero.position[1],
+      blueZero.position[2],
+    ] as const),
+  }));
+  assert.throws(
+    () => validateKickoffAssignmentBijection(
+      forgedPosition,
+      roster,
+      ROOM_POLICIES.custom,
+      dimensions,
+      KICKOFF_SLOTS,
+    ),
+    (error: unknown) => error instanceof InvalidKickoffAssignmentError
+      && error.code === 'incomplete-bijection',
+    'slot metadata cannot disguise a forged position',
+  );
+
+  const forgedRotation = new Map(valid.assignments);
+  forgedRotation.set(blue[0]!.sessionId, Object.freeze({
+    ...blueZero,
+    rotation: Object.freeze([
+      -blueZero.rotation[0],
+      -blueZero.rotation[1],
+      -blueZero.rotation[2],
+      -blueZero.rotation[3],
+    ] as const),
+  }));
+  assert.throws(
+    () => validateKickoffAssignmentBijection(
+      forgedRotation,
+      roster,
+      ROOM_POLICIES.custom,
+      dimensions,
+      KICKOFF_SLOTS,
+    ),
+    (error: unknown) => error instanceof InvalidKickoffAssignmentError
+      && error.code === 'incomplete-bijection',
+    'slot metadata cannot disguise a forged rotation',
+  );
+
+  const sparseRoster = rosterShape(1, 0, 'sparse');
+  const sparseService = service();
+  const sparseValid = requirePrepared(sparseService.prepare(sparseRoster, 1)).commit();
+  const sparseSessionId = sparseRoster[0]!.sessionId;
+  const sparseAssignment = sparseValid.assignments.get(sparseSessionId)!;
+  const sparsePosition = new Array<number>(3);
+  sparsePosition[1] = sparseAssignment.position[1];
+  sparsePosition[2] = sparseAssignment.position[2];
+  const positionWithHole = new Map<string, Readonly<KickoffAssignment>>([[
+    sparseSessionId,
+    Object.freeze({
+      ...sparseAssignment,
+      position: Object.freeze(sparsePosition) as unknown as KickoffAssignment['position'],
+    }),
+  ]]);
+  assert.throws(
+    () => validateKickoffAssignmentBijection(
+      positionWithHole,
+      sparseRoster,
+      ROOM_POLICIES.custom,
+      sparseService.colliderDimensions,
+      KICKOFF_SLOTS,
+    ),
+    (error: unknown) => error instanceof InvalidKickoffAssignmentError
+      && error.code === 'incomplete-bijection',
+    'a sparse position is not an exact configured tuple even without an OBB pair',
+  );
+
+  const sparseRotation = new Array<number>(4);
+  sparseRotation[1] = sparseAssignment.rotation[1];
+  sparseRotation[2] = sparseAssignment.rotation[2];
+  sparseRotation[3] = sparseAssignment.rotation[3];
+  const rotationWithHole = new Map<string, Readonly<KickoffAssignment>>([[
+    sparseSessionId,
+    Object.freeze({
+      ...sparseAssignment,
+      rotation: Object.freeze(sparseRotation) as unknown as KickoffAssignment['rotation'],
+    }),
+  ]]);
+  assert.throws(
+    () => validateKickoffAssignmentBijection(
+      rotationWithHole,
+      sparseRoster,
+      ROOM_POLICIES.custom,
+      sparseService.colliderDimensions,
+      KICKOFF_SLOTS,
+    ),
+    (error: unknown) => error instanceof InvalidKickoffAssignmentError
+      && error.code === 'incomplete-bijection',
+    'a sparse rotation is not an exact configured tuple even without an OBB pair',
   );
 
   const retained = assignmentService.current;
@@ -211,6 +391,72 @@ test('rejects duplicate identities, outsiders, missing identities, duplicate slo
 });
 
 // Validates: Requirements 5.10-5.12
+
+test('owns a validated slot-table snapshot across prepare, commit, and unchanged-roster reuse', () => {
+  const assignmentService = service();
+  const callerOwnedSlots = mutableKickoffSlotTable();
+  const roster = rosterShape(1, 1, 'owned-table');
+  const expectedBluePosition = [...callerOwnedSlots.blue[0]!.position];
+  const prepared = requirePrepared(assignmentService.prepare(roster, 1, callerOwnedSlots));
+
+  const callerBluePosition = callerOwnedSlots.blue[0]!.position as unknown as number[];
+  callerBluePosition[0] += 100;
+  const committed = prepared.commit();
+  assert.deepEqual(
+    committed.assignments.get('owned-table-blue-0')?.position,
+    expectedBluePosition,
+    'mutation after prepare cannot alter the prepared assignment',
+  );
+
+  const callerBlueRotation = callerOwnedSlots.blue[0]!.rotation as unknown as number[];
+  callerBlueRotation[3] = 0;
+  const reused = requirePrepared(assignmentService.prepare([...roster].reverse(), 2));
+  assert.equal(reused.reusedAssignments, true);
+  assert.equal(reused.candidate.assignments, committed.assignments);
+  const nextEpoch = reused.commit();
+  assert.equal(nextEpoch.assignments, committed.assignments);
+  assert.deepEqual(
+    nextEpoch.assignments.get('owned-table-blue-0')?.position,
+    expectedBluePosition,
+    'mutation after commit cannot poison source-table revalidation',
+  );
+});
+
+test('preserves an accepted near-unit configured quaternion exactly during creation and reuse', () => {
+  const assignmentService = service();
+  const nearUnitSlots = mutableKickoffSlotTable();
+  const mutableBlue = nearUnitSlots.blue as unknown as KickoffSlot[];
+  const mutableOrange = nearUnitSlots.orange as unknown as KickoffSlot[];
+  const blueZero = mutableBlue[0]!;
+  const scale = 1 + 5e-10;
+  const configuredRotation = Object.freeze([
+    blueZero.rotation[0] * scale,
+    blueZero.rotation[1] * scale,
+    blueZero.rotation[2] * scale,
+    blueZero.rotation[3] * scale,
+  ] as const);
+  const configuredBlue = { ...blueZero, rotation: configuredRotation };
+  mutableBlue[0] = configuredBlue;
+  mutableOrange[0] = mirrorBlueKickoffSlot(configuredBlue);
+  assert.notEqual(Math.hypot(...configuredRotation), 1);
+
+  const roster = rosterShape(1, 0, 'near-unit');
+  const initial = requirePrepared(
+    assignmentService.prepare(roster, 1, nearUnitSlots),
+  ).commit();
+  assert.deepEqual(
+    initial.assignments.get('near-unit-blue-0')?.rotation,
+    configuredRotation,
+  );
+
+  const reused = requirePrepared(assignmentService.prepare([...roster].reverse(), 2));
+  assert.equal(reused.reusedAssignments, true);
+  assert.deepEqual(
+    reused.candidate.assignments.get('near-unit-blue-0')?.rotation,
+    configuredRotation,
+  );
+  reused.commit();
+});
 
 test('reuses unchanged mappings and swaps changed rosters only after explicit commit', () => {
   const assignmentService = service();

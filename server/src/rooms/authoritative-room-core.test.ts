@@ -397,6 +397,112 @@ test('readiness barrier retains ordered joins until a ready world reaches a fixe
   assert.equal(world.disposeCount, 1);
 });
 
+// Validates: Requirements 1.4-1.7, 2.8, 2.10
+
+test('invalid world initialization rejects queued mutations, becomes fatal, and disposes the detached candidate once', async () => {
+  const world = makeWorld();
+  const fatalErrors: Error[] = [];
+  const logErrors: string[] = [];
+  const invalidCandidate = {
+    ...makeBundle(world),
+    projectBall: undefined,
+  } as unknown as AuthoritativeRoomWorldBundle<FakeWorld, FakeCar, FakeBall>;
+  const core = makeCore(world, {
+    initializeWorld: () => invalidCandidate,
+    logger: makeLogger([], logErrors),
+    onFatal: (error) => { fatalErrors.push(error); },
+  });
+
+  const queued = core.queueMutation({
+    kind: 'join',
+    sessionId: 'waiting-player',
+    name: 'Waiting Player',
+  });
+  await assert.rejects(
+    core.initialize(),
+    /Authoritative world initialization failed.*ready world bundle requires/i,
+  );
+  const result = await queued;
+
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.code, 'physics-not-ready');
+    assert.equal(result.fatal, true);
+    assert.equal(result.cause, core.fatalError);
+  }
+  assert.equal(core.lifecycle, 'fatal');
+  assert.equal(core.canPublishSnapshots, false);
+  assert.equal(core.projectAuthoritativeState(), null);
+  assert.equal(core.diagnostics.pendingMutationCount, 0);
+  assert.equal(world.disposeCount, 1);
+  assert.deepEqual(world.operations, ['dispose-world']);
+  assert.equal(fatalErrors.length, 1);
+  assert.equal(fatalErrors[0], core.fatalError);
+  assert.equal(logErrors.length, 1);
+
+  const frame = core.advanceSimulation(1000 / 60);
+  assert.equal(frame.scheduledFixedSteps, 0);
+  assert.equal(frame.executedFixedSteps, 0);
+  assert.equal(frame.snapshotDue, false);
+  core.dispose();
+  core.dispose();
+  assert.equal(world.disposeCount, 1, 'fatal cleanup never disposes a detached candidate twice');
+});
+
+test('disposing during initialization stays disposed and disposes the late world exactly once', async () => {
+  const world = makeWorld();
+  const ready = deferred<AuthoritativeRoomWorldBundle<FakeWorld, FakeCar, FakeBall>>();
+  const fatalErrors: Error[] = [];
+  const logErrors: string[] = [];
+  const core = makeCore(world, {
+    initializeWorld: () => ready.promise,
+    logger: makeLogger([], logErrors),
+    onFatal: (error) => { fatalErrors.push(error); },
+  });
+
+  const queued = core.queueMutation({
+    kind: 'join',
+    sessionId: 'cancelled-player',
+    name: 'Cancelled Player',
+  });
+  const initialization = core.initialize();
+  await Promise.resolve();
+  assert.equal(core.lifecycle, 'initializing');
+
+  core.dispose();
+  const result = await queued;
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.code, 'physics-not-ready');
+    assert.equal(result.fatal, false);
+  }
+  assert.equal(core.lifecycle, 'disposed');
+  assert.equal(core.canPublishSnapshots, false);
+  assert.equal(core.diagnostics.pendingMutationCount, 0);
+  assert.equal(world.disposeCount, 0, 'no world exists at the time disposal is requested');
+
+  ready.resolve(makeBundle(world));
+  await initialization;
+  assert.equal(core.lifecycle, 'disposed');
+  assert.equal(core.canPublishSnapshots, false);
+  assert.equal(core.projectAuthoritativeState(), null);
+  assert.equal(world.disposeCount, 1);
+  assert.deepEqual(world.operations, ['dispose-world']);
+  assert.deepEqual(fatalErrors, []);
+  assert.deepEqual(logErrors, []);
+
+  const rejectedAfterDisposal = await core.queueMutation({
+    kind: 'join',
+    sessionId: 'late-player',
+    name: 'Late Player',
+  });
+  assert.equal(rejectedAfterDisposal.ok, false);
+  if (!rejectedAfterDisposal.ok) assert.equal(rejectedAfterDisposal.fatal, false);
+  await assert.rejects(core.initialize(), /disposed/i);
+  core.dispose();
+  assert.equal(world.disposeCount, 1, 'late-world disposal remains idempotent');
+});
+
 // Validates: Requirements 2.8, 2.10
 
 test('queued mutations commit in receive order against each preceding committed state', async () => {

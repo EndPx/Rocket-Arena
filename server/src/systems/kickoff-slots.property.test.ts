@@ -13,7 +13,6 @@ import {
   type RoomMode,
   type RosterEntry,
   type Team,
-  type Vector3Tuple,
 } from '@rocket-arena/shared';
 import {
   DeterministicKickoffAssignmentService,
@@ -22,6 +21,8 @@ import {
   type KickoffAssignment,
   type KickoffAssignmentSet,
 } from './kickoff-slots.js';
+
+type Vector3Tuple = KickoffAssignment['position'];
 
 interface SeededRandom {
   integer(minInclusive: number, maxInclusive: number): number;
@@ -381,6 +382,7 @@ function assertCompleteBijectionAndUniqueSpawn(
     orderedRoster,
     policy,
     service.colliderDimensions,
+    service.slots,
   ));
 
   for (const team of ['blue', 'orange'] as const) {

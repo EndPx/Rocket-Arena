@@ -183,7 +183,7 @@ Every implementation task must leave its code wired into the preceding increment
     - _Depends on: 1.3, 1.4_
     - _Requirements: 5.1-5.4_
 
-  - [ ] 4.2 Implement complete deterministic kickoff assignment
+  - [x] 4.2 Implement complete deterministic kickoff assignment
     - Add `server/src/systems/kickoff-slots.ts` to map team-local Stable_Roster_Order index `i` to slot `i`, validate a complete bijection, perform cross-team oriented-box overlap checks, and retain the prior complete assignment until an atomic replacement is valid.
     - Add `server/src/systems/kickoff-slots.test.ts` for one-through-four players per team, outsiders/duplicates, changed rosters, repeated inputs, and unchanged-epoch assignment reuse.
     - _Depends on: 2.2, 4.1_
