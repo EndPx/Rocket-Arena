@@ -27,8 +27,8 @@ import {
   type MatchTransitionKind,
   type MatchTransitionSnapshot,
 } from '../types/snapshot.js';
-import { BallState } from './ball-state.js';
-import { PlayerState } from './player-state.js';
+import { BallState, type AuthoritativeBallProjection } from './ball-state.js';
+import { PlayerState, type AuthoritativePlayerProjection } from './player-state.js';
 
 const UINT32_MAX = 0xffff_ffff;
 
@@ -260,6 +260,9 @@ defineTypes(MatchTransitionState, {
 });
 
 export interface AuthoritativeGameProjection {
+  /** Complete Stable_Roster_Order car set staged before any live schema mutation. */
+  readonly cars: readonly Readonly<AuthoritativePlayerProjection>[];
+  readonly ball: Readonly<AuthoritativeBallProjection>;
   readonly policy: RoomPolicy;
   readonly phase: MatchPhase;
   readonly countdownKind: CountdownKind | null;
@@ -416,9 +419,30 @@ export class GameState extends Schema {
     this.hostSessionId = occupancy.hostSessionId;
   }
 
-  /** Validate a complete server-owned match projection before committing it. */
+  /** Validate a complete server-owned room projection before committing any field. */
   applyAuthoritativeProjection(projection: AuthoritativeGameProjection): this {
     const policy = validateRoomPolicy(projection.policy);
+    if (!Array.isArray(projection.cars)) {
+      throw new TypeError('cars must be a complete Stable_Roster_Order array.');
+    }
+
+    const candidatePlayers = new MapSchema<PlayerState>();
+    const sessionIds = new Set<string>();
+    let previousJoinOrdinal = -1;
+    for (const car of projection.cars) {
+      const player = PlayerState.fromAuthoritative(car);
+      if (sessionIds.has(player.sessionId)) {
+        throw new TypeError(`Duplicate authoritative player identity: ${player.sessionId}.`);
+      }
+      if (player.acceptedJoinOrdinal <= previousJoinOrdinal) {
+        throw new TypeError('cars must be ordered by strictly increasing Stable_Roster_Order.');
+      }
+      sessionIds.add(player.sessionId);
+      previousJoinOrdinal = player.acceptedJoinOrdinal;
+      candidatePlayers.set(player.sessionId, player);
+    }
+    const candidateBall = BallState.fromAuthoritative(projection.ball);
+
     if (!MATCH_PHASES.some((phase) => phase === projection.phase)) {
       throw new TypeError(`Invalid match phase: ${String(projection.phase)}.`);
     }
@@ -530,7 +554,7 @@ export class GameState extends Schema {
       throw new TypeError('Authoritative transition IDs cannot decrease.');
     }
 
-    const occupancy = deriveAuthoritativeOccupancy(this.players, policy);
+    const occupancy = deriveAuthoritativeOccupancy(candidatePlayers, policy);
     const terminalState = terminal === null ? null : TerminalResultState.fromContract(terminal);
     const transitionState = transition === null ? null : MatchTransitionState.fromContract(transition);
     const regulationSecondsRemaining = regulationStepsRemaining / MATCH_RULES.fixedStepsPerSecond;
@@ -538,6 +562,10 @@ export class GameState extends Schema {
       ? phaseSecondsRemaining
       : regulationSecondsRemaining;
 
+    // Every candidate above has been fully validated. This synchronous,
+    // non-throwing assignment block is the single observable schema commit.
+    this.players = candidatePlayers;
+    this.ball = candidateBall;
     this.protocolVersion = SNAPSHOT_PROTOCOL_VERSION;
     this.policyVersion = policy.version;
     this.roomMode = policy.mode;

@@ -5,7 +5,6 @@ import {
   getScalarTuningValue,
 } from '@rocket-arena/shared';
 import { getConstant } from '@rocket-arena/shared/constants';
-import { resetCarPhysicsState, type CarPhysicsState } from '../physics/car.js';
 import type { KickoffAssignment } from './kickoff-slots.js';
 
 /**
@@ -64,9 +63,14 @@ export function checkGoal(ballBody: RAPIER.RigidBody): 'blue' | 'orange' | null 
   return null;
 }
 
-export interface KickoffCarBody {
+export interface KickoffCarBody<TState = unknown> {
   readonly body: RAPIER.RigidBody;
-  readonly jumpState: CarPhysicsState;
+  /** Capture controller/inventory state before the transactional placement. */
+  readonly captureState: () => TState;
+  /** Reset controller/inventory state while preserving transport edge floors as needed. */
+  readonly resetState: () => void;
+  /** Restore exactly the state returned by captureState after rollback. */
+  readonly restoreState: (snapshot: TState) => void;
 }
 
 export interface PreparedKickoffReset {
@@ -83,9 +87,9 @@ interface RigidBodySnapshot {
   readonly angularVelocity: Readonly<{ x: number; y: number; z: number }>;
 }
 
-interface CarResetSnapshot {
+interface CarResetSnapshot<TState> {
   readonly body: RigidBodySnapshot;
-  readonly jumpState: CarPhysicsState;
+  readonly controllerState: TState;
 }
 
 function copyVector(value: { x: number; y: number; z: number }): Readonly<{ x: number; y: number; z: number }> {
@@ -114,25 +118,6 @@ function restoreBody(body: RAPIER.RigidBody, snapshot: RigidBodySnapshot): void 
   body.setAngvel(snapshot.angularVelocity, true);
 }
 
-function cloneJumpState(state: CarPhysicsState): CarPhysicsState {
-  return {
-    count: state.count,
-    jumpHeld: state.jumpHeld,
-    lastJumpSequence: state.lastJumpSequence,
-    grounded: state.grounded,
-    wasGrounded: state.wasGrounded,
-    airborneTime: state.airborneTime,
-    landingTime: state.landingTime,
-    leftGroundSinceJump: state.leftGroundSinceJump,
-    boostAmount: state.boostAmount,
-    boostRechargeDelay: state.boostRechargeDelay,
-  };
-}
-
-function restoreJumpState(target: CarPhysicsState, snapshot: CarPhysicsState): void {
-  Object.assign(target, snapshot);
-}
-
 function validateAssignment(
   sessionId: string,
   assignment: Readonly<KickoffAssignment> | undefined,
@@ -151,7 +136,7 @@ function validateAssignment(
   }
 }
 
-class PreparedKickoffResetImpl implements PreparedKickoffReset {
+class PreparedKickoffResetImpl<TState> implements PreparedKickoffReset {
   private state: 'prepared' | 'applied' | 'rolled-back' = 'prepared';
 
   constructor(
@@ -160,9 +145,9 @@ class PreparedKickoffResetImpl implements PreparedKickoffReset {
     private readonly ballPosition: Readonly<{ x: number; y: number; z: number }>,
     private readonly cars: readonly Readonly<{
       sessionId: string;
-      entry: KickoffCarBody;
+      entry: KickoffCarBody<TState>;
       assignment: Readonly<KickoffAssignment>;
-      snapshot: CarResetSnapshot;
+      snapshot: CarResetSnapshot<TState>;
     }>[],
   ) {}
 
@@ -190,7 +175,7 @@ class PreparedKickoffResetImpl implements PreparedKickoffReset {
         }, true);
         entry.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
         entry.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-        resetCarPhysicsState(entry.jumpState);
+        entry.resetState();
       }
       this.state = 'applied';
     } catch (cause) {
@@ -217,7 +202,7 @@ class PreparedKickoffResetImpl implements PreparedKickoffReset {
     restoreBody(this.ballBody, this.ballSnapshot);
     for (const { entry, snapshot } of this.cars) {
       restoreBody(entry.body, snapshot.body);
-      restoreJumpState(entry.jumpState, snapshot.jumpState);
+      entry.restoreState(snapshot.controllerState);
     }
   }
 }
@@ -227,9 +212,9 @@ class PreparedKickoffResetImpl implements PreparedKickoffReset {
  * moving a body. Callers may then coordinate this transaction with assignment
  * cache/state commits.
  */
-export function prepareResetToKickoff(
+export function prepareResetToKickoff<TState>(
   ballBody: RAPIER.RigidBody,
-  carBodies: ReadonlyMap<string, KickoffCarBody>,
+  carBodies: ReadonlyMap<string, KickoffCarBody<TState>>,
   assignments: ReadonlyMap<string, Readonly<KickoffAssignment>>,
   ballRadius: number = getScalarTuningValue(
     DEFAULT_TUNING_REGISTRY_SNAPSHOT,
@@ -264,7 +249,7 @@ export function prepareResetToKickoff(
       assignment,
       snapshot: Object.freeze({
         body: captureBody(entry.body),
-        jumpState: cloneJumpState(entry.jumpState),
+        controllerState: entry.captureState(),
       }),
     });
   });
@@ -281,9 +266,9 @@ export function prepareResetToKickoff(
 }
 
 /** Reset a fully assigned kickoff immediately through the atomic compatibility path. */
-export function resetToKickoff(
+export function resetToKickoff<TState>(
   ballBody: RAPIER.RigidBody,
-  carBodies: ReadonlyMap<string, KickoffCarBody>,
+  carBodies: ReadonlyMap<string, KickoffCarBody<TState>>,
   assignments: ReadonlyMap<string, Readonly<KickoffAssignment>>,
   ballRadius?: number,
 ): void {

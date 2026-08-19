@@ -6,6 +6,7 @@ import { createBallMesh } from '../renderer/ball.js';
 import {
   SnapshotBuffer,
   type EntitySnapshot,
+  type InterpolatedFrame,
   type InterpolationStats,
   type PreparedSnapshotAcceptance,
   type ValidatedTimelineSnapshot,
@@ -635,9 +636,11 @@ export function setupStateListener(
 }
 
 /** Apply delayed authoritative presentation transforms once per render frame. */
-export function updateInterpolatedEntities(renderNowMs: number = nowMs()): void {
+export function updateInterpolatedEntities(
+  renderNowMs: number = nowMs(),
+): InterpolatedFrame | null {
   const frame = snapshotBuffer.sample(renderNowMs);
-  if (!frame) return;
+  if (!frame) return null;
 
   const ball = frame.entities[BALL_ENTITY_ID];
   if (ballMesh && ball) applyEntityTransform(ballMesh, ball);
@@ -647,6 +650,7 @@ export function updateInterpolatedEntities(renderNowMs: number = nowMs()): void 
     if (player) applyEntityTransform(car, player);
   }
   appliedRenderFrames += 1;
+  return frame;
 }
 
 export function getCarMeshes(): ReadonlyMap<string, THREE.Group> {

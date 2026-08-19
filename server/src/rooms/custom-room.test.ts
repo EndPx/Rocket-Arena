@@ -167,7 +167,16 @@ function makeBundle(
         },
       };
     },
-    fixedStep: () => { world.fixedSteps += 1; },
+    synchronizeCarInput: () => {},
+    recoverBallBeforeStep: () => { world.fixedSteps += 1; },
+    recoverCarBeforeStep: () => {},
+    prepareGrounding: () => {},
+    groundCar: () => ({ grounded: false, basis: null }),
+    prepareCarCommand: () => ({ apply: () => {}, commit: () => {} }),
+    stepWorld: () => {},
+    recoverCarAfterStep: () => {},
+    recoverBallAfterStep: () => {},
+    extractMatchFlowInput: () => ({}),
     projectCar: ({ car }) => ({
       position: [...car.position],
       rotation: [...car.rotation],
@@ -932,21 +941,31 @@ test('CustomRoom forwards repeated terminal snapshots without changing terminal 
   const { core } = await makeCore();
   const baseProjection = projection(core);
   const builder = new SnapshotBuilder({ policy: CUSTOM_ROOM_POLICY });
-  builder.commitTransition({
+  const terminalTransition = builder.commitTransition({
     kind: 'hard-cutoff',
     winner: 'blue',
     blueScore: 5,
     orangeScore: 4,
   });
+  assert.ok(terminalTransition.terminal);
   let simulationTime = 1_000;
   const terminalProjection = Object.freeze({
     ...baseProjection,
     phase: 'ended' as const,
     countdownKind: null,
+    phaseSecondsRemaining: 0,
     countdownStepsRemaining: 0,
+    goalResetStepsRemaining: 0,
     regulationStepsRemaining: 0,
+    regulationActivePlayStepsCompleted: baseProjection.regulationStepsRemaining,
+    regulationStarted: true,
+    regulationCutoffResolved: true,
     blueScore: 5,
     orangeScore: 4,
+    winner: terminalTransition.terminal.winner,
+    terminalResult: terminalTransition.terminal,
+    latestTransition: terminalTransition,
+    transitionSequence: terminalTransition.eventId,
   });
   const port = {
     lifecycle: 'ready' as const,

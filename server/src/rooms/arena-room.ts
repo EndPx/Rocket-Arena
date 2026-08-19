@@ -2,7 +2,6 @@ import colyseus from 'colyseus';
 import RAPIER from '@dimforge/rapier3d-compat';
 import {
   INPUT_PROTOCOL_VERSION,
-  MATCH_RULES,
   ROOM_POLICIES,
   TUNING_IDS,
   getScalarTuningValue,
@@ -10,34 +9,19 @@ import {
   type RoomPinnedTuningSnapshot,
   type RosterEntry,
 } from '@rocket-arena/shared';
-import { GameState, PlayerState } from '@rocket-arena/shared/schema';
+import { GameState } from '@rocket-arena/shared/schema';
 import {
   PHYSICS,
   clearOverrides,
   getConstant,
   setOverride,
 } from '@rocket-arena/shared/constants';
-import type { InputPayload } from '@rocket-arena/shared/types';
-import { createArenaColliders } from '../physics/arena.js';
 import {
-  createBall,
-  recoverBallAfterStep,
-  recoverBallBeforeStep,
-} from '../physics/ball.js';
-import {
-  applyCarPhysics,
-  createCar,
-  createCarPhysicsState,
-  recoverCarBodyAfterStep,
-  recoverCarBodyBeforeStep,
-  synchronizeCarInputState,
-  type CarPhysicsState,
-} from '../physics/car.js';
-import { createWorld, initPhysics } from '../physics/world.js';
-import { prepareResetToKickoff } from '../systems/scoring.js';
+  initializeAuthoritativeRapierWorld,
+  type AuthoritativeRapierCar,
+} from './rapier-room-world.js';
 import {
   AuthoritativeRoomCore,
-  createNeutralInputCommandV2,
   type AuthoritativeRoomCoreOptions,
   type AuthoritativeRoomMutationFailure,
   type AuthoritativeRoomProjection,
@@ -50,10 +34,7 @@ const { Room } = colyseus;
 /** The only capacity, assignment, and start policy accepted by Quick Match. */
 export const QUICK_MATCH_POLICY = ROOM_POLICIES.quick;
 
-interface QuickCar {
-  readonly body: RAPIER.RigidBody;
-  readonly jumpState: CarPhysicsState;
-}
+type QuickCar = AuthoritativeRapierCar;
 
 type QuickRoomCore = AuthoritativeRoomCore<
   RAPIER.World,
@@ -103,125 +84,13 @@ function legacyKickoffPosition(
   return { x: horizontalSlot * xOffset, y, z };
 }
 
-function toLegacyInput(input: Readonly<InputCommandV2>): InputPayload {
-  return {
-    throttle: input.throttle,
-    steer: input.steer,
-    jump: input.jumpHeld,
-    boost: input.boostHeld,
-    jumpSequence: input.jumpSequence,
-  };
-}
-
-/**
- * Temporary legacy physics bundle. The shared core owns scheduling, roster,
- * bodies, inputs, projection, and disposal; later stages replace only these
- * callback implementations without changing the Quick policy adapter.
- */
+/** Create the shared staged Rapier runtime under the Quick policy. */
 async function initializeQuickWorld(
-  { tuning }: { readonly tuning: RoomPinnedTuningSnapshot },
+  context: { readonly tuning: RoomPinnedTuningSnapshot },
 ): Promise<AuthoritativeRoomWorldBundle<RAPIER.World, QuickCar, RAPIER.RigidBody>> {
-  await initPhysics();
-  let world: RAPIER.World | null = null;
-  let ownershipTransferred = false;
-
-  try {
-    const initializedWorld = createWorld(tuning);
-    world = initializedWorld;
-    createArenaColliders(initializedWorld);
-    const ball = createBall(initializedWorld, undefined, tuning);
-
-    const bundle: AuthoritativeRoomWorldBundle<
-      RAPIER.World,
-      QuickCar,
-      RAPIER.RigidBody
-    > = {
-      world: initializedWorld,
-      ball,
-      mutationResources: {
-        prepareJoin: ({ entry }, scope) => {
-          const position = legacyKickoffPosition(entry, tuning);
-          const rotation = entry.team === 'orange'
-            ? { x: 0, y: 1, z: 0, w: 0 }
-            : { x: 0, y: 0, z: 0, w: 1 };
-          const car = scope.track<QuickCar>(
-            {
-              body: createCar(initializedWorld, position, rotation, tuning),
-              jumpState: createCarPhysicsState(),
-            },
-            ({ body }) => { initializedWorld.removeRigidBody(body); },
-          );
-          return { car, input: createNeutralInputCommandV2() };
-        },
-        prepareLeave: ({ car }) => ({
-          commitRemoval: () => { initializedWorld.removeRigidBody(car.body); },
-        }),
-      },
-      prepareKickoffPlacement: ({ ball: authoritativeBall, cars, assignmentSet }) => (
-        prepareResetToKickoff(
-          authoritativeBall,
-          new Map([...cars].map(([sessionId, car]) => [
-            sessionId,
-            { body: car.body, jumpState: car.jumpState },
-          ])),
-          assignmentSet.assignments,
-          getScalarTuningValue(tuning, TUNING_IDS.ball.radius),
-        )
-      ),
-      fixedStep: ({ state }) => {
-        const activePlay = state.phase === 'playing' || state.phase === 'overtime';
-        recoverBallBeforeStep(ball);
-        for (const [sessionId, car] of state.cars) {
-          recoverCarBodyBeforeStep(car.body);
-          const input = state.inputs.get(sessionId) ?? createNeutralInputCommandV2();
-          if (activePlay) {
-            applyCarPhysics(initializedWorld, car.body, toLegacyInput(input), car.jumpState);
-          } else {
-            synchronizeCarInputState(car.jumpState, toLegacyInput(input));
-          }
-        }
-
-        if (activePlay || state.phase === 'goal-reset') {
-          initializedWorld.step();
-          for (const car of state.cars.values()) recoverCarBodyAfterStep(car.body);
-          recoverBallAfterStep(ball);
-        }
-      },
-      projectCar: ({ car }) => {
-        recoverCarBodyAfterStep(car.body);
-        const position = car.body.translation();
-        const rotation = car.body.rotation();
-        const linearVelocity = car.body.linvel();
-        const angularVelocity = car.body.angvel();
-        return {
-          position: [position.x, position.y, position.z],
-          rotation: [rotation.x, rotation.y, rotation.z, rotation.w],
-          linearVelocity: [linearVelocity.x, linearVelocity.y, linearVelocity.z],
-          angularVelocity: [angularVelocity.x, angularVelocity.y, angularVelocity.z],
-          boost: car.jumpState.boostAmount,
-        };
-      },
-      projectBall: ({ ball: authoritativeBall }) => {
-        recoverBallAfterStep(authoritativeBall);
-        const position = authoritativeBall.translation();
-        const rotation = authoritativeBall.rotation();
-        const linearVelocity = authoritativeBall.linvel();
-        const angularVelocity = authoritativeBall.angvel();
-        return {
-          position: [position.x, position.y, position.z],
-          rotation: [rotation.x, rotation.y, rotation.z, rotation.w],
-          linearVelocity: [linearVelocity.x, linearVelocity.y, linearVelocity.z],
-          angularVelocity: [angularVelocity.x, angularVelocity.y, angularVelocity.z],
-        };
-      },
-      dispose: () => { initializedWorld.free(); },
-    };
-
-    ownershipTransferred = true;
-    return bundle;
-  } finally {
-    if (!ownershipTransferred) world?.free();
-  }
+  return initializeAuthoritativeRapierWorld(context, {
+    initialCarPosition: legacyKickoffPosition,
+  });
 }
 
 interface LegacyInputEdgeState {
@@ -297,7 +166,10 @@ export class ArenaRoom extends Room<GameState> {
 
     this.onMessage('input', (client, candidate: unknown) => {
       let result;
-      if (isRecord(candidate) && candidate.protocolVersion === INPUT_PROTOCOL_VERSION) {
+      if (
+        isRecord(candidate)
+        && Object.prototype.hasOwnProperty.call(candidate, 'protocolVersion')
+      ) {
         result = this.core.submitInput(client.sessionId, candidate);
       } else {
         const previous = this.legacyInputEdges.get(client.sessionId)
@@ -412,57 +284,7 @@ export class ArenaRoom extends Room<GameState> {
       return null;
     }
 
-    const represented = new Set<string>();
-    for (const car of projection.cars) {
-      represented.add(car.sessionId);
-      const player = this.state.players.get(car.sessionId) ?? new PlayerState();
-      player.applyAuthoritativeProjection(car);
-      this.state.players.set(car.sessionId, player);
-    }
-    for (const sessionId of [...this.state.players.keys()]) {
-      if (!represented.has(sessionId)) this.state.players.delete(sessionId);
-    }
-
-    const [ballX, ballY, ballZ] = projection.ball.position;
-    const [ballQx, ballQy, ballQz, ballQw] = projection.ball.rotation;
-    const [ballVx, ballVy, ballVz] = projection.ball.linearVelocity;
-    Object.assign(this.state.ball, {
-      x: ballX,
-      y: ballY,
-      z: ballZ,
-      qx: ballQx,
-      qy: ballQy,
-      qz: ballQz,
-      qw: ballQw,
-      vx: ballVx,
-      vy: ballVy,
-      vz: ballVz,
-    });
-
-    this.applyPolicyMetadata();
-    this.state.phase = projection.phase;
-    this.state.countdownKind = projection.countdownKind;
-    this.state.countdownStepsRemaining = projection.countdownStepsRemaining;
-    this.state.phaseSecondsRemaining = projection.countdownStepsRemaining
-      / MATCH_RULES.fixedStepsPerSecond;
-    this.state.regulationStepsRemaining = projection.regulationStepsRemaining;
-    this.state.regulationActivePlayStepsCompleted = Math.max(
-      0,
-      MATCH_RULES.regulationActivePlaySteps - projection.regulationStepsRemaining,
-    );
-    this.state.regulationSecondsRemaining = projection.regulationStepsRemaining
-      / MATCH_RULES.fixedStepsPerSecond;
-    this.state.blueScore = projection.blueScore;
-    this.state.orangeScore = projection.orangeScore;
-    this.state.totalOccupancy = projection.occupancy.total;
-    this.state.blueOccupancy = projection.occupancy.blue;
-    this.state.orangeOccupancy = projection.occupancy.orange;
-    this.state.hostSessionId = projection.hostSessionId ?? '';
-    this.state.timeRemaining = projection.phase === 'countdown'
-      ? this.state.phaseSecondsRemaining
-      : this.state.regulationSecondsRemaining;
-    this.state.refreshAuthoritativeOccupancy(projection.policy);
-
+    this.state.applyAuthoritativeProjection(projection);
     return projection;
   }
 

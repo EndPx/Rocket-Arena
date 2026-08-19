@@ -7,6 +7,7 @@ import {
   normalizeInputCommandV2,
   validateRoomPolicy,
   type InputCommandV2,
+  type MatchTransitionSnapshot,
   type QuaternionTuple,
   type RoomMode,
   type RoomMutationErrorCode,
@@ -28,9 +29,12 @@ import {
   cancelInitialCountdown,
   createMatchFlowConfig,
   createWaitingMatchFlowState,
+  getMatchFlowStepGates,
   reduceMatchFlowStep,
   type MatchFlowConfig,
   type MatchFlowState,
+  type MatchFlowStepGates,
+  type MatchFlowStepInput,
 } from '../systems/match-flow.js';
 import {
   RoomMutationCommitError,
@@ -98,9 +102,46 @@ export interface AuthoritativeFixedStepContext<TWorld, TCar, TBall> {
   readonly fixedStepIndex: number;
   readonly policy: RoomPolicy;
   readonly tuning: RoomPinnedTuningSnapshot;
+  readonly gates: Readonly<MatchFlowStepGates>;
   readonly state: Readonly<
     RoomMutationState<TCar, InputCommandV2, TBall, Readonly<KickoffAssignment>>
   >;
+}
+
+export interface AuthoritativeVector3 {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+}
+
+export interface AuthoritativeSurfaceBasis {
+  readonly normal: AuthoritativeVector3;
+  readonly forward: AuthoritativeVector3;
+  readonly right: AuthoritativeVector3;
+}
+
+export interface AuthoritativeGroundingResult {
+  readonly grounded: boolean;
+  readonly basis: AuthoritativeSurfaceBasis | null;
+}
+
+export interface AuthoritativeCarStepContext<TWorld, TCar, TBall>
+  extends AuthoritativeFixedStepContext<TWorld, TCar, TBall> {
+  readonly car: TCar;
+  readonly entry: Readonly<RosterEntry>;
+  readonly input: Readonly<InputCommandV2>;
+}
+
+export interface AuthoritativeCarPlanningContext<TWorld, TCar, TBall>
+  extends AuthoritativeCarStepContext<TWorld, TCar, TBall> {
+  readonly grounding: Readonly<AuthoritativeGroundingResult>;
+}
+
+export interface PreparedAuthoritativeCarCommand {
+  /** Apply the already-planned command without observing another car. */
+  apply(): void;
+  /** Commit per-car controller state only after the physical step succeeds. */
+  commit(): void;
 }
 
 export interface AuthoritativeCarProjectionContext<TWorld, TCar> {
@@ -140,9 +181,36 @@ export interface AuthoritativeRoomWorldBundle<TWorld, TCar, TBall> {
   readonly world: TWorld;
   readonly ball: TBall;
   readonly mutationResources: RoomMutationResourcePreparer<TCar, InputCommandV2>;
-  readonly fixedStep: (
+  readonly synchronizeCarInput: (
+    context: AuthoritativeCarStepContext<TWorld, TCar, TBall>,
+  ) => void;
+  readonly recoverBallBeforeStep: (
     context: AuthoritativeFixedStepContext<TWorld, TCar, TBall>,
   ) => void;
+  readonly recoverCarBeforeStep: (
+    context: AuthoritativeCarStepContext<TWorld, TCar, TBall>,
+  ) => void;
+  readonly prepareGrounding: (
+    context: AuthoritativeFixedStepContext<TWorld, TCar, TBall>,
+  ) => void;
+  readonly groundCar: (
+    context: AuthoritativeCarStepContext<TWorld, TCar, TBall>,
+  ) => Readonly<AuthoritativeGroundingResult>;
+  readonly prepareCarCommand: (
+    context: AuthoritativeCarPlanningContext<TWorld, TCar, TBall>,
+  ) => PreparedAuthoritativeCarCommand;
+  readonly stepWorld: (
+    context: AuthoritativeFixedStepContext<TWorld, TCar, TBall>,
+  ) => void;
+  readonly recoverCarAfterStep: (
+    context: AuthoritativeCarStepContext<TWorld, TCar, TBall>,
+  ) => void;
+  readonly recoverBallAfterStep: (
+    context: AuthoritativeFixedStepContext<TWorld, TCar, TBall>,
+  ) => void;
+  readonly extractMatchFlowInput: (
+    context: AuthoritativeFixedStepContext<TWorld, TCar, TBall>,
+  ) => Readonly<MatchFlowStepInput>;
   /**
    * Optional only for transitional harnesses that never place a kickoff. Real
    * room adapters provide this transaction before MatchFlow can request one.
@@ -257,12 +325,22 @@ export interface AuthoritativeRoomProjection {
   readonly revision: number;
   readonly simulationTimeMs: number;
   readonly fixedStepsCompleted: number;
-  readonly phase: RoomMutationState<unknown, unknown, unknown>['phase'];
-  readonly countdownKind: RoomMutationState<unknown, unknown, unknown>['countdownKind'];
+  readonly phase: MatchFlowState['phase'];
+  readonly countdownKind: MatchFlowState['countdownKind'];
+  readonly phaseSecondsRemaining: number;
   readonly countdownStepsRemaining: number;
+  readonly goalResetStepsRemaining: number;
   readonly regulationStepsRemaining: number;
+  readonly regulationActivePlayStepsCompleted: number;
+  readonly regulationStarted: boolean;
+  readonly regulationCutoffResolved: boolean;
+  readonly kickoffEpoch: number;
   readonly blueScore: number;
   readonly orangeScore: number;
+  readonly winner: MatchFlowState['winner'];
+  readonly terminalResult: MatchFlowState['terminalResult'];
+  readonly latestTransition: Readonly<MatchTransitionSnapshot> | null;
+  readonly transitionSequence: number;
   readonly occupancy: Readonly<{ total: number; blue: number; orange: number }>;
   readonly hostSessionId: string | null;
   readonly cars: readonly Readonly<AuthoritativeCarProjection>[];
@@ -500,6 +578,8 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
     RoomMutationState<TCar, InputCommandV2, TBall, Readonly<KickoffAssignment>>
   > | null = null;
   private matchFlowStateValue: Readonly<MatchFlowState> | null = null;
+  /** Exact last projection validated at the same boundary as its step/state commit. */
+  private committedProjectionValue: Readonly<AuthoritativeRoomProjection> | null = null;
   private initialCountdownStartedAtBoundary = false;
   private worldBundle: AuthoritativeRoomWorldBundle<TWorld, TCar, TBall> | null = null;
   private initializationPromise: Promise<void> | null = null;
@@ -555,7 +635,8 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
   get canPublishSnapshots(): boolean {
     return this.lifecycleValue === 'ready'
       && this.stateValue !== null
-      && this.worldBundle !== null;
+      && this.worldBundle !== null
+      && this.committedProjectionValue !== null;
   }
 
   /** Immutable fixed-step phase state owned by the room core. */
@@ -722,8 +803,14 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
 
     try {
       placement.apply();
+      const projection = this.createAuthoritativeProjection(
+        this.fixedStepsCompleted,
+        candidateState,
+        this.matchFlowStateValue,
+      );
       const committed = assignmentTransaction.commit();
       this.stateValue = candidateState;
+      this.committedProjectionValue = projection;
       return Object.freeze({
         ok: true,
         epoch: committed.epoch,
@@ -823,8 +910,7 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
 
         this.worldBundle = candidate;
         const matchFlow = createWaitingMatchFlowState(this.matchFlowConfig);
-        this.matchFlowStateValue = matchFlow;
-        this.stateValue = createRoomMutationState({
+        const initialState = createRoomMutationState({
           policy: this.policy,
           roster: new Map(),
           nextJoinOrdinal: 0,
@@ -841,6 +927,14 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
           kickoffAssignments: new Map(),
           tombstones: new Set(),
         });
+        const initialProjection = this.createAuthoritativeProjection(
+          0,
+          initialState,
+          matchFlow,
+        );
+        this.matchFlowStateValue = matchFlow;
+        this.stateValue = initialState;
+        this.committedProjectionValue = initialProjection;
         this.lifecycleValue = 'ready';
         this.logger.info(`[AuthoritativeRoomCore] physics-ready roomId=${this.roomId}`);
       } catch (cause) {
@@ -885,7 +979,19 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
       && this.stateValue.roster.has(ownedRequest.sessionId)
     ) {
       const tombstoned = tombstoneRoomIdentity(this.stateValue, ownedRequest.sessionId);
-      if (tombstoned.ok) this.stateValue = tombstoned.next;
+      if (tombstoned.ok) {
+        try {
+          const projection = this.createAuthoritativeProjection(
+            this.fixedStepsCompleted,
+            tombstoned.next,
+            this.matchFlowStateValue,
+          );
+          this.stateValue = tombstoned.next;
+          this.committedProjectionValue = projection;
+        } catch (cause) {
+          this.failRoom(cause, 'Disconnect tombstone projection failed.');
+        }
+      }
     }
 
     return completion;
@@ -971,19 +1077,10 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
       }
 
       try {
-        this.worldBundle.fixedStep({
-          world: this.worldBundle.world,
-          ball: this.worldBundle.ball,
-          fixedStepSeconds: PHYSICS.TIMESTEP,
-          fixedStepIndex: this.fixedStepsCompleted,
-          policy: this.policy,
-          tuning: this.tuningSnapshot,
-          state: this.stateValue,
-        });
-        if (!this.initialCountdownStartedAtBoundary) {
-          this.advanceMatchFlowStep();
-        }
-        this.fixedStepsCompleted += 1;
+        const nextFixedStepsCompleted = this.fixedStepsCompleted + 1;
+        const projection = this.executeOrderedFixedStep(nextFixedStepsCompleted);
+        this.fixedStepsCompleted = nextFixedStepsCompleted;
+        this.committedProjectionValue = projection;
         executedFixedSteps += 1;
       } catch (cause) {
         this.failRoom(cause, 'Authoritative fixed-step execution failed.');
@@ -1002,76 +1099,196 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
     });
   }
 
-  /** Build one immutable, body-derived state; no client payload participates. */
-  projectAuthoritativeState(): Readonly<AuthoritativeRoomProjection> | null {
-    if (!this.canPublishSnapshots || this.stateValue === null || this.worldBundle === null) {
-      return null;
+  private executeOrderedFixedStep(
+    nextFixedStepsCompleted: number,
+  ): Readonly<AuthoritativeRoomProjection> {
+    const state = this.stateValue;
+    const bundle = this.worldBundle;
+    const flow = this.matchFlowStateValue;
+    if (state === null || bundle === null || flow === null) {
+      throw new Error('A ready fixed step requires room, world, and match-flow state.');
     }
 
-    try {
-      const state = this.stateValue;
-      const bundle = this.worldBundle;
-      const entries = visibleRosterEntries(state);
-      const cars = entries.map((entry): Readonly<AuthoritativeCarProjection> => {
-        const car = state.cars.get(entry.sessionId);
-        if (car === undefined) {
-          throw new Error(`Represented identity ${entry.sessionId} has no authoritative car.`);
-        }
-        const body = cloneCarBodyProjection(bundle.projectCar({
-          world: bundle.world,
-          car,
-          entry,
-        }));
-        return Object.freeze({
-          sessionId: entry.sessionId,
-          acceptedJoinOrdinal: entry.acceptedJoinOrdinal,
-          team: entry.team,
-          name: entry.name,
-          isHost: entry.isHost,
-          ...body,
-        });
-      });
-      const occupancy = cars.reduce(
-        (counts, car) => ({
-          total: counts.total + 1,
-          blue: counts.blue + Number(car.team === 'blue'),
-          orange: counts.orange + Number(car.team === 'orange'),
-        }),
-        { total: 0, blue: 0, orange: 0 },
-      );
-      const visibleHost = cars.find(({ isHost }) => isHost)?.sessionId ?? null;
-      const ball = cloneBallBodyProjection(bundle.projectBall({
-        world: bundle.world,
-        ball: bundle.ball,
-      }));
-
+    const gates = getMatchFlowStepGates(flow);
+    const stepContext = Object.freeze({
+      world: bundle.world,
+      ball: bundle.ball,
+      fixedStepSeconds: PHYSICS.TIMESTEP,
+      fixedStepIndex: this.fixedStepsCompleted,
+      policy: this.policy,
+      tuning: this.tuningSnapshot,
+      gates,
+      state,
+    } satisfies AuthoritativeFixedStepContext<TWorld, TCar, TBall>);
+    const carContexts = visibleRosterEntries(state).map((entry) => {
+      const car = state.cars.get(entry.sessionId);
+      if (car === undefined) {
+        throw new Error(`Represented identity ${entry.sessionId} has no authoritative car.`);
+      }
       return Object.freeze({
-        roomId: this.roomId,
-        policy: this.policy,
-        tuning: Object.freeze({
-          registryId: this.tuningSnapshot.registryId,
-          version: this.tuningSnapshot.version,
-          contentHash: this.tuningSnapshot.contentHash,
-          snapshotId: this.tuningSnapshot.snapshotId,
-        }),
-        revision: state.revision,
-        simulationTimeMs: this.scheduler.simulationTimeMs,
-        fixedStepsCompleted: this.fixedStepsCompleted,
-        phase: state.phase,
-        countdownKind: state.countdownKind,
-        countdownStepsRemaining: state.countdownStepsRemaining,
-        regulationStepsRemaining: state.regulationStepsRemaining,
-        blueScore: state.blueScore,
-        orangeScore: state.orangeScore,
-        occupancy: Object.freeze(occupancy),
-        hostSessionId: visibleHost,
-        cars: Object.freeze(cars),
-        ball,
-      });
-    } catch (cause) {
-      this.failRoom(cause, 'Authoritative state projection failed.');
-      return null;
+        ...stepContext,
+        car,
+        entry,
+        input: state.inputs.get(entry.sessionId) ?? NEUTRAL_INPUT,
+      } satisfies AuthoritativeCarStepContext<TWorld, TCar, TBall>);
+    });
+
+    // Input recovery and disabled-phase edge consumption precede all body reads.
+    if (gates.synchronizeInputEdges) {
+      for (const context of carContexts) bundle.synchronizeCarInput(context);
     }
+
+    bundle.recoverBallBeforeStep(stepContext);
+    for (const context of carContexts) bundle.recoverCarBeforeStep(context);
+
+    bundle.prepareGrounding(stepContext);
+    const planningContexts = carContexts.map((context) => Object.freeze({
+      ...context,
+      grounding: bundle.groundCar(context),
+    }) satisfies AuthoritativeCarPlanningContext<TWorld, TCar, TBall>);
+
+    const commands = gates.controlsEnabled
+      ? planningContexts.map((context) => {
+        const command = bundle.prepareCarCommand(context);
+        if (
+          typeof command !== 'object'
+          || command === null
+          || typeof command.apply !== 'function'
+          || typeof command.commit !== 'function'
+        ) {
+          throw new TypeError('Car planning must return prepared apply and commit functions.');
+        }
+        return command;
+      })
+      : [];
+
+    // Every car observes the same pre-application world before any command mutates a body.
+    for (const command of commands) command.apply();
+    if (gates.physicsEnabled) bundle.stepWorld(stepContext);
+
+    for (const context of carContexts) bundle.recoverCarAfterStep(context);
+    bundle.recoverBallAfterStep(stepContext);
+    for (const command of commands) command.commit();
+
+    const matchFlowInput = bundle.extractMatchFlowInput(stepContext);
+    if (!this.initialCountdownStartedAtBoundary) {
+      this.advanceMatchFlowStep(matchFlowInput);
+    }
+
+    // Validate and materialize the final bounded body/match state before this
+    // step index and projection artifact commit together in advanceSimulation().
+    const committedFlow = this.matchFlowStateValue;
+    if (committedFlow === null) {
+      throw new Error('Fixed-step projection requires committed match-flow state.');
+    }
+    this.ensureTerminalSnapshotTransition(committedFlow);
+    return this.createAuthoritativeProjection(
+      nextFixedStepsCompleted,
+      this.stateValue,
+      committedFlow,
+    );
+  }
+
+  /** Return the exact immutable artifact committed by initialization or a step. */
+  projectAuthoritativeState(): Readonly<AuthoritativeRoomProjection> | null {
+    if (!this.canPublishSnapshots) return null;
+    return this.committedProjectionValue;
+  }
+
+  private createAuthoritativeProjection(
+    fixedStepsCompleted: number,
+    state: Readonly<
+      RoomMutationState<TCar, InputCommandV2, TBall, Readonly<KickoffAssignment>>
+    > | null = this.stateValue,
+    flow: Readonly<MatchFlowState> | null = this.matchFlowStateValue,
+  ): Readonly<AuthoritativeRoomProjection> {
+    const bundle = this.worldBundle;
+    if (state === null || bundle === null || flow === null) {
+      throw new Error('Authoritative projection requires ready room, world, and match-flow state.');
+    }
+    if (this.snapshotBuilder.transitionSequence !== flow.transitionSequence) {
+      throw new Error('Match-flow and authoritative transition sequences diverged.');
+    }
+    const latestTransition = this.snapshotBuilder.latestTransition;
+    if (
+      (latestTransition === null) !== (flow.transitionSequence === 0)
+      || (latestTransition !== null && latestTransition.eventId !== flow.transitionSequence)
+    ) {
+      throw new Error('Latest authoritative transition does not match match-flow state.');
+    }
+    const entries = visibleRosterEntries(state);
+    const cars = entries.map((entry): Readonly<AuthoritativeCarProjection> => {
+      const car = state.cars.get(entry.sessionId);
+      if (car === undefined) {
+        throw new Error(`Represented identity ${entry.sessionId} has no authoritative car.`);
+      }
+      const body = cloneCarBodyProjection(bundle.projectCar({
+        world: bundle.world,
+        car,
+        entry,
+      }));
+      return Object.freeze({
+        sessionId: entry.sessionId,
+        acceptedJoinOrdinal: entry.acceptedJoinOrdinal,
+        team: entry.team,
+        name: entry.name,
+        isHost: entry.isHost,
+        ...body,
+      });
+    });
+    const occupancy = cars.reduce(
+      (counts, car) => ({
+        total: counts.total + 1,
+        blue: counts.blue + Number(car.team === 'blue'),
+        orange: counts.orange + Number(car.team === 'orange'),
+      }),
+      { total: 0, blue: 0, orange: 0 },
+    );
+    const visibleHost = cars.find(({ isHost }) => isHost)?.sessionId ?? null;
+    const ball = cloneBallBodyProjection(bundle.projectBall({
+      world: bundle.world,
+      ball: bundle.ball,
+    }));
+
+    return Object.freeze({
+      roomId: this.roomId,
+      policy: this.policy,
+      tuning: Object.freeze({
+        registryId: this.tuningSnapshot.registryId,
+        version: this.tuningSnapshot.version,
+        contentHash: this.tuningSnapshot.contentHash,
+        snapshotId: this.tuningSnapshot.snapshotId,
+      }),
+      revision: state.revision,
+      simulationTimeMs: this.scheduler.simulationTimeMs,
+      fixedStepsCompleted,
+      phase: flow.phase,
+      countdownKind: flow.countdownKind,
+      phaseSecondsRemaining: (
+        flow.phase === 'countdown'
+          ? flow.countdownStepsRemaining
+          : flow.phase === 'goal-reset'
+            ? flow.goalResetStepsRemaining
+            : 0
+      ) / this.matchFlowConfig.rules.fixedStepsPerSecond,
+      countdownStepsRemaining: flow.countdownStepsRemaining,
+      goalResetStepsRemaining: flow.goalResetStepsRemaining,
+      regulationStepsRemaining: flow.regulationStepsRemaining,
+      regulationActivePlayStepsCompleted: flow.regulationActivePlayStepsCompleted,
+      regulationStarted: flow.regulationStarted,
+      regulationCutoffResolved: flow.regulationCutoffResolved,
+      kickoffEpoch: flow.kickoffEpoch,
+      blueScore: flow.blueScore,
+      orangeScore: flow.orangeScore,
+      winner: flow.winner,
+      terminalResult: flow.terminalResult,
+      latestTransition,
+      transitionSequence: flow.transitionSequence,
+      occupancy: Object.freeze(occupancy),
+      hostSessionId: visibleHost,
+      cars: Object.freeze(cars),
+      ball,
+    });
   }
 
   /**
@@ -1083,28 +1300,19 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
     projection: Readonly<AuthoritativeRoomProjection>,
     serverTime: number,
   ): Readonly<SnapshotEnvelopeV2> | null {
-    if (!this.canPublishSnapshots || this.stateValue === null) return null;
+    if (!this.canPublishSnapshots) return null;
 
     try {
-      const state = this.stateValue;
-      const flow = this.matchFlowStateValue;
-      if (flow === null) {
-        throw new Error('V2 snapshot production requires initialized match-flow state.');
-      }
       if (
-        projection.roomId !== this.roomId
+        projection !== this.committedProjectionValue
+        || projection.roomId !== this.roomId
         || projection.policy !== this.policy
-        || projection.revision !== state.revision
-        || projection.simulationTimeMs !== this.scheduler.simulationTimeMs
-        || projection.phase !== flow.phase
-        || projection.countdownKind !== flow.countdownKind
-        || projection.blueScore !== flow.blueScore
-        || projection.orangeScore !== flow.orangeScore
+        || projection.latestTransition !== this.snapshotBuilder.latestTransition
+        || projection.transitionSequence !== this.snapshotBuilder.transitionSequence
       ) {
-        throw new Error('V2 snapshot projection is stale or belongs to another room.');
+        throw new Error('V2 snapshot requires the exact current committed room projection.');
       }
 
-      this.ensureTerminalSnapshotTransition(flow);
       const roster = Object.freeze(projection.cars.map((car) => Object.freeze({
         sessionId: car.sessionId,
         acceptedJoinOrdinal: car.acceptedJoinOrdinal,
@@ -1118,24 +1326,18 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
         linearVelocity: car.linearVelocity,
         boost: car.boost,
       })]));
-      const phaseSteps = flow.phase === 'countdown'
-        ? flow.countdownStepsRemaining
-        : flow.phase === 'goal-reset'
-          ? flow.goalResetStepsRemaining
-          : 0;
-
       return this.snapshotBuilder.build({
         serverTime,
         simulationTime: projection.simulationTimeMs,
-        phase: flow.phase,
-        countdownKind: flow.countdownKind,
-        phaseSecondsRemaining: phaseSteps / this.matchFlowConfig.rules.fixedStepsPerSecond,
-        regulationSecondsRemaining: flow.regulationStepsRemaining
+        phase: projection.phase,
+        countdownKind: projection.countdownKind,
+        phaseSecondsRemaining: projection.phaseSecondsRemaining,
+        regulationSecondsRemaining: projection.regulationStepsRemaining
           / this.matchFlowConfig.rules.fixedStepsPerSecond,
-        kickoffEpoch: flow.kickoffEpoch,
-        blueScore: flow.blueScore,
-        orangeScore: flow.orangeScore,
-        winner: flow.winner,
+        kickoffEpoch: projection.kickoffEpoch,
+        blueScore: projection.blueScore,
+        orangeScore: projection.orangeScore,
+        winner: projection.winner,
         roster,
         cars,
         ball: Object.freeze({
@@ -1165,18 +1367,26 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
     if (terminal === null) {
       throw new Error('Ended match-flow state is missing its terminal result.');
     }
+    if (terminal.eventId !== flow.transitionSequence) {
+      throw new Error('Terminal result event ID must equal match-flow transitionSequence.');
+    }
 
-    const committed = this.snapshotBuilder.latestTransition?.terminal ?? null;
-    if (committed !== null) {
+    const latest = this.snapshotBuilder.latestTransition;
+    const committedTerminal = latest?.terminal ?? null;
+    if (committedTerminal !== null) {
       if (
-        committed.reason !== terminal.reason
-        || committed.winner !== terminal.winner
-        || committed.blueScore !== terminal.blueScore
-        || committed.orangeScore !== terminal.orangeScore
+        latest?.eventId !== terminal.eventId
+        || committedTerminal.reason !== terminal.reason
+        || committedTerminal.winner !== terminal.winner
+        || committedTerminal.blueScore !== terminal.blueScore
+        || committedTerminal.orangeScore !== terminal.orangeScore
       ) {
-        throw new Error('Authoritative terminal result changed after V2 publication.');
+        throw new Error('Authoritative terminal result changed after transition commit.');
       }
       return;
+    }
+    if (terminal.eventId !== this.snapshotBuilder.transitionSequence + 1) {
+      throw new Error('Terminal transition must be the next room-local transition event.');
     }
 
     const goal = terminal.goal === null || terminal.goal === undefined
@@ -1185,30 +1395,47 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
         team: terminal.goal.team,
         kickoffEpoch: terminal.goal.kickoffEpoch,
         blueScore: terminal.goal.blueScore,
-        orangeScore: terminal.goal.orangeScore,
+        orangeScore: terminal.orangeScore,
       });
+    let committed: Readonly<MatchTransitionSnapshot>;
     switch (terminal.reason) {
       case 'regulation-target-and-margin':
         if (goal === null) throw new Error('Regulation terminal goal is missing.');
-        this.snapshotBuilder.commitTransition({ kind: 'regulation-terminal-goal', goal });
-        return;
+        committed = this.snapshotBuilder.commitTransition({
+          kind: 'regulation-terminal-goal',
+          goal,
+        });
+        break;
       case 'hard-regulation-cutoff':
-        this.snapshotBuilder.commitTransition({
+        committed = this.snapshotBuilder.commitTransition({
           kind: 'hard-cutoff',
           winner: terminal.winner,
           blueScore: terminal.blueScore,
           orangeScore: terminal.orangeScore,
           goal,
         });
-        return;
+        break;
       case 'overtime-goal':
         if (goal === null) throw new Error('Overtime terminal goal is missing.');
-        this.snapshotBuilder.commitTransition({ kind: 'overtime-terminal-goal', goal });
-        return;
+        committed = this.snapshotBuilder.commitTransition({
+          kind: 'overtime-terminal-goal',
+          goal,
+        });
+        break;
       default: {
         const exhaustiveReason: never = terminal.reason;
         throw new TypeError(`Unsupported terminal reason: ${String(exhaustiveReason)}.`);
       }
+    }
+
+    if (
+      committed.eventId !== terminal.eventId
+      || committed.terminal?.reason !== terminal.reason
+      || committed.terminal?.winner !== terminal.winner
+      || committed.terminal?.blueScore !== terminal.blueScore
+      || committed.terminal?.orangeScore !== terminal.orangeScore
+    ) {
+      throw new Error('Committed terminal transition differs from match-flow terminal state.');
     }
   }
 
@@ -1236,7 +1463,16 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
       throw new TypeError('initializeWorld must return a world bundle.');
     }
     if (
-      typeof candidate.fixedStep !== 'function'
+      typeof candidate.synchronizeCarInput !== 'function'
+      || typeof candidate.recoverBallBeforeStep !== 'function'
+      || typeof candidate.recoverCarBeforeStep !== 'function'
+      || typeof candidate.prepareGrounding !== 'function'
+      || typeof candidate.groundCar !== 'function'
+      || typeof candidate.prepareCarCommand !== 'function'
+      || typeof candidate.stepWorld !== 'function'
+      || typeof candidate.recoverCarAfterStep !== 'function'
+      || typeof candidate.recoverBallAfterStep !== 'function'
+      || typeof candidate.extractMatchFlowInput !== 'function'
       || typeof candidate.projectCar !== 'function'
       || typeof candidate.projectBall !== 'function'
       || typeof candidate.dispose !== 'function'
@@ -1246,7 +1482,7 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
       || typeof candidate.mutationResources.prepareLeave !== 'function'
     ) {
       throw new TypeError(
-        'A ready world bundle requires fixed-step, projection, join/leave, and disposal functions.',
+        'A ready world bundle requires every simulation stage, projection, join/leave, and disposal function.',
       );
     }
     if (!Object.prototype.hasOwnProperty.call(candidate, 'world')) {
@@ -1453,19 +1689,25 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
   }
 
   /** Advance one reducer step after the world callback has completed. */
-  private advanceMatchFlowStep(): void {
+  private advanceMatchFlowStep(input: Readonly<MatchFlowStepInput>): void {
     const flow = this.matchFlowStateValue;
     if (flow === null || this.stateValue === null) {
       throw new Error('A ready fixed step requires initialized match-flow state.');
     }
 
-    const reduced = reduceMatchFlowStep(flow, this.matchFlowConfig);
+    const reduced = reduceMatchFlowStep(flow, this.matchFlowConfig, input);
     if (reduced.kickoffReset !== null) {
       const placement = this.placeKickoff(reduced.kickoffReset.targetKickoffEpoch);
       if (!placement.ok) {
         throw new Error(`Post-goal kickoff placement failed: ${placement.message}`, {
           cause: placement.cause,
         });
+      }
+    }
+    if (reduced.transition !== null) {
+      const committed = this.snapshotBuilder.commitTransition({ kind: 'countdown' });
+      if (committed.eventId !== reduced.transition.sequence) {
+        throw new Error('Reducer and snapshot transition sequences diverged.');
       }
     }
     this.commitMatchFlowState(reduced.state);

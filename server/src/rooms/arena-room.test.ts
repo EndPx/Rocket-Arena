@@ -161,7 +161,16 @@ function makeBundle(
         },
       };
     },
-    fixedStep: () => { world.fixedSteps += 1; },
+    synchronizeCarInput: () => {},
+    recoverBallBeforeStep: () => { world.fixedSteps += 1; },
+    recoverCarBeforeStep: () => {},
+    prepareGrounding: () => {},
+    groundCar: () => ({ grounded: false, basis: null }),
+    prepareCarCommand: () => ({ apply: () => {}, commit: () => {} }),
+    stepWorld: () => {},
+    recoverCarAfterStep: () => {},
+    recoverBallAfterStep: () => {},
+    extractMatchFlowInput: () => ({}),
     projectCar: ({ car }) => ({
       position: [...car.position],
       rotation: [...car.rotation],
@@ -465,6 +474,26 @@ test('active-play disconnect removes only one identity and preserves all remaini
     assert.notDeepEqual(internalBall.position, authoritativeBall.position);
 
     const before = projection(core);
+    const expectedBall = {
+      position: [...internalBall.position],
+      rotation: [...internalBall.rotation],
+      linearVelocity: [...internalBall.linearVelocity],
+      angularVelocity: [...internalBall.angularVelocity],
+    };
+    const expectedCars = before.cars
+      .filter(({ sessionId }) => sessionId !== 'active-2')
+      .map((car) => {
+        const body = world.cars.get(car.sessionId);
+        assert.ok(body);
+        return {
+          ...car,
+          position: [...body.position],
+          rotation: [...body.rotation],
+          linearVelocity: [...body.linearVelocity],
+          angularVelocity: [...body.angularVelocity],
+          boost: body.boost,
+        };
+      });
     assert.equal(core.isStartEligible, false, 'active play never reopens the pre-play start gate');
     const removedCar = world.cars.get('active-2');
     assert.ok(removedCar);
@@ -483,11 +512,15 @@ test('active-play disconnect removes only one identity and preserves all remaini
     );
     assert.equal(after.countdownKind, before.countdownKind);
     assert.equal(after.countdownStepsRemaining, before.countdownStepsRemaining);
-    assert.deepEqual(after.ball, before.ball);
+    assert.deepEqual(
+      after.ball,
+      expectedBall,
+      'the next fixed-step artifact projects the latest live authoritative ball body',
+    );
     assert.deepEqual(
       after.cars,
-      before.cars.filter(({ sessionId }) => sessionId !== 'active-2'),
-      'remaining identities, teams, transforms, velocities, boost, and roster order are unchanged',
+      expectedCars,
+      'the next artifact omits only the leaver and projects every surviving live body',
     );
     assert.deepEqual(after.occupancy, { total: 5, blue: 2, orange: 3 });
     assert.deepEqual(world.removedSessionIds, ['active-2']);
@@ -691,21 +724,31 @@ test('ArenaRoom forwards repeated terminal snapshots without changing terminal e
   const { core } = await makeCore();
   const baseProjection = projection(core);
   const builder = new SnapshotBuilder({ policy: QUICK_MATCH_POLICY });
-  builder.commitTransition({
+  const terminalTransition = builder.commitTransition({
     kind: 'hard-cutoff',
     winner: 'blue',
     blueScore: 5,
     orangeScore: 4,
   });
+  assert.ok(terminalTransition.terminal);
   let simulationTime = 1_000;
   const terminalProjection = Object.freeze({
     ...baseProjection,
     phase: 'ended' as const,
     countdownKind: null,
+    phaseSecondsRemaining: 0,
     countdownStepsRemaining: 0,
+    goalResetStepsRemaining: 0,
     regulationStepsRemaining: 0,
+    regulationActivePlayStepsCompleted: baseProjection.regulationStepsRemaining,
+    regulationStarted: true,
+    regulationCutoffResolved: true,
     blueScore: 5,
     orangeScore: 4,
+    winner: terminalTransition.terminal.winner,
+    terminalResult: terminalTransition.terminal,
+    latestTransition: terminalTransition,
+    transitionSequence: terminalTransition.eventId,
   });
   const port = {
     lifecycle: 'ready' as const,

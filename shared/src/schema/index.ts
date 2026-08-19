@@ -7,6 +7,7 @@ export {
 export type { AuthoritativePlayerProjection } from './player-state.js';
 
 export { BallState } from './ball-state.js';
+export type { AuthoritativeBallProjection } from './ball-state.js';
 
 export {
   GameState,

@@ -212,6 +212,7 @@ Every implementation task must leave its code wired into the preceding increment
   - [ ]* 4.6 Add evidence-backed proximity-sensitive kickoff selection
     - Extend `shared/src/geometry/kickoff-slots.ts` and `server/src/systems/kickoff-slots.ts` only after a deterministic proximity-selection rule and evidence are approved; preserve the stable unique-spawn fallback.
     - Add focused generated and example tests proving proximity choice never breaks team facing, bijection, repeatability, or collider separation, then remove only the matching feature-status deferral.
+    - **Wave 0 status:** Deferred -- no approved deterministic proximity-selection rule, reference evidence, or approval record is present; the stable unique-spawn fallback remains active.
     - _Depends on: 4.2, 4.3_
     - _Requirements: 5.13_
 
@@ -285,7 +286,7 @@ Every implementation task must leave its code wired into the preceding increment
     - _Depends on: 1.3, 5.1_
     - _Requirements: 10.1-10.5, 10.10-10.12, 18.19, 18.26_
 
-  - [ ] 5.6 Wire the ordered scripted simulation pipeline into the room core
+  - [x] 5.6 Wire the ordered scripted simulation pipeline into the room core
     - Refactor `server/src/rooms/authoritative-room-core.ts` to execute mutation drain, phase gate, input recovery, body recovery, grounding, Stable_Roster_Order command planning, Rapier step, post-step bounds, event extraction, match reduction, and schema projection in the exact design order.
     - Remove legacy duplicated control logic from room adapters while retaining `server/src/physics/car.ts` only as a temporary harness-compatible facade.
     - Add room/physics integration tests for authoritative input-only behavior, disabled-phase edge synchronization, local-forward airborne boost, finite snapshots, and cleanup when a simulation test fails.
@@ -344,6 +345,7 @@ Every implementation task must leave its code wired into the preceding increment
   - [ ] 6.2 Align visible authoritative boundaries to the shared arena spec
     - Refactor `client/src/renderer/arena.ts` to derive field, ramps, containment, corners, and goal tunnels from `ArenaGeometrySpec` while preserving completed stadium art, lighting, materials, and effects around those boundaries.
     - Extend `client/tests/stadium-camera-effects.test.ts` with resolved world-space comparisons requiring every authoritative visible boundary to lie within 0.05 m of its collision descriptor.
+    - **Wave 0 status:** Deferred -- production collision still uses the legacy `40 x 60` shell while the shared metric footprint is `81.92 x 102.4`, and Task 6.1 has not supplied exact ramp run/pitch or wall-ceiling transition collision profiles; the required `0.05 m` alignment cannot yet be proven.
     - _Depends on: 1.3, 3.4_
     - _Requirements: 1.15, 12.10_
 
@@ -458,13 +460,13 @@ Every implementation task must leave its code wired into the preceding increment
     - _Requirements: 14.1-14.5, 14.8-14.14, 18.20, 18.25-18.26_
 
 - [ ] 8. Deliver Ball/Car cameras, accessible lobby/HUD, and baseline integration
-  - [ ] 8.1 Implement local Ball and Car camera modes with edge toggles
+  - [x] 8.1 Implement local Ball and Car camera modes with edge toggles
     - Refactor `client/src/renderer/camera-controller.ts` for lobby orbit plus gameplay `ball`/`car` modes, default Ball Camera before the first Active_Play frame, interpolated ball targeting, local-car anchoring, finite registry-validated spring/FOV bounds, and kickoff-epoch rebasing without cross-teleport history.
     - Wire monotonic `cameraToggleSequence` from `client/src/input/input-controller.ts` without sending camera authority to the server; add `client/tests/camera-controller.test.ts` for first-frame default, one transition per edge, held/released deduplication, finite bounds, invalid all-or-nothing configuration, and mode-preserving teleports.
     - _Depends on: 1.4, 3.4, 5.4_
     - _Requirements: 15.1-15.11_
 
-  - [ ] 8.2 Implement the off-screen ball indicator projection
+  - [x] 8.2 Implement the off-screen ball indicator projection
     - Add `client/src/hud/ball-indicator.ts` with pure clip/camera-space projection, behind-camera handling, inset viewport-edge intersection, finite fallback, and hidden in-viewport output.
     - Add `client/tests/ball-indicator.test.ts` for each edge/corner, behind-camera direction, viewport containment, resize behavior, and no obstruction of the center safe zone.
     - _Depends on: 3.4_

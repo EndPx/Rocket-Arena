@@ -10,7 +10,11 @@ import {
   type KickoffSlotIndex,
   type Team,
 } from '@rocket-arena/shared';
-import { createCarPhysicsState } from '../physics/car.js';
+import {
+  createCarPhysicsState,
+  resetCarPhysicsState,
+  type CarPhysicsState,
+} from '../physics/car.js';
 import {
   prepareResetToKickoff,
   resetToKickoff,
@@ -75,6 +79,18 @@ function createBody(
   return body;
 }
 
+function kickoffCar(
+  body: RAPIER.RigidBody,
+  state: CarPhysicsState,
+): KickoffCarBody<CarPhysicsState> {
+  return {
+    body,
+    captureState: () => ({ ...state }),
+    resetState: () => { resetCarPhysicsState(state); },
+    restoreState: (snapshot) => { Object.assign(state, snapshot); },
+  };
+}
+
 // Validates: Requirements 5.5-5.10
 
 test('prepared scoring reset applies complete kickoff transforms and can restore every body atomically', async () => {
@@ -89,9 +105,9 @@ test('prepared scoring reset applies complete kickoff transforms and can restore
     const orangeState = createCarPhysicsState();
     Object.assign(blueState, { count: 2, grounded: true, airborneTime: 4 });
     Object.assign(orangeState, { count: 1, wasGrounded: true, landingTime: 5 });
-    const cars = new Map<string, KickoffCarBody>([
-      ['blue-player', { body: blueBody, jumpState: blueState }],
-      ['orange-player', { body: orangeBody, jumpState: orangeState }],
+    const cars = new Map<string, KickoffCarBody<CarPhysicsState>>([
+      ['blue-player', kickoffCar(blueBody, blueState)],
+      ['orange-player', kickoffCar(orangeBody, orangeState)],
     ]);
     const assignments = new Map<string, Readonly<KickoffAssignment>>([
       ['blue-player', assignment('blue-player', 'blue', 0)],
@@ -166,9 +182,11 @@ test('incomplete scoring reset rejects before moving the ball or any car', async
     const ball = createBody(world, [9, 8, 7]);
     const first = createBody(world, [1, 2, 3]);
     const second = createBody(world, [4, 5, 6]);
-    const cars = new Map<string, KickoffCarBody>([
-      ['first', { body: first, jumpState: createCarPhysicsState() }],
-      ['second', { body: second, jumpState: createCarPhysicsState() }],
+    const firstState = createCarPhysicsState();
+    const secondState = createCarPhysicsState();
+    const cars = new Map<string, KickoffCarBody<CarPhysicsState>>([
+      ['first', kickoffCar(first, firstState)],
+      ['second', kickoffCar(second, secondState)],
     ]);
     const incomplete = new Map<string, Readonly<KickoffAssignment>>([
       ['first', assignment('first', 'blue', 0)],

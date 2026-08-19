@@ -7,7 +7,6 @@ import {
 } from '../src/schema/index.js';
 import {
   INPUT_PROTOCOL_VERSION,
-  InputContractError,
   isInputCommandV2,
   normalizeInputCommandV2,
 } from '../src/types/input.js';
@@ -179,7 +178,8 @@ test('V2 input normalization preserves independent controls and monotonic edges'
   assert.equal(isInputCommandV2(normalized, { jumpSequence: 8, cameraToggleSequence: 5 }), true);
 });
 
-test('V2 input contract rejects authoritative-looking fields at any nesting level', () => {
+test('V2 input allow-list ignores authoritative-looking extras without suppressing controls', () => {
+  const controlOnly = normalizeInputCommandV2(baseInput);
   const forgedInputs = [
     { ...baseInput, position: [99, 99, 99] },
     { ...baseInput, blueScore: 999 },
@@ -190,8 +190,8 @@ test('V2 input contract rejects authoritative-looking fields at any nesting leve
   ];
 
   for (const forged of forgedInputs) {
-    assert.throws(() => normalizeInputCommandV2(forged), InputContractError);
-    assert.equal(isInputCommandV2(forged), false);
+    assert.deepEqual(normalizeInputCommandV2(forged), controlOnly);
+    assert.equal(isInputCommandV2(forged), true);
   }
 });
 
@@ -300,21 +300,9 @@ test('repeated Ended snapshots retain one immutable terminal transition', () => 
   assert.throws(() => assertStableTerminalSnapshots(second, second), SnapshotContractError);
 });
 
-test('authoritative schemas project stable roster order, bounded boost, policy, timing, occupancy, and terminal state', () => {
+test('authoritative schemas atomically project roster, ball, policy, timing, occupancy, and terminal state', () => {
   const state = new GameState();
   const cars = makeCars();
-
-  for (let index = cars.length - 1; index >= 0; index -= 1) {
-    const car = cars[index];
-    assert.ok(car);
-    const player = PlayerState.fromAuthoritative({
-      ...car,
-      acceptedJoinOrdinal: index,
-      angularVelocity: [index, index / 2, -index],
-      boost: index === 7 ? 150 : car.boost,
-    });
-    state.players.set(car.sessionId, player);
-  }
 
   const terminal = createTerminalResult({
     eventId: 70,
@@ -331,6 +319,17 @@ test('authoritative schemas project stable roster order, bounded boost, policy, 
     terminal,
   };
   const projection = {
+    cars: cars.map((car, index) => ({
+      ...car,
+      acceptedJoinOrdinal: index,
+      angularVelocity: [index, index / 2, -index] as const,
+      boost: index === 7 ? 150 : car.boost,
+    })),
+    ball: {
+      position: [2, 0.9125, -3] as const,
+      rotation: [0, 0, 0, 1] as const,
+      linearVelocity: [1, 2, 3] as const,
+    },
     policy: ROOM_POLICIES.custom,
     phase: 'ended' as const,
     countdownKind: null,
@@ -404,6 +403,12 @@ function makeNonTerminalProjection(
   policy: RoomPolicyValue = ROOM_POLICIES.custom,
 ): GameProjection {
   return {
+    cars: [],
+    ball: {
+      position: [0, 0.9125, 0],
+      rotation: [0, 0, 0, 1],
+      linearVelocity: [0, 0, 0],
+    },
     policy,
     phase: 'waiting',
     countdownKind: null,
@@ -494,6 +499,36 @@ function addSchemaPlayer(
   return player;
 }
 
+function completeProjectionFromState(
+  state: GameState,
+  projection: GameProjection,
+): GameProjection {
+  return {
+    ...projection,
+    cars: state.stableRosterSessionIds().map((sessionId) => {
+      const player = state.players.get(sessionId);
+      if (player === undefined) throw new Error(`Missing schema player ${sessionId}.`);
+      return {
+        sessionId,
+        acceptedJoinOrdinal: player.acceptedJoinOrdinal,
+        team: player.team,
+        name: player.name,
+        isHost: player.isHost,
+        position: [player.x, player.y, player.z],
+        rotation: [player.qx, player.qy, player.qz, player.qw],
+        linearVelocity: [player.vx, player.vy, player.vz],
+        angularVelocity: [player.wx, player.wy, player.wz],
+        boost: player.boost,
+      };
+    }),
+    ball: {
+      position: [state.ball.x, state.ball.y, state.ball.z],
+      rotation: [state.ball.qx, state.ball.qy, state.ball.qz, state.ball.qw],
+      linearVelocity: [state.ball.vx, state.ball.vy, state.ball.vz],
+    },
+  };
+}
+
 function cloneSchemaState(state: GameState): unknown {
   return JSON.parse(JSON.stringify(state.toJSON())) as unknown;
 }
@@ -517,6 +552,31 @@ function assertProjectionRejectedWithoutMutation(
   assert.strictEqual(state.terminalResult, references.terminalResult);
   assert.strictEqual(state.latestTransition, references.latestTransition);
 }
+
+test('complete schema projection rejects late car or ball failure without partial mutation', () => {
+  const state = new GameState();
+  addSchemaPlayer(state, 0, 'blue', true);
+  const committed = completeProjectionFromState(state, makeNonTerminalProjection());
+  state.applyAuthoritativeProjection(committed);
+
+  const invalidCar = {
+    ...committed.cars[0]!,
+    position: [Number.NaN, 1, 0] as const,
+  };
+  assertProjectionRejectedWithoutMutation(state, {
+    ...makeChangedNonTerminalProjection(ROOM_POLICIES.custom),
+    cars: [invalidCar],
+    ball: committed.ball,
+  });
+  assertProjectionRejectedWithoutMutation(state, {
+    ...makeChangedNonTerminalProjection(ROOM_POLICIES.custom),
+    cars: committed.cars,
+    ball: {
+      ...committed.ball,
+      linearVelocity: [0, Number.POSITIVE_INFINITY, 0],
+    },
+  });
+});
 
 test('non-ended V2 snapshots reject terminal transition payloads', () => {
   const ended = makeEndedSnapshot(80, makeTerminal(80, 'hard-regulation-cutoff'));
@@ -710,50 +770,84 @@ test('schema rejects terminal transition data outside Ended state without mutati
 
 test('authoritative projection preflights roster team, capacity, and Host state atomically', () => {
   const invalidTeamState = new GameState();
-  const invalidTeamPlayer = addSchemaPlayer(invalidTeamState, 0, 'blue');
-  invalidTeamState.applyAuthoritativeProjection(makeNonTerminalProjection());
+  addSchemaPlayer(invalidTeamState, 0, 'blue');
+  invalidTeamState.applyAuthoritativeProjection(completeProjectionFromState(
+    invalidTeamState,
+    makeNonTerminalProjection(),
+  ));
+  const invalidTeamPlayer = invalidTeamState.players.get('schema-session-0');
+  assert.ok(invalidTeamPlayer);
   (invalidTeamPlayer as unknown as { team: string }).team = 'spectator';
   assertProjectionRejectedWithoutMutation(
     invalidTeamState,
-    makeChangedNonTerminalProjection(ROOM_POLICIES.quick),
+    completeProjectionFromState(
+      invalidTeamState,
+      makeChangedNonTerminalProjection(ROOM_POLICIES.quick),
+    ),
   );
 
   const teamCapacityState = new GameState();
   for (let index = 0; index < 4; index += 1) {
     addSchemaPlayer(teamCapacityState, index, 'blue');
   }
-  teamCapacityState.applyAuthoritativeProjection(makeNonTerminalProjection());
+  teamCapacityState.applyAuthoritativeProjection(completeProjectionFromState(
+    teamCapacityState,
+    makeNonTerminalProjection(),
+  ));
   assertProjectionRejectedWithoutMutation(
     teamCapacityState,
-    makeChangedNonTerminalProjection(ROOM_POLICIES.quick),
+    completeProjectionFromState(
+      teamCapacityState,
+      makeChangedNonTerminalProjection(ROOM_POLICIES.quick),
+    ),
   );
 
   const totalCapacityState = new GameState();
   for (let index = 0; index < 7; index += 1) {
     addSchemaPlayer(totalCapacityState, index, index < 4 ? 'blue' : 'orange');
   }
-  totalCapacityState.applyAuthoritativeProjection(makeNonTerminalProjection());
+  totalCapacityState.applyAuthoritativeProjection(completeProjectionFromState(
+    totalCapacityState,
+    makeNonTerminalProjection(),
+  ));
   assertProjectionRejectedWithoutMutation(
     totalCapacityState,
-    makeChangedNonTerminalProjection(ROOM_POLICIES.quick),
+    completeProjectionFromState(
+      totalCapacityState,
+      makeChangedNonTerminalProjection(ROOM_POLICIES.quick),
+    ),
   );
 
   const quickHostState = new GameState();
   addSchemaPlayer(quickHostState, 0, 'blue', true);
-  quickHostState.applyAuthoritativeProjection(makeNonTerminalProjection());
+  quickHostState.applyAuthoritativeProjection(completeProjectionFromState(
+    quickHostState,
+    makeNonTerminalProjection(),
+  ));
   assertProjectionRejectedWithoutMutation(
     quickHostState,
-    makeChangedNonTerminalProjection(ROOM_POLICIES.quick),
+    completeProjectionFromState(
+      quickHostState,
+      makeChangedNonTerminalProjection(ROOM_POLICIES.quick),
+    ),
   );
 
   const multipleHostsState = new GameState();
   addSchemaPlayer(multipleHostsState, 0, 'blue', true);
-  const secondHost = addSchemaPlayer(multipleHostsState, 1, 'orange');
-  multipleHostsState.applyAuthoritativeProjection(makeNonTerminalProjection());
+  addSchemaPlayer(multipleHostsState, 1, 'orange');
+  multipleHostsState.applyAuthoritativeProjection(completeProjectionFromState(
+    multipleHostsState,
+    makeNonTerminalProjection(),
+  ));
+  const secondHost = multipleHostsState.players.get('schema-session-1');
+  assert.ok(secondHost);
   secondHost.isHost = true;
   assertProjectionRejectedWithoutMutation(
     multipleHostsState,
-    makeChangedNonTerminalProjection(ROOM_POLICIES.custom),
+    completeProjectionFromState(
+      multipleHostsState,
+      makeChangedNonTerminalProjection(ROOM_POLICIES.custom),
+    ),
   );
 });
 

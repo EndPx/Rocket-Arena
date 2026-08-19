@@ -14,12 +14,21 @@ import {
   getLocalState,
   updateInterpolatedEntities,
 } from './networking/state-listener.js';
-import { getCurrentInput, sendInput } from './input/keyboard-handler.js';
+import {
+  getCurrentInput,
+  getCurrentInputCommandV2,
+  sendInput,
+} from './input/keyboard-handler.js';
 import { createHUD, updateHUD } from './hud/hud.js';
 import { createDevPanel } from './dev-panel/dev-panel.js';
 import { createLobby } from './ui/lobby.js';
 import { showGameOver } from './ui/game-over.js';
-import { updateCamera, setFollowMode, setOrbitMode } from './renderer/camera-controller.js';
+import {
+  beginGameplayCameraSession,
+  getCameraMode,
+  setOrbitMode,
+  updateCamera,
+} from './renderer/camera-controller.js';
 import { updateEntityEffects } from './renderer/entity-effects.js';
 import { initializeAudio, updateAudio } from './audio/audio-manager.js';
 import type { Room } from 'colyseus.js';
@@ -39,7 +48,7 @@ setOrbitMode();
 createLobby((room: Room) => {
   createDevPanel(room);
   gameEnded = false;
-  setFollowMode();
+  beginGameplayCameraSession(getCurrentInputCommandV2().cameraToggleSequence);
   console.log('[Rocket Arena] Connected and playing');
 }, scene);
 
@@ -54,20 +63,28 @@ function animate(): void {
   sendInput(room);
 
   if (room) {
-    updateInterpolatedEntities(frameNowMs);
+    const presentedFrame = updateInterpolatedEntities(frameNowMs);
     updateHUD(room);
     updateEntityEffects(deltaSeconds, time);
 
     const localCar = getCarMeshes().get(room.sessionId) || null;
+    const ball = getBallMesh();
     const state = getLocalState();
-    updateCamera(camera, localCar, time, deltaSeconds);
+    const inputCommand = getCurrentInputCommandV2();
+    const activePlay = state?.phase === 'playing' || state?.phase === 'overtime';
+    updateCamera(camera, localCar, time, deltaSeconds, {
+      ball,
+      activePlay,
+      cameraToggleSequence: inputCommand.cameraToggleSequence,
+      presentedKickoffEpoch: presentedFrame?.kickoffEpoch ?? null,
+    });
     updateAudio({
       roomId: room.id,
       sessionId: room.sessionId,
       state,
       input: getCurrentInput(),
       localCar,
-      ball: getBallMesh(),
+      ball,
       camera,
       deltaSeconds,
       nowMs: frameNowMs,
@@ -78,6 +95,7 @@ function animate(): void {
       setTimeout(() => showGameOver(room), 2000);
     }
   } else {
+    if (getCameraMode() !== 'orbit') setOrbitMode();
     updateCamera(camera, null, time, deltaSeconds);
     updateAudio({
       roomId: null,

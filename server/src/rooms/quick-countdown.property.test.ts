@@ -298,7 +298,16 @@ function makeBundle(
         },
       };
     },
-    fixedStep: () => { world.fixedSteps += 1; },
+    synchronizeCarInput: () => {},
+    recoverBallBeforeStep: () => { world.fixedSteps += 1; },
+    recoverCarBeforeStep: () => {},
+    prepareGrounding: () => {},
+    groundCar: () => ({ grounded: false, basis: null }),
+    prepareCarCommand: () => ({ apply: () => {}, commit: () => {} }),
+    stepWorld: () => {},
+    recoverCarAfterStep: () => {},
+    recoverBallAfterStep: () => {},
+    extractMatchFlowInput: () => ({}),
     projectCar: ({ car }) => ({
       position: [...car.position],
       rotation: [...car.rotation],

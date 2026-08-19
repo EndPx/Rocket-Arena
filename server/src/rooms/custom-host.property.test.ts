@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   INPUT_PROTOCOL_VERSION,
+  MATCH_RULES,
   PHYSICS,
   type InputCommandV2,
   type RoomMutationErrorCode,
@@ -310,7 +311,16 @@ function makeBundle(
         },
       };
     },
-    fixedStep: () => { world.fixedSteps += 1; },
+    synchronizeCarInput: () => {},
+    recoverBallBeforeStep: () => { world.fixedSteps += 1; },
+    recoverCarBeforeStep: () => {},
+    prepareGrounding: () => {},
+    groundCar: () => ({ grounded: false, basis: null }),
+    prepareCarCommand: () => ({ apply: () => {}, commit: () => {} }),
+    stepWorld: () => {},
+    recoverCarAfterStep: () => {},
+    recoverBallAfterStep: () => {},
+    extractMatchFlowInput: () => ({}),
     projectCar: ({ car }) => ({
       position: [...car.position],
       rotation: [...car.rotation],
@@ -447,6 +457,7 @@ function authorityWithoutOrdinaryClock(state: CanonicalPublicState): unknown {
       ...state.projection,
       simulationTimeMs: 0,
       fixedStepsCompleted: 0,
+      phaseSecondsRemaining: 0,
       countdownStepsRemaining: 0,
     },
     matchFlow: {
@@ -752,6 +763,9 @@ async function assertAcceptedLeave(
     revision: before.projection.revision + 2,
     simulationTimeMs: after.projection.simulationTimeMs,
     fixedStepsCompleted: before.projection.fixedStepsCompleted + 1,
+    phaseSecondsRemaining: before.projection.phase === 'countdown'
+      ? expectedCountdown / MATCH_RULES.fixedStepsPerSecond
+      : before.projection.phaseSecondsRemaining,
     countdownStepsRemaining: expectedCountdown,
     occupancy: { total: expectedCars.length, blue, orange },
     hostSessionId: expectedHostSessionId,

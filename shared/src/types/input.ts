@@ -102,8 +102,9 @@ function normalizeEdgeSequence(value: unknown, previous: number): number {
 }
 
 /**
- * Recursively detect forged authoritative state before any control component is
- * consumed. The recursion catches common wrappers such as `{ car: { position } }`.
+ * Audit helper that reports authoritative-looking keys in an arbitrary payload.
+ * The ingress normalizer does not call it: known-control extraction is the
+ * authority boundary, so reported extras are ignored rather than trusted.
  */
 export function findAuthoritativeInputField(value: unknown): string | null {
   const visited = new WeakSet<object>();
@@ -124,13 +125,16 @@ export function findAuthoritativeInputField(value: unknown): string | null {
   return visit(value);
 }
 
-/** Strict structural predicate for an already-normalized V2 command. */
+/**
+ * Structural predicate for the known normalized V2 control fields. Unknown keys
+ * are intentionally ignored: input is an allow-list boundary, never a state
+ * deserializer, so extra client claims cannot suppress otherwise-valid intent.
+ */
 export function isInputCommandV2(
   value: unknown,
   previousEdges: InputEdgeSequences = { jumpSequence: 0, cameraToggleSequence: 0 },
 ): value is InputCommandV2 {
   if (!isRecord(value) || value.protocolVersion !== INPUT_PROTOCOL_VERSION) return false;
-  if (findAuthoritativeInputField(value) !== null) return false;
 
   return isNormalizedAxis(value.throttle)
     && isNormalizedAxis(value.steer)
@@ -156,9 +160,10 @@ export function assertInputCommandV2(
 }
 
 /**
- * Normalize independent controls while preserving monotonic edge floors.
- * Malformed axes become neutral without erasing other valid components.
- * Authoritative-looking fields are rejected rather than copied or trusted.
+ * Extract and normalize only known controls while preserving monotonic edge
+ * floors. Malformed axes become neutral independently. Every unknown key,
+ * including authoritative-looking or nested data, is discarded without ever
+ * becoming authority and without suppressing valid controls.
  */
 export function normalizeInputCommandV2(
   value: unknown,
@@ -169,13 +174,6 @@ export function normalizeInputCommandV2(
   }
   if (value.protocolVersion !== INPUT_PROTOCOL_VERSION) {
     throw new InputContractError(`Unsupported input protocol version: ${String(value.protocolVersion)}.`);
-  }
-
-  const authoritativeField = findAuthoritativeInputField(value);
-  if (authoritativeField !== null) {
-    throw new InputContractError(
-      `Input command cannot contain authoritative field "${authoritativeField}".`,
-    );
   }
 
   return Object.freeze({

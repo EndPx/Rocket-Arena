@@ -41,6 +41,8 @@ interface FakeWorld {
   readonly operations: string[];
   readonly stepDurations: number[];
   ball: FakeBall | null;
+  projectCarCount: number;
+  projectBallCount: number;
   disposeCount: number;
   throwOnRemove: boolean;
   kickoffApplyFailureAfter: number | null;
@@ -55,6 +57,8 @@ function makeWorld(): FakeWorld {
     operations: [],
     stepDurations: [],
     ball: null,
+    projectCarCount: 0,
+    projectBallCount: 0,
     disposeCount: 0,
     throwOnRemove: false,
     kickoffApplyFailureAfter: null,
@@ -165,27 +169,43 @@ function makeBundle(
         },
       };
     },
-    fixedStep: ({ fixedStepSeconds, state }) => {
+    synchronizeCarInput: () => {},
+    recoverBallBeforeStep: ({ fixedStepSeconds }) => {
       world.stepDurations.push(fixedStepSeconds);
-      for (const [sessionId, car] of state.cars) {
-        const input = state.inputs.get(sessionId) ?? createNeutralInputCommandV2();
-        car.position[0] += input.throttle * fixedStepSeconds;
-        car.linearVelocity[0] = input.throttle;
-      }
     },
-    projectCar: ({ car }) => ({
-      position: [...car.position],
-      rotation: [...car.rotation],
-      linearVelocity: [...car.linearVelocity],
-      angularVelocity: [...car.angularVelocity],
-      boost: car.boost,
+    recoverCarBeforeStep: () => {},
+    prepareGrounding: () => {},
+    groundCar: () => ({ grounded: false, basis: null }),
+    prepareCarCommand: ({ car, input }) => ({
+      apply: () => {
+        car.position[0] += input.throttle * PHYSICS.TIMESTEP;
+        car.linearVelocity[0] = input.throttle;
+      },
+      commit: () => {},
     }),
-    projectBall: ({ ball: authoritativeBall }) => ({
-      position: [...authoritativeBall.position],
-      rotation: [...authoritativeBall.rotation],
-      linearVelocity: [...authoritativeBall.linearVelocity],
-      angularVelocity: [...authoritativeBall.angularVelocity],
-    }),
+    stepWorld: () => {},
+    recoverCarAfterStep: () => {},
+    recoverBallAfterStep: () => {},
+    extractMatchFlowInput: () => ({}),
+    projectCar: ({ car }) => {
+      world.projectCarCount += 1;
+      return {
+        position: [...car.position],
+        rotation: [...car.rotation],
+        linearVelocity: [...car.linearVelocity],
+        angularVelocity: [...car.angularVelocity],
+        boost: car.boost,
+      };
+    },
+    projectBall: ({ ball: authoritativeBall }) => {
+      world.projectBallCount += 1;
+      return {
+        position: [...authoritativeBall.position],
+        rotation: [...authoritativeBall.rotation],
+        linearVelocity: [...authoritativeBall.linearVelocity],
+        angularVelocity: [...authoritativeBall.angularVelocity],
+      };
+    },
     dispose: () => {
       world.disposeCount += 1;
       world.operations.push('dispose-world');
@@ -397,6 +417,41 @@ test('readiness barrier retains ordered joins until a ready world reaches a fixe
   assert.equal(world.disposeCount, 1);
 });
 
+test('validated step projection is retained and publication reads never re-project bodies', async () => {
+  const world = makeWorld();
+  const core = makeCore(world);
+  await core.initialize();
+
+  const initialized = core.projectAuthoritativeState();
+  assert.ok(initialized);
+  assert.equal(world.projectCarCount, 0);
+  assert.equal(world.projectBallCount, 1);
+  assert.strictEqual(core.projectAuthoritativeState(), initialized);
+  assert.equal(world.projectBallCount, 1);
+
+  const joined = core.queueMutation({ kind: 'join', sessionId: 'cached', name: 'Cached' });
+  const frame = core.advanceSimulation(1000 / 60);
+  assert.equal((await joined).ok, true);
+  assert.equal(frame.executedFixedSteps, 1);
+  const committed = core.projectAuthoritativeState();
+  assert.ok(committed);
+  assert.equal(committed.fixedStepsCompleted, 1);
+  assert.equal(world.projectCarCount, 1);
+  assert.equal(world.projectBallCount, 2);
+
+  const zeroStep = core.advanceSimulation(0);
+  assert.equal(zeroStep.executedFixedSteps, 0);
+  assert.strictEqual(core.projectAuthoritativeState(), committed);
+  assert.equal(world.projectCarCount, 1);
+  assert.equal(world.projectBallCount, 2);
+
+  assert.ok(core.buildSnapshotV2(committed, 1234));
+  assert.strictEqual(core.projectAuthoritativeState(), committed);
+  assert.equal(world.projectCarCount, 1);
+  assert.equal(world.projectBallCount, 2);
+  core.dispose();
+});
+
 // Validates: Requirements 1.4-1.7, 2.8, 2.10
 
 test('invalid world initialization rejects queued mutations, becomes fatal, and disposes the detached candidate once', async () => {
@@ -546,7 +601,7 @@ test('queued mutations commit in receive order against each preceding committed 
 
 // Validates: Requirements 1.1-1.3
 
-test('client input can change only normalized controls for subsequent fixed steps', async () => {
+test('client input allow-list discards forged authority without bypassing the phase gate', async () => {
   const world = makeWorld();
   const core = makeCore(world);
   await initializeAndJoin(core);
@@ -561,10 +616,13 @@ test('client input can change only normalized controls for subsequent fixed step
     team: 'orange',
     phase: 'ended',
   };
-  const rejected = core.submitInput('host', forged);
-  assert.equal(rejected.ok, false);
-  if (!rejected.ok) assert.equal(rejected.code, 'invalid-input');
-  assert.deepEqual(core.projectAuthoritativeState(), before);
+  const acceptedForgedControls = core.submitInput('host', forged);
+  assert.deepEqual(acceptedForgedControls, { ok: true });
+  assert.strictEqual(
+    core.projectAuthoritativeState(),
+    before,
+    'input submission never replaces the committed authoritative artifact',
+  );
 
   const accepted = core.submitInput('host', input({ throttle: 1, jumpSequence: 1 }));
   assert.deepEqual(accepted, { ok: true });
@@ -577,8 +635,9 @@ test('client input can change only normalized controls for subsequent fixed step
   core.advanceSimulation(1000 / 60);
   const after = core.projectAuthoritativeState();
   assert.ok(after);
-  assert.ok(Math.abs((after.cars[0]?.position[0] ?? 0) - PHYSICS.TIMESTEP) < 1e-12);
-  assert.equal(after.cars[0]?.linearVelocity[0], 1);
+  assert.equal(after.cars[0]?.position[0], 0);
+  assert.equal(after.cars[0]?.linearVelocity[0], 0);
+  assert.equal(after.phase, 'waiting');
   assert.notEqual(after.cars[0]?.position[0], 999);
   assert.equal(after.blueScore, 0);
   assert.equal(after.orangeScore, 0);
