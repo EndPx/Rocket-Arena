@@ -2,12 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   INPUT_PROTOCOL_VERSION,
+  KICKOFF_SLOTS,
   PHYSICS,
   ROOM_POLICIES,
   createVersionedTuningRegistry,
   type InputCommandV2,
   type RoomPolicy,
 } from '@rocket-arena/shared';
+import type { KickoffAssignment } from '../systems/kickoff-slots.js';
 import {
   AuthoritativeRoomCore,
   AuthoritativeRoomCreationError,
@@ -38,20 +40,24 @@ interface FakeWorld {
   readonly cars: Map<string, FakeCar>;
   readonly operations: string[];
   readonly stepDurations: number[];
+  ball: FakeBall | null;
   disposeCount: number;
   throwOnRemove: boolean;
+  kickoffApplyFailureAfter: number | null;
 }
 
-type TestCore = AuthoritativeRoomCore<FakeWorld, FakeCar, FakeBall, string>;
-type TestOptions = AuthoritativeRoomCoreOptions<FakeWorld, FakeCar, FakeBall, string>;
+type TestCore = AuthoritativeRoomCore<FakeWorld, FakeCar, FakeBall>;
+type TestOptions = AuthoritativeRoomCoreOptions<FakeWorld, FakeCar, FakeBall>;
 
 function makeWorld(): FakeWorld {
   return {
     cars: new Map(),
     operations: [],
     stepDurations: [],
+    ball: null,
     disposeCount: 0,
     throwOnRemove: false,
+    kickoffApplyFailureAfter: null,
   };
 }
 
@@ -66,8 +72,9 @@ function makeBall(): FakeBall {
 
 function makeBundle(
   world: FakeWorld,
-): AuthoritativeRoomWorldBundle<FakeWorld, FakeCar, FakeBall, string> {
+): AuthoritativeRoomWorldBundle<FakeWorld, FakeCar, FakeBall> {
   const ball = makeBall();
+  world.ball = ball;
   return {
     world,
     ball,
@@ -99,6 +106,64 @@ function makeBundle(
           world.cars.delete(car.id);
         },
       }),
+    },
+    prepareKickoffPlacement: ({ roster, cars, assignmentSet }) => {
+      if (roster.length !== cars.size || cars.size !== assignmentSet.assignments.size) {
+        throw new Error('kickoff placement requires exact roster/body/assignment coverage');
+      }
+      const carSnapshots = new Map([...cars].map(([sessionId, car]) => [sessionId, {
+        position: [...car.position] as [number, number, number],
+        rotation: [...car.rotation] as [number, number, number, number],
+        linearVelocity: [...car.linearVelocity] as [number, number, number],
+        angularVelocity: [...car.angularVelocity] as [number, number, number],
+      }]));
+      const ballSnapshot = {
+        position: [...ball.position] as [number, number, number],
+        linearVelocity: [...ball.linearVelocity] as [number, number, number],
+        angularVelocity: [...ball.angularVelocity] as [number, number, number],
+      };
+
+      for (const entry of roster) {
+        const assignment = assignmentSet.assignments.get(entry.sessionId);
+        if (assignment === undefined || cars.get(entry.sessionId) === undefined) {
+          throw new Error(`incomplete kickoff placement for ${entry.sessionId}`);
+        }
+      }
+
+      return {
+        apply: () => {
+          ball.position.splice(0, 3, 0, 1, 0);
+          ball.linearVelocity.splice(0, 3, 0, 0, 0);
+          ball.angularVelocity.splice(0, 3, 0, 0, 0);
+          let placements = 0;
+          for (const entry of roster) {
+            const car = cars.get(entry.sessionId)!;
+            const assignment = assignmentSet.assignments.get(entry.sessionId)!;
+            car.position.splice(0, 3, ...assignment.position);
+            car.rotation.splice(0, 4, ...assignment.rotation);
+            car.linearVelocity.splice(0, 3, 0, 0, 0);
+            car.angularVelocity.splice(0, 3, 0, 0, 0);
+            placements += 1;
+            if (world.kickoffApplyFailureAfter === placements) {
+              throw new Error(`injected kickoff failure after ${placements} placement(s)`);
+            }
+          }
+          world.operations.push(`kickoff:${assignmentSet.epoch}`);
+        },
+        rollback: () => {
+          ball.position.splice(0, 3, ...ballSnapshot.position);
+          ball.linearVelocity.splice(0, 3, ...ballSnapshot.linearVelocity);
+          ball.angularVelocity.splice(0, 3, ...ballSnapshot.angularVelocity);
+          for (const [sessionId, snapshot] of carSnapshots) {
+            const car = cars.get(sessionId)!;
+            car.position.splice(0, 3, ...snapshot.position);
+            car.rotation.splice(0, 4, ...snapshot.rotation);
+            car.linearVelocity.splice(0, 3, ...snapshot.linearVelocity);
+            car.angularVelocity.splice(0, 3, ...snapshot.angularVelocity);
+          }
+          world.operations.push(`rollback-kickoff:${assignmentSet.epoch}`);
+        },
+      };
     },
     fixedStep: ({ fixedStepSeconds, state }) => {
       world.stepDurations.push(fixedStepSeconds);
@@ -187,6 +252,25 @@ async function initializeAndJoin(
   assert.equal(result.ok, true, result.ok ? undefined : result.message);
 }
 
+async function joinMany(core: TestCore, count: number, prefix: string): Promise<void> {
+  const joins = Array.from({ length: count }, (_, index) => core.queueMutation({
+    kind: 'join',
+    sessionId: `${prefix}-${index}`,
+    name: `${prefix} ${index}`,
+  }));
+  core.advanceSimulation(1000 / 60);
+  const results = await Promise.all(joins);
+  for (const result of results) {
+    assert.equal(result.ok, true, result.ok ? undefined : result.message);
+  }
+}
+
+function bodySnapshot(core: TestCore): unknown {
+  const projection = core.projectAuthoritativeState();
+  assert.ok(projection);
+  return structuredClone({ cars: projection.cars, ball: projection.ball });
+}
+
 // Validates: Requirements 2.8-2.10
 
 test('room creation rejects policy/capacity mismatch before initialization or logging', () => {
@@ -250,7 +334,7 @@ test('room creation rejects policy/capacity mismatch before initialization or lo
 
 test('readiness barrier retains ordered joins until a ready world reaches a fixed step', async () => {
   const world = makeWorld();
-  const ready = deferred<AuthoritativeRoomWorldBundle<FakeWorld, FakeCar, FakeBall, string>>();
+  const ready = deferred<AuthoritativeRoomWorldBundle<FakeWorld, FakeCar, FakeBall>>();
   const events: string[] = [];
   const registry = createVersionedTuningRegistry({ registryId: 'test-registry' });
   const core = new AuthoritativeRoomCore({
@@ -500,4 +584,157 @@ test('callback deltas reach the world only as exact bounded fixed steps', async 
   assert.equal(world.stepDurations.length, PHYSICS.MAX_FIXED_SUBSTEPS);
   assert.ok(world.stepDurations.every((duration) => duration === PHYSICS.TIMESTEP));
   core.dispose();
+});
+
+// Validates: Requirements 5.5-5.9
+
+test('atomic kickoff placement gives three Quick and four Custom teammates distinct canonical transforms', async () => {
+  for (const mode of ['quick', 'custom'] as const) {
+    const policy = ROOM_POLICIES[mode];
+    const world = makeWorld();
+    const core = makeCore(world, {
+      roomId: `${mode}-kickoff-room`,
+      mode,
+      policy,
+    });
+
+    try {
+      await core.initialize();
+      await joinMany(core, policy.totalCapacity, mode);
+      for (const [index, car] of [...world.cars.values()].entries()) {
+        car.linearVelocity.splice(0, 3, index + 1, index + 2, index + 3);
+        car.angularVelocity.splice(0, 3, index + 4, index + 5, index + 6);
+      }
+
+      const placed = core.placeKickoff(1);
+      assert.equal(placed.ok, true, placed.ok ? undefined : placed.message);
+      if (!placed.ok) continue;
+
+      const projection = core.projectAuthoritativeState();
+      assert.ok(projection);
+      const blue = projection.cars.filter(({ team }) => team === 'blue');
+      assert.equal(blue.length, policy.teamCapacity);
+      assert.equal(
+        new Set(blue.map(({ position }) => JSON.stringify(position))).size,
+        policy.teamCapacity,
+      );
+      blue.forEach((car, index) => {
+        assert.deepEqual(car.position, KICKOFF_SLOTS.blue[index]?.position);
+        assert.deepEqual(car.rotation, KICKOFF_SLOTS.blue[index]?.rotation);
+      });
+      for (const car of projection.cars) {
+        assert.deepEqual(car.linearVelocity, [0, 0, 0]);
+        assert.deepEqual(car.angularVelocity, [0, 0, 0]);
+      }
+      assert.equal(placed.assignmentSet.assignments.size, policy.totalCapacity);
+      assert.equal(core.diagnostics.kickoffEpoch, 1);
+    } finally {
+      core.dispose();
+    }
+  }
+});
+
+// Validates: Requirements 5.10, 5.12
+
+test('unchanged goal-reset rosters reuse mappings while restoring transforms and zero motion', async () => {
+  const world = makeWorld();
+  const core = makeCore(world, { roomId: 'stable-reset-room' });
+
+  try {
+    await core.initialize();
+    await joinMany(core, ROOM_POLICIES.custom.totalCapacity, 'stable');
+    const initial = core.placeKickoff(7);
+    assert.equal(initial.ok, true, initial.ok ? undefined : initial.message);
+    if (!initial.ok) return;
+
+    for (const [index, car] of [...world.cars.values()].entries()) {
+      car.position.splice(0, 3, 100 + index, 10 + index, -100 - index);
+      car.rotation.splice(0, 4, 0.5, 0.5, 0.5, 0.5);
+      car.linearVelocity.splice(0, 3, 8, 9, 10);
+      car.angularVelocity.splice(0, 3, 2, 3, 4);
+    }
+    assert.ok(world.ball);
+    world.ball.position.splice(0, 3, 12, 13, 14);
+    world.ball.linearVelocity.splice(0, 3, 5, 6, 7);
+    world.ball.angularVelocity.splice(0, 3, 1, 2, 3);
+
+    const reset = core.placeKickoff(8);
+    assert.equal(reset.ok, true, reset.ok ? undefined : reset.message);
+    if (!reset.ok) return;
+    assert.equal(reset.reusedAssignments, true);
+    assert.equal(reset.assignmentSet.assignments, initial.assignmentSet.assignments);
+    assert.equal(reset.assignmentSet.epoch, 8);
+
+    const projection = core.projectAuthoritativeState();
+    assert.ok(projection);
+    for (const car of projection.cars) {
+      const kickoffAssignment: Readonly<KickoffAssignment> | undefined =
+        initial.assignmentSet.assignments.get(car.sessionId);
+      assert.ok(kickoffAssignment);
+      assert.deepEqual(car.position, kickoffAssignment.position);
+      assert.deepEqual(car.rotation, kickoffAssignment.rotation);
+      assert.deepEqual(car.linearVelocity, [0, 0, 0]);
+      assert.deepEqual(car.angularVelocity, [0, 0, 0]);
+    }
+    assert.deepEqual(projection.ball.position, [0, 1, 0]);
+    assert.deepEqual(projection.ball.linearVelocity, [0, 0, 0]);
+    assert.deepEqual(projection.ball.angularVelocity, [0, 0, 0]);
+    assert.equal(core.diagnostics.kickoffEpoch, 8);
+  } finally {
+    core.dispose();
+  }
+});
+
+// Validates: Requirements 5.11-5.12
+
+test('failed changed-roster placement rolls every body back and retains the last complete assignment', async () => {
+  const world = makeWorld();
+  const core = makeCore(world, { roomId: 'failed-replacement-room' });
+
+  try {
+    await core.initialize();
+    await joinMany(core, 4, 'replacement');
+    const initial = core.placeKickoff(3);
+    assert.equal(initial.ok, true, initial.ok ? undefined : initial.message);
+    if (!initial.ok) return;
+
+    const leaving = core.queueMutation({ kind: 'leave', sessionId: 'replacement-3' });
+    core.advanceSimulation(1000 / 60);
+    assert.equal((await leaving).ok, true);
+    const joining = core.queueMutation({
+      kind: 'join',
+      sessionId: 'replacement-new',
+      name: 'Replacement New',
+    });
+    core.advanceSimulation(1000 / 60);
+    assert.equal((await joining).ok, true);
+
+    for (const [index, car] of [...world.cars.values()].entries()) {
+      car.position.splice(0, 3, 20 + index, 30 + index, 40 + index);
+      car.rotation.splice(0, 4, 0, 0, 0, 1);
+      car.linearVelocity.splice(0, 3, index + 1, index + 2, index + 3);
+      car.angularVelocity.splice(0, 3, index + 4, index + 5, index + 6);
+    }
+    assert.ok(world.ball);
+    world.ball.position.splice(0, 3, 9, 8, 7);
+    world.ball.linearVelocity.splice(0, 3, 6, 5, 4);
+    world.ball.angularVelocity.splice(0, 3, 3, 2, 1);
+    const beforeFailure = bodySnapshot(core);
+
+    world.kickoffApplyFailureAfter = 1;
+    const failed = core.placeKickoff(4);
+    assert.equal(failed.ok, false);
+    if (failed.ok) return;
+    assert.equal(failed.code, 'placement-failed');
+    assert.equal(failed.fatal, false);
+    assert.equal(failed.retained, initial.assignmentSet);
+    assert.equal(core.kickoffAssignmentSet, initial.assignmentSet);
+    assert.equal(core.diagnostics.kickoffEpoch, 3);
+    assert.equal(core.diagnostics.kickoffAssignmentCount, 4);
+    assert.deepEqual(bodySnapshot(core), beforeFailure);
+    assert.equal(world.operations.includes('kickoff:4'), false);
+    assert.equal(world.operations.includes('rollback-kickoff:4'), true);
+  } finally {
+    core.dispose();
+  }
 });

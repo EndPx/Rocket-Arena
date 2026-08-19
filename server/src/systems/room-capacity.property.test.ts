@@ -107,7 +107,7 @@ interface TestWorld {
   disposeCount: number;
 }
 
-type TestCore = AuthoritativeRoomCore<TestWorld, TestCar, TestBall, string>;
+type TestCore = AuthoritativeRoomCore<TestWorld, TestCar, TestBall>;
 
 interface CapacityCaseCoverage {
   readonly mode: RoomMode;
@@ -210,7 +210,7 @@ function makeBall(): TestBall {
 
 function makeBundle(
   world: TestWorld,
-): AuthoritativeRoomWorldBundle<TestWorld, TestCar, TestBall, string> {
+): AuthoritativeRoomWorldBundle<TestWorld, TestCar, TestBall> {
   const ball = makeBall();
   return {
     world,
@@ -379,8 +379,8 @@ async function exerciseCapacityCase(
   };
 
   const core: TestCore = generated.mode === 'quick'
-    ? createQuickMatchCore<TestWorld, TestCar, TestBall, string>(requestedOptions)
-    : createCustomRoomCore<TestWorld, TestCar, TestBall, string>(requestedOptions);
+    ? createQuickMatchCore<TestWorld, TestCar, TestBall>(requestedOptions)
+    : createCustomRoomCore<TestWorld, TestCar, TestBall>(requestedOptions);
 
   // Mutating caller-owned capacity assertions after construction cannot alter
   // the mode policy already selected and pinned by either adapter.

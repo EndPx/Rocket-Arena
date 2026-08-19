@@ -302,6 +302,43 @@ export function validateArenaGeometrySpec(candidate: unknown): asserts candidate
     fail('invalid-structure', 'Unsupported arena geometry version or unit system.');
   }
 
+  const assertExactStringSet = (
+    value: unknown,
+    expected: readonly string[],
+    field: string,
+    invalidCode: ArenaSpecValidationCode = 'invalid-surface-reference',
+    incompleteCode: ArenaSpecValidationCode = invalidCode,
+  ): readonly string[] => {
+    if (!Array.isArray(value)
+      || value.some((entry) => typeof entry !== 'string' || entry.trim().length === 0)) {
+      fail(invalidCode, `${field} must contain non-empty string IDs.`);
+    }
+    const actualIds = value as string[];
+    const actual = new Set(actualIds);
+    const expectedIds = new Set(expected);
+    if (actual.size !== actualIds.length || actualIds.some((id) => !expectedIds.has(id))) {
+      fail(invalidCode, `${field} must contain only unique known v${ARENA_GEOMETRY_VERSION} IDs.`);
+    }
+    if (actual.size !== expectedIds.size || expected.some((id) => !actual.has(id))) {
+      fail(incompleteCode, `${field} must contain the complete v${ARENA_GEOMETRY_VERSION} ID set.`);
+    }
+    return actualIds;
+  };
+
+  if (!isRecord(candidate.axes)
+    || candidate.axes.width !== 'x'
+    || candidate.axes.up !== 'y'
+    || candidate.axes.length !== 'z') {
+    fail('invalid-structure', 'Arena axes must map width/up/length to x/y/z.');
+  }
+  if (!Array.isArray(candidate.center)
+    || candidate.center.length !== 3
+    || candidate.center[0] !== 0
+    || candidate.center[1] !== 0
+    || candidate.center[2] !== 0) {
+    fail('invalid-structure', 'Arena center must be the exact [0, 0, 0] origin.');
+  }
+  exactFinite(candidate.floorY, 0, 'floorY');
   exactFinite(candidate.width, ARENA_WIDTH_METERS, 'width');
   exactFinite(candidate.length, ARENA_LENGTH_METERS, 'length');
   exactFinite(candidate.halfWidth, ARENA_WIDTH_METERS / 2, 'halfWidth');
@@ -323,6 +360,17 @@ export function validateArenaGeometrySpec(candidate: unknown): asserts candidate
     || orange.id !== 'orange-goal' || orange.defendingTeam !== 'orange' || orange.zDirection !== 1) {
     fail('invalid-goal-mirror', 'Goal end identities, teams, and directions are invalid.');
   }
+
+  const validateOpening = (opening: unknown, field: string): void => {
+    if (!isRecord(opening)) fail('invalid-goal-mirror', `${field} is required.`);
+    exactFinite(opening.centerX, 0, `${field}.centerX`);
+    exactFinite(opening.bottomY, 0, `${field}.bottomY`);
+    exactFinite(opening.width, GOAL_OPENING_WIDTH_METERS, `${field}.width`);
+    exactFinite(opening.height, GOAL_OPENING_HEIGHT_METERS, `${field}.height`);
+  };
+  validateOpening(blue.opening, 'blueGoal.opening');
+  validateOpening(orange.opening, 'orangeGoal.opening');
+
   const blueGoalLineZ = exactFinite(blue.goalLineZ, -ARENA_HALF_LENGTH_METERS, 'blueGoal.goalLineZ');
   const orangeGoalLineZ = exactFinite(orange.goalLineZ, ARENA_HALF_LENGTH_METERS, 'orangeGoal.goalLineZ');
   const blueBackWallZ = exactFinite(
@@ -339,34 +387,53 @@ export function validateArenaGeometrySpec(candidate: unknown): asserts candidate
     fail('invalid-goal-mirror', 'Goal planes and backs must mirror through arena center.');
   }
 
-  if (!Array.isArray(candidate.cornerCuts) || candidate.cornerCuts.length !== 4) {
+  if (!Array.isArray(candidate.cornerCuts) || candidate.cornerCuts.length !== CORNER_CUTS.length) {
     fail('invalid-corner-table', 'Exactly four corner cuts are required.');
   }
+  const expectedCorners = new Map(CORNER_CUTS.map((corner) => [corner.id, corner] as const));
+  const seenCornerIds = new Set<string>();
   const cornerSigns = new Set<string>();
   for (const corner of candidate.cornerCuts) {
-    if (!isRecord(corner) || (corner.xSign !== -1 && corner.xSign !== 1)
-      || (corner.zSign !== -1 && corner.zSign !== 1)) {
-      fail('invalid-corner-table', 'Corner signs must cover finite ±X/±Z combinations.');
+    if (!isRecord(corner) || typeof corner.id !== 'string') {
+      fail('invalid-corner-table', 'Every corner requires a canonical semantic ID.');
+    }
+    const expected = expectedCorners.get(corner.id);
+    if (!expected || seenCornerIds.has(corner.id)
+      || corner.xSign !== expected.xSign
+      || corner.zSign !== expected.zSign
+      || corner.surfaceId !== expected.surfaceId) {
+      fail('invalid-corner-table', `Corner ${corner.id} does not match the canonical v1 table.`);
     }
     exactFinite(corner.horizontalLength, ARENA_CORNER_CUT_LENGTH_METERS, 'corner.horizontalLength');
     exactFinite(corner.angleDegrees, ARENA_CORNER_CUT_ANGLE_DEGREES, 'corner.angleDegrees');
+    seenCornerIds.add(corner.id);
     cornerSigns.add(`${corner.xSign},${corner.zSign}`);
   }
-  if (cornerSigns.size !== 4) fail('invalid-corner-table', 'Corner sign combinations must be unique.');
-
-  if (!Array.isArray(candidate.surfaces) || candidate.surfaces.length === 0) {
-    fail('invalid-structure', 'Semantic surface descriptors are required.');
+  if (cornerSigns.size !== CORNER_CUTS.length) {
+    fail('invalid-corner-table', 'Corner sign combinations must be unique.');
   }
+
+  if (!Array.isArray(candidate.surfaces) || candidate.surfaces.length !== SURFACES.length) {
+    fail('invalid-structure', 'The complete v1 semantic surface table is required.');
+  }
+  const expectedSurfaces = new Map(SURFACES.map((descriptor) => [descriptor.id, descriptor] as const));
   const surfacesById = new Map<string, Record<string, unknown>>();
   for (const descriptor of candidate.surfaces) {
-    if (!isRecord(descriptor) || typeof descriptor.id !== 'string' || descriptor.id.length === 0) {
+    if (!isRecord(descriptor) || typeof descriptor.id !== 'string' || descriptor.id.trim().length === 0) {
       fail('invalid-structure', 'Every surface requires a non-empty semantic ID.');
     }
     if (surfacesById.has(descriptor.id)) {
       fail('duplicate-surface-id', `Surface ID ${descriptor.id} appears more than once.`);
     }
-    if (descriptor.capability !== 'core' && descriptor.capability !== 'advanced') {
-      fail('invalid-structure', `Surface ${descriptor.id} has an invalid capability.`);
+    const expected = expectedSurfaces.get(descriptor.id);
+    if (!expected) {
+      fail('invalid-surface-reference', `Surface ${descriptor.id} is not part of the v1 arena.`);
+    }
+    if (descriptor.kind !== expected.kind
+      || descriptor.capability !== expected.capability
+      || descriptor.closesExterior !== expected.closesExterior
+      || descriptor.mirroredSurfaceId !== expected.mirroredSurfaceId) {
+      fail('invalid-structure', `Surface ${descriptor.id} does not match its canonical semantic descriptor.`);
     }
     surfacesById.set(descriptor.id, descriptor);
   }
@@ -380,36 +447,39 @@ export function validateArenaGeometrySpec(candidate: unknown): asserts candidate
     }
   }
 
+  assertExactStringSet(blue.surfaceIds, BLUE_GOAL_SURFACES, 'blueGoal.surfaceIds');
+  assertExactStringSet(orange.surfaceIds, ORANGE_GOAL_SURFACES, 'orangeGoal.surfaceIds');
+  for (const corner of CORNER_CUTS) {
+    if (surfacesById.get(corner.surfaceId)?.kind !== 'horizontal-corner') {
+      fail('invalid-surface-reference', `Corner ${corner.id} must reference a horizontal-corner surface.`);
+    }
+  }
+
   if (!isRecord(candidate.topology)
     || candidate.topology.closedCollisionVolume !== true
     || candidate.topology.solidGoalInteriors !== true
     || candidate.topology.goalOpeningsTerminateInsideClosedInteriors !== true
-    || candidate.topology.fieldBoundaryLoopClosed !== true
-    || !Array.isArray(candidate.topology.boundarySurfaceIds)) {
+    || candidate.topology.fieldBoundaryLoopClosed !== true) {
     fail('open-topology', 'Topology must declare a closed field and solid goal interiors.');
   }
-  const boundaryIds = new Set<string>();
-  for (const id of candidate.topology.boundarySurfaceIds) {
-    if (typeof id !== 'string' || !surfacesById.has(id) || boundaryIds.has(id)) {
-      fail('invalid-surface-reference', 'Boundary IDs must be unique known semantic surfaces.');
-    }
-    boundaryIds.add(id);
-  }
-  for (const [id, descriptor] of surfacesById) {
-    if (descriptor.closesExterior === true && !boundaryIds.has(id)) {
-      fail('open-topology', `Exterior surface ${id} is absent from the closed topology.`);
-    }
-  }
+  assertExactStringSet(
+    candidate.topology.boundarySurfaceIds,
+    SURFACES.map(({ id }) => id),
+    'topology.boundarySurfaceIds',
+    'invalid-surface-reference',
+    'open-topology',
+  );
 
   if (!isRecord(candidate.registryReferences)) {
     fail('invalid-registry-reference', 'Registry references are required.');
   }
   for (const group of ['support', 'boostPads', 'camera'] as const) {
-    const ids = candidate.registryReferences[group];
-    if (!Array.isArray(ids) || ids.length === 0
-      || ids.some((id) => typeof id !== 'string' || id.length === 0)) {
-      fail('invalid-registry-reference', `${group} must contain registry IDs only.`);
-    }
+    assertExactStringSet(
+      candidate.registryReferences[group],
+      REGISTRY_REFERENCES[group],
+      `registryReferences.${group}`,
+      'invalid-registry-reference',
+    );
   }
 }
 

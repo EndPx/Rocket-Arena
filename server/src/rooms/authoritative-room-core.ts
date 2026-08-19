@@ -1,6 +1,5 @@
 import {
   INPUT_PROTOCOL_VERSION,
-  MATCH_RULES,
   NETCODE,
   PHYSICS,
   createVersionedTuningRegistry,
@@ -17,6 +16,21 @@ import {
   type Vector3Tuple,
   type VersionedTuningRegistry,
 } from '@rocket-arena/shared';
+import {
+  DeterministicKickoffAssignmentService,
+  type KickoffAssignment,
+  type KickoffAssignmentErrorCode,
+  type KickoffAssignmentSet,
+} from '../systems/kickoff-slots.js';
+import {
+  beginInitialCountdown,
+  cancelInitialCountdown,
+  createMatchFlowConfig,
+  createWaitingMatchFlowState,
+  reduceMatchFlowStep,
+  type MatchFlowConfig,
+  type MatchFlowState,
+} from '../systems/match-flow.js';
 import {
   RoomMutationCommitError,
   canAcceptRoomInput,
@@ -74,12 +88,7 @@ export interface AuthoritativeBallBodyProjection {
   readonly angularVelocity: Vector3Tuple;
 }
 
-export interface AuthoritativeFixedStepContext<
-  TWorld,
-  TCar,
-  TBall,
-  TKickoffAssignment,
-> {
+export interface AuthoritativeFixedStepContext<TWorld, TCar, TBall> {
   readonly world: TWorld;
   readonly ball: TBall;
   readonly fixedStepSeconds: number;
@@ -88,7 +97,7 @@ export interface AuthoritativeFixedStepContext<
   readonly policy: RoomPolicy;
   readonly tuning: RoomPinnedTuningSnapshot;
   readonly state: Readonly<
-    RoomMutationState<TCar, InputCommandV2, TBall, TKickoffAssignment>
+    RoomMutationState<TCar, InputCommandV2, TBall, Readonly<KickoffAssignment>>
   >;
 }
 
@@ -104,21 +113,41 @@ export interface AuthoritativeBallProjectionContext<TWorld, TBall> {
 }
 
 /**
+ * A world-specific prepared placement. `apply` may mutate bodies only after the
+ * core has validated a complete assignment set. `rollback` must be safe before
+ * or after `apply` and restore every touched body when placement cannot commit.
+ */
+export interface PreparedAuthoritativeKickoffPlacement {
+  apply(): void;
+  rollback(): void;
+}
+
+export interface AuthoritativeKickoffPlacementContext<TWorld, TCar, TBall> {
+  readonly world: TWorld;
+  readonly ball: TBall;
+  readonly roster: readonly Readonly<RosterEntry>[];
+  readonly cars: ReadonlyMap<string, TCar>;
+  readonly assignmentSet: Readonly<KickoffAssignmentSet>;
+}
+
+/**
  * One fully prepared world. Its mutation preparers close over the authoritative
  * world so no logical identity can be committed without a corresponding body.
  */
-export interface AuthoritativeRoomWorldBundle<
-  TWorld,
-  TCar,
-  TBall,
-  TKickoffAssignment = unknown,
-> {
+export interface AuthoritativeRoomWorldBundle<TWorld, TCar, TBall> {
   readonly world: TWorld;
   readonly ball: TBall;
   readonly mutationResources: RoomMutationResourcePreparer<TCar, InputCommandV2>;
   readonly fixedStep: (
-    context: AuthoritativeFixedStepContext<TWorld, TCar, TBall, TKickoffAssignment>,
+    context: AuthoritativeFixedStepContext<TWorld, TCar, TBall>,
   ) => void;
+  /**
+   * Optional only for transitional harnesses that never place a kickoff. Real
+   * room adapters provide this transaction before MatchFlow can request one.
+   */
+  readonly prepareKickoffPlacement?: (
+    context: AuthoritativeKickoffPlacementContext<TWorld, TCar, TBall>,
+  ) => PreparedAuthoritativeKickoffPlacement;
   readonly projectCar: (
     context: AuthoritativeCarProjectionContext<TWorld, TCar>,
   ) => AuthoritativeCarBodyProjection;
@@ -133,12 +162,7 @@ export interface AuthoritativeRoomLogger {
   error(message: string, cause?: unknown): void;
 }
 
-export interface AuthoritativeRoomCoreOptions<
-  TWorld,
-  TCar,
-  TBall,
-  TKickoffAssignment = unknown,
-> {
+export interface AuthoritativeRoomCoreOptions<TWorld, TCar, TBall> {
   readonly roomId: string;
   /** Untrusted at the construction boundary; resolved to the shared mapping. */
   readonly mode: unknown;
@@ -152,8 +176,8 @@ export interface AuthoritativeRoomCoreOptions<
     readonly roomId: string;
     readonly policy: RoomPolicy;
     readonly tuning: RoomPinnedTuningSnapshot;
-  }) => Promise<AuthoritativeRoomWorldBundle<TWorld, TCar, TBall, TKickoffAssignment>>
-    | AuthoritativeRoomWorldBundle<TWorld, TCar, TBall, TKickoffAssignment>;
+  }) => Promise<AuthoritativeRoomWorldBundle<TWorld, TCar, TBall>>
+    | AuthoritativeRoomWorldBundle<TWorld, TCar, TBall>;
   readonly logger?: AuthoritativeRoomLogger;
   readonly onFatal?: (error: Error) => void;
   readonly onMutationResult?: (result: AuthoritativeRoomMutationResult) => void;
@@ -178,6 +202,29 @@ export interface AuthoritativeRoomMutationFailure {
 export type AuthoritativeRoomMutationResult =
   | AuthoritativeRoomMutationSuccess
   | AuthoritativeRoomMutationFailure;
+
+export type AuthoritativeKickoffPlacementFailureCode =
+  | KickoffAssignmentErrorCode
+  | 'physics-not-ready'
+  | 'placement-unavailable'
+  | 'placement-failed';
+
+export type AuthoritativeKickoffPlacementResult =
+  | {
+    readonly ok: true;
+    readonly epoch: number;
+    readonly revision: number;
+    readonly reusedAssignments: boolean;
+    readonly assignmentSet: Readonly<KickoffAssignmentSet>;
+  }
+  | {
+    readonly ok: false;
+    readonly code: AuthoritativeKickoffPlacementFailureCode;
+    readonly message: string;
+    readonly fatal: boolean;
+    readonly cause?: unknown;
+    readonly retained: Readonly<KickoffAssignmentSet> | null;
+  };
 
 export type AuthoritativeInputFailureCode =
   | 'invalid-input'
@@ -234,6 +281,7 @@ export interface AuthoritativeRoomDiagnostics {
   readonly inputSessionIds: readonly string[];
   readonly tombstonedSessionIds: readonly string[];
   readonly kickoffAssignmentCount: number;
+  readonly kickoffEpoch: number | null;
   readonly fixedStepsCompleted: number;
   readonly simulationTimeMs: number;
   readonly canPublishSnapshots: boolean;
@@ -427,12 +475,7 @@ function failureResult(
  * supply callback elapsed time; this class is the only owner that converts the
  * latter through FixedStepScheduler before invoking an authoritative step.
  */
-export class AuthoritativeRoomCore<
-  TWorld,
-  TCar,
-  TBall,
-  TKickoffAssignment = unknown,
-> {
+export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
   readonly roomId: string;
   readonly policy: RoomPolicy;
   readonly tuningSnapshot: RoomPinnedTuningSnapshot;
@@ -440,24 +483,22 @@ export class AuthoritativeRoomCore<
   private readonly initializeWorld: AuthoritativeRoomCoreOptions<
     TWorld,
     TCar,
-    TBall,
-    TKickoffAssignment
+    TBall
   >['initializeWorld'];
   private readonly logger: AuthoritativeRoomLogger;
   private readonly onFatal?: (error: Error) => void;
   private readonly onMutationResult?: (result: AuthoritativeRoomMutationResult) => void;
   private readonly scheduler: FixedStepScheduler;
+  private readonly kickoffAssignmentService: DeterministicKickoffAssignmentService;
+  private readonly matchFlowConfig: Readonly<MatchFlowConfig>;
 
   private lifecycleValue: AuthoritativeRoomLifecycle = 'created';
   private stateValue: Readonly<
-    RoomMutationState<TCar, InputCommandV2, TBall, TKickoffAssignment>
+    RoomMutationState<TCar, InputCommandV2, TBall, Readonly<KickoffAssignment>>
   > | null = null;
-  private worldBundle: AuthoritativeRoomWorldBundle<
-    TWorld,
-    TCar,
-    TBall,
-    TKickoffAssignment
-  > | null = null;
+  private matchFlowStateValue: Readonly<MatchFlowState> | null = null;
+  private initialCountdownStartedAtBoundary = false;
+  private worldBundle: AuthoritativeRoomWorldBundle<TWorld, TCar, TBall> | null = null;
   private initializationPromise: Promise<void> | null = null;
   private readonly mutationQueue: QueuedMutation[] = [];
   private nextMutationSequence = 1;
@@ -466,7 +507,7 @@ export class AuthoritativeRoomCore<
   private worldDisposalAttempted = false;
   private fatalErrorValue: Error | null = null;
 
-  constructor(options: AuthoritativeRoomCoreOptions<TWorld, TCar, TBall, TKickoffAssignment>) {
+  constructor(options: AuthoritativeRoomCoreOptions<TWorld, TCar, TBall>) {
     if (typeof options.roomId !== 'string' || options.roomId.trim().length === 0) {
       throw new TypeError('Authoritative room core requires a non-empty roomId.');
     }
@@ -482,6 +523,11 @@ export class AuthoritativeRoomCore<
     this.onMutationResult = options.onMutationResult;
     this.tuningSnapshot = (options.tuningRegistry ?? DEFAULT_TUNING_REGISTRY)
       .pinForRoom(this.roomId);
+    this.matchFlowConfig = createMatchFlowConfig(this.policy.mode, this.tuningSnapshot);
+    this.kickoffAssignmentService = new DeterministicKickoffAssignmentService({
+      policy: this.policy,
+      tuningRegistry: this.tuningSnapshot,
+    });
     this.scheduler = new FixedStepScheduler({
       fixedStepSeconds: PHYSICS.TIMESTEP,
       maxFrameDeltaSeconds: PHYSICS.MAX_FRAME_DELTA_SECONDS,
@@ -506,6 +552,11 @@ export class AuthoritativeRoomCore<
     return this.lifecycleValue === 'ready'
       && this.stateValue !== null
       && this.worldBundle !== null;
+  }
+
+  /** Immutable fixed-step phase state owned by the room core. */
+  get matchFlowState(): Readonly<MatchFlowState> | null {
+    return this.matchFlowStateValue;
   }
 
   /**
@@ -538,6 +589,170 @@ export class AuthoritativeRoomCore<
     return this.fatalErrorValue;
   }
 
+  /** Last fully committed assignment set; failed replacements never change it. */
+  get kickoffAssignmentSet(): Readonly<KickoffAssignmentSet> | null {
+    return this.kickoffAssignmentService.current;
+  }
+
+  /**
+   * Prepare a complete assignment and a reversible body transaction before any
+   * transform changes. MatchFlow calls this for initial and post-goal epochs.
+   */
+  placeKickoff(epoch: number): AuthoritativeKickoffPlacementResult {
+    const state = this.stateValue;
+    const bundle = this.worldBundle;
+    const failure = (
+      code: AuthoritativeKickoffPlacementFailureCode,
+      message: string,
+      fatal: boolean,
+      cause?: unknown,
+    ): AuthoritativeKickoffPlacementResult => Object.freeze({
+      ok: false,
+      code,
+      message,
+      fatal,
+      ...(cause === undefined ? {} : { cause }),
+      retained: this.kickoffAssignmentService.current,
+    });
+
+    if (this.lifecycleValue !== 'ready' || state === null || bundle === null) {
+      return failure(
+        'physics-not-ready',
+        'Kickoff placement requires a ready authoritative world.',
+        this.lifecycleValue === 'fatal',
+        this.fatalErrorValue ?? undefined,
+      );
+    }
+    if (bundle.prepareKickoffPlacement === undefined) {
+      return failure(
+        'placement-unavailable',
+        'The authoritative world does not provide a kickoff placement transaction.',
+        false,
+      );
+    }
+    const hasPendingRepresentedLeave = [...state.tombstones]
+      .some((sessionId) => state.roster.has(sessionId));
+    if (hasPendingRepresentedLeave) {
+      return failure(
+        'invalid-roster',
+        'Kickoff placement cannot begin while a represented leave is pending.',
+        false,
+      );
+    }
+
+    const roster = visibleRosterEntries(state);
+    const assignmentPreparation = this.kickoffAssignmentService.prepare(roster, epoch);
+    if (!assignmentPreparation.ok) {
+      return failure(
+        assignmentPreparation.code,
+        assignmentPreparation.message,
+        false,
+        assignmentPreparation.cause,
+      );
+    }
+
+    const assignmentTransaction = assignmentPreparation.prepared;
+    const cars = new Map<string, TCar>();
+    for (const entry of roster) {
+      const car = state.cars.get(entry.sessionId);
+      if (car === undefined) {
+        assignmentTransaction.abort();
+        return failure(
+          'incomplete-bijection',
+          `Roster identity ${entry.sessionId} has no authoritative car to place.`,
+          false,
+        );
+      }
+      cars.set(entry.sessionId, car);
+    }
+
+    let candidateState: Readonly<
+      RoomMutationState<TCar, InputCommandV2, TBall, Readonly<KickoffAssignment>>
+    >;
+    try {
+      candidateState = createRoomMutationState({
+        ...state,
+        revision: state.revision + 1,
+        roster: state.roster,
+        cars: state.cars,
+        inputs: state.inputs,
+        kickoffAssignments: assignmentTransaction.candidate.assignments,
+        tombstones: state.tombstones,
+      });
+    } catch (cause) {
+      assignmentTransaction.abort();
+      return failure(
+        'placement-failed',
+        'Kickoff candidate state could not be prepared.',
+        false,
+        cause,
+      );
+    }
+
+    let placement: PreparedAuthoritativeKickoffPlacement;
+    try {
+      placement = bundle.prepareKickoffPlacement({
+        world: bundle.world,
+        ball: bundle.ball,
+        roster,
+        cars,
+        assignmentSet: assignmentTransaction.candidate,
+      });
+      if (
+        typeof placement !== 'object'
+        || placement === null
+        || typeof placement.apply !== 'function'
+        || typeof placement.rollback !== 'function'
+      ) {
+        throw new TypeError('Kickoff placement preparation must return apply/rollback functions.');
+      }
+    } catch (cause) {
+      assignmentTransaction.abort();
+      return failure(
+        'placement-failed',
+        'Kickoff body placement could not be prepared.',
+        false,
+        cause,
+      );
+    }
+
+    try {
+      placement.apply();
+      const committed = assignmentTransaction.commit();
+      this.stateValue = candidateState;
+      return Object.freeze({
+        ok: true,
+        epoch: committed.epoch,
+        revision: candidateState.revision,
+        reusedAssignments: assignmentTransaction.reusedAssignments,
+        assignmentSet: committed,
+      });
+    } catch (cause) {
+      if (!assignmentTransaction.settled) assignmentTransaction.abort();
+      try {
+        placement.rollback();
+      } catch (rollbackCause) {
+        const fatalCause = new AggregateError(
+          [cause, rollbackCause],
+          'Kickoff placement and rollback both failed.',
+        );
+        this.failRoom(fatalCause, 'Atomic kickoff placement could not be restored.');
+        return failure(
+          'placement-failed',
+          'Kickoff placement rollback failed; the room is fatal.',
+          true,
+          fatalCause,
+        );
+      }
+      return failure(
+        'placement-failed',
+        'Kickoff placement failed and the prior complete assignment was retained.',
+        false,
+        cause,
+      );
+    }
+  }
+
   get diagnostics(): Readonly<AuthoritativeRoomDiagnostics> {
     const state = this.stateValue;
     const stableEntries = state === null
@@ -563,7 +778,10 @@ export class AuthoritativeRoomCore<
       bodySessionIds: sortedKeys(state?.cars.keys() ?? []),
       inputSessionIds: sortedKeys(state?.inputs.keys() ?? []),
       tombstonedSessionIds: sortedKeys(state?.tombstones.values() ?? []),
-      kickoffAssignmentCount: state?.kickoffAssignments.size ?? 0,
+      kickoffAssignmentCount: this.kickoffAssignmentService.current?.assignments.size
+        ?? state?.kickoffAssignments.size
+        ?? 0,
+      kickoffEpoch: this.kickoffAssignmentService.current?.epoch ?? null,
       fixedStepsCompleted: this.fixedStepsCompleted,
       simulationTimeMs: this.scheduler.simulationTimeMs,
       canPublishSnapshots: this.canPublishSnapshots,
@@ -585,12 +803,7 @@ export class AuthoritativeRoomCore<
 
     this.lifecycleValue = 'initializing';
     this.initializationPromise = (async () => {
-      let candidate: AuthoritativeRoomWorldBundle<
-        TWorld,
-        TCar,
-        TBall,
-        TKickoffAssignment
-      > | null = null;
+      let candidate: AuthoritativeRoomWorldBundle<TWorld, TCar, TBall> | null = null;
       try {
         candidate = await this.initializeWorld({
           roomId: this.roomId,
@@ -605,17 +818,19 @@ export class AuthoritativeRoomCore<
         }
 
         this.worldBundle = candidate;
+        const matchFlow = createWaitingMatchFlowState(this.matchFlowConfig);
+        this.matchFlowStateValue = matchFlow;
         this.stateValue = createRoomMutationState({
           policy: this.policy,
           roster: new Map(),
           nextJoinOrdinal: 0,
           hostSessionId: null,
-          phase: 'waiting',
-          countdownKind: null,
-          countdownStepsRemaining: 0,
-          blueScore: 0,
-          orangeScore: 0,
-          regulationStepsRemaining: MATCH_RULES.regulationActivePlaySteps,
+          phase: matchFlow.phase,
+          countdownKind: matchFlow.countdownKind,
+          countdownStepsRemaining: matchFlow.countdownStepsRemaining,
+          blueScore: matchFlow.blueScore,
+          orangeScore: matchFlow.orangeScore,
+          regulationStepsRemaining: matchFlow.regulationStepsRemaining,
           ball: candidate.ball,
           cars: new Map(),
           inputs: new Map(),
@@ -744,7 +959,9 @@ export class AuthoritativeRoomCore<
     let executedFixedSteps = 0;
 
     for (let index = 0; index < scheduled.fixedSteps; index += 1) {
+      this.initialCountdownStartedAtBoundary = false;
       mutationResults.push(...this.drainMutationQueue());
+      this.reconcileQuickCountdownGate();
       if (this.lifecycleValue !== 'ready' || this.stateValue === null || this.worldBundle === null) {
         break;
       }
@@ -759,6 +976,9 @@ export class AuthoritativeRoomCore<
           tuning: this.tuningSnapshot,
           state: this.stateValue,
         });
+        if (!this.initialCountdownStartedAtBoundary) {
+          this.advanceMatchFlowStep();
+        }
         this.fixedStepsCompleted += 1;
         executedFixedSteps += 1;
       } catch (cause) {
@@ -853,7 +1073,10 @@ export class AuthoritativeRoomCore<
   /** Idempotent external room cleanup. Fatal rooms retain fatal diagnostics. */
   dispose(): void {
     if (this.lifecycleValue === 'disposed') return;
-    if (this.lifecycleValue !== 'fatal') this.lifecycleValue = 'disposed';
+    if (this.lifecycleValue !== 'fatal') {
+      this.lifecycleValue = 'disposed';
+      this.kickoffAssignmentService.clear();
+    }
     this.rejectPendingMutations(
       'Room was disposed before the queued mutation reached a fixed-step boundary.',
       this.lifecycleValue === 'fatal',
@@ -865,7 +1088,7 @@ export class AuthoritativeRoomCore<
   }
 
   private assertWorldBundle(
-    candidate: AuthoritativeRoomWorldBundle<TWorld, TCar, TBall, TKickoffAssignment>,
+    candidate: AuthoritativeRoomWorldBundle<TWorld, TCar, TBall>,
   ): void {
     if (typeof candidate !== 'object' || candidate === null) {
       throw new TypeError('initializeWorld must return a world bundle.');
@@ -946,7 +1169,7 @@ export class AuthoritativeRoomCore<
       TCar,
       InputCommandV2,
       TBall,
-      TKickoffAssignment
+      Readonly<KickoffAssignment>
     >(planned.plan, resources);
     if (!preparation.ok) {
       return failureResult(
@@ -971,16 +1194,34 @@ export class AuthoritativeRoomCore<
       }
       this.stateValue = committed.next;
       if (committed.effect.kind === 'joined') this.acceptedAnIdentity = true;
+
+      if (committed.effect.kind === 'start-validated') {
+        const started = this.beginInitialCountdownAtBoundary();
+        if (!started.ok) {
+          if (!started.fatal && this.lifecycleValue === 'ready') {
+            this.stateValue = state;
+          }
+          return failureResult(
+            queued.sequence,
+            started.code === 'physics-not-ready' ? 'physics-not-ready' : 'invalid-roster',
+            `Match start could not prepare a complete kickoff: ${started.message}`,
+            started.fatal,
+            started.cause,
+          );
+        }
+      }
+
+      this.reconcileQuickCountdownGate();
       const result: AuthoritativeRoomMutationSuccess = Object.freeze({
         ok: true,
         queueSequence: queued.sequence,
         effect: committed.effect,
-        revision: committed.next.revision,
+        revision: this.stateValue?.revision ?? committed.next.revision,
       });
 
       if (
         committed.effect.kind === 'left'
-        && committed.next.roster.size === 0
+        && this.stateValue?.roster.size === 0
         && this.acceptedAnIdentity
       ) {
         this.disposeEmptyRoom();
@@ -1004,6 +1245,109 @@ export class AuthoritativeRoomCore<
     }
   }
 
+  /**
+   * Place every represented car before committing a fresh initial countdown.
+   * The boundary step itself is not charged against the new 180-step budget.
+   */
+  private beginInitialCountdownAtBoundary(): AuthoritativeKickoffPlacementResult {
+    const flow = this.matchFlowStateValue;
+    if (this.lifecycleValue !== 'ready' || this.stateValue === null || flow === null) {
+      return Object.freeze({
+        ok: false,
+        code: 'physics-not-ready',
+        message: 'Initial countdown requires a ready room and match-flow state.',
+        fatal: this.lifecycleValue === 'fatal',
+        retained: this.kickoffAssignmentService.current,
+      });
+    }
+    if (flow.phase !== 'waiting') {
+      return Object.freeze({
+        ok: false,
+        code: 'invalid-roster',
+        message: 'Initial countdown can begin only while the room is waiting.',
+        fatal: false,
+        retained: this.kickoffAssignmentService.current,
+      });
+    }
+
+    const nextFlow = beginInitialCountdown(flow, this.matchFlowConfig);
+    const placement = this.placeKickoff(flow.kickoffEpoch + 1);
+    if (!placement.ok) return placement;
+
+    this.commitMatchFlowState(nextFlow);
+    this.initialCountdownStartedAtBoundary = true;
+    return placement;
+  }
+
+  /** Quick alone automatically starts/cancels from its exact balanced gate. */
+  private reconcileQuickCountdownGate(): void {
+    if (this.policy.mode !== 'quick') return;
+    const state = this.stateValue;
+    const flow = this.matchFlowStateValue;
+    if (this.lifecycleValue !== 'ready' || state === null || flow === null) return;
+
+    const exactBalancedRoster = state.occupancy.total === this.policy.totalCapacity
+      && state.occupancy.blue === this.policy.teamCapacity
+      && state.occupancy.orange === this.policy.teamCapacity;
+
+    if (flow.phase === 'waiting' && exactBalancedRoster) {
+      const started = this.beginInitialCountdownAtBoundary();
+      if (!started.ok) {
+        this.logger.error(
+          `[AuthoritativeRoomCore] Quick countdown preparation failed roomId=${this.roomId}: ${started.message}`,
+          started.cause,
+        );
+      }
+      return;
+    }
+
+    if (
+      flow.phase === 'countdown'
+      && flow.countdownKind === 'initial'
+      && !exactBalancedRoster
+    ) {
+      this.commitMatchFlowState(cancelInitialCountdown(flow, this.matchFlowConfig));
+    }
+  }
+
+  /** Advance one reducer step after the world callback has completed. */
+  private advanceMatchFlowStep(): void {
+    const flow = this.matchFlowStateValue;
+    if (flow === null || this.stateValue === null) {
+      throw new Error('A ready fixed step requires initialized match-flow state.');
+    }
+
+    const reduced = reduceMatchFlowStep(flow, this.matchFlowConfig);
+    if (reduced.kickoffReset !== null) {
+      const placement = this.placeKickoff(reduced.kickoffReset.targetKickoffEpoch);
+      if (!placement.ok) {
+        throw new Error(`Post-goal kickoff placement failed: ${placement.message}`, {
+          cause: placement.cause,
+        });
+      }
+    }
+    this.commitMatchFlowState(reduced.state);
+  }
+
+  /** Keep transactional roster state and the pure reducer projection coherent. */
+  private commitMatchFlowState(flow: Readonly<MatchFlowState>): void {
+    const state = this.stateValue;
+    if (state === null) {
+      throw new Error('Match-flow state cannot commit without transactional room state.');
+    }
+
+    this.matchFlowStateValue = flow;
+    this.stateValue = createRoomMutationState({
+      ...state,
+      phase: flow.phase,
+      countdownKind: flow.countdownKind,
+      countdownStepsRemaining: flow.countdownStepsRemaining,
+      blueScore: flow.blueScore,
+      orangeScore: flow.orangeScore,
+      regulationStepsRemaining: flow.regulationStepsRemaining,
+    });
+  }
+
   private disposeEmptyRoom(): void {
     const state = this.stateValue;
     if (state !== null && state.roster.size === 0 && state.tombstones.size > 0) {
@@ -1016,6 +1360,7 @@ export class AuthoritativeRoomCore<
         tombstones: new Set(),
       });
     }
+    this.kickoffAssignmentService.clear();
     this.lifecycleValue = 'disposed';
     this.rejectPendingMutations(
       'Room became empty before the queued mutation could be committed.',
@@ -1100,7 +1445,7 @@ export class AuthoritativeRoomCore<
   }
 
   private disposeDetachedBundle(
-    bundle: AuthoritativeRoomWorldBundle<TWorld, TCar, TBall, TKickoffAssignment>,
+    bundle: AuthoritativeRoomWorldBundle<TWorld, TCar, TBall>,
   ): void {
     if (this.worldDisposalAttempted) return;
     this.worldDisposalAttempted = true;

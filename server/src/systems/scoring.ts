@@ -1,6 +1,7 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import { getConstant } from '@rocket-arena/shared/constants';
 import { resetCarPhysicsState, type CarPhysicsState } from '../physics/car.js';
+import type { KickoffAssignment } from './kickoff-slots.js';
 
 /**
  * Create goal sensor colliders (Rapier sensors that detect ball entry).
@@ -42,56 +43,234 @@ export function checkGoal(ballBody: RAPIER.RigidBody): 'blue' | 'orange' | null 
 
   // Ball center must be past the goal line and within goal bounds
   // Blue goal: ball Z < -L/2 (past blue end)
-  if (pos.z < -L / 2 && pos.z > -L / 2 - goalD &&
-      Math.abs(pos.x) < goalW / 2 - ballR &&
-      pos.y < goalH - ballR && pos.y > ballR) {
+  if (pos.z < -L / 2 && pos.z > -L / 2 - goalD
+      && Math.abs(pos.x) < goalW / 2 - ballR
+      && pos.y < goalH - ballR && pos.y > ballR) {
     return 'orange'; // Orange scored (ball in blue's goal)
   }
 
   // Orange goal: ball Z > L/2 (past orange end)
-  if (pos.z > L / 2 && pos.z < L / 2 + goalD &&
-      Math.abs(pos.x) < goalW / 2 - ballR &&
-      pos.y < goalH - ballR && pos.y > ballR) {
+  if (pos.z > L / 2 && pos.z < L / 2 + goalD
+      && Math.abs(pos.x) < goalW / 2 - ballR
+      && pos.y < goalH - ballR && pos.y > ballR) {
     return 'blue'; // Blue scored (ball in orange's goal)
   }
 
   return null;
 }
 
+export interface KickoffCarBody {
+  readonly body: RAPIER.RigidBody;
+  readonly jumpState: CarPhysicsState;
+}
+
+export interface PreparedKickoffReset {
+  /** Apply all validated transforms and zero all body motion. */
+  apply(): void;
+  /** Restore the exact pre-placement body and jump state; safe before apply. */
+  rollback(): void;
+}
+
+interface RigidBodySnapshot {
+  readonly position: Readonly<{ x: number; y: number; z: number }>;
+  readonly rotation: Readonly<{ x: number; y: number; z: number; w: number }>;
+  readonly linearVelocity: Readonly<{ x: number; y: number; z: number }>;
+  readonly angularVelocity: Readonly<{ x: number; y: number; z: number }>;
+}
+
+interface CarResetSnapshot {
+  readonly body: RigidBodySnapshot;
+  readonly jumpState: CarPhysicsState;
+}
+
+function copyVector(value: { x: number; y: number; z: number }): Readonly<{ x: number; y: number; z: number }> {
+  return Object.freeze({ x: value.x, y: value.y, z: value.z });
+}
+
+function captureBody(body: RAPIER.RigidBody): RigidBodySnapshot {
+  const rotation = body.rotation();
+  return Object.freeze({
+    position: copyVector(body.translation()),
+    rotation: Object.freeze({
+      x: rotation.x,
+      y: rotation.y,
+      z: rotation.z,
+      w: rotation.w,
+    }),
+    linearVelocity: copyVector(body.linvel()),
+    angularVelocity: copyVector(body.angvel()),
+  });
+}
+
+function restoreBody(body: RAPIER.RigidBody, snapshot: RigidBodySnapshot): void {
+  body.setTranslation(snapshot.position, true);
+  body.setRotation(snapshot.rotation, true);
+  body.setLinvel(snapshot.linearVelocity, true);
+  body.setAngvel(snapshot.angularVelocity, true);
+}
+
+function cloneJumpState(state: CarPhysicsState): CarPhysicsState {
+  return {
+    count: state.count,
+    jumpHeld: state.jumpHeld,
+    lastJumpSequence: state.lastJumpSequence,
+    grounded: state.grounded,
+    wasGrounded: state.wasGrounded,
+    airborneTime: state.airborneTime,
+    landingTime: state.landingTime,
+    leftGroundSinceJump: state.leftGroundSinceJump,
+    boostAmount: state.boostAmount,
+    boostRechargeDelay: state.boostRechargeDelay,
+  };
+}
+
+function restoreJumpState(target: CarPhysicsState, snapshot: CarPhysicsState): void {
+  Object.assign(target, snapshot);
+}
+
+function validateAssignment(
+  sessionId: string,
+  assignment: Readonly<KickoffAssignment> | undefined,
+): asserts assignment is Readonly<KickoffAssignment> {
+  if (assignment === undefined
+      || assignment.sessionId !== sessionId
+      || (assignment.team !== 'blue' && assignment.team !== 'orange')
+      || !Array.isArray(assignment.position)
+      || assignment.position.length !== 3
+      || !assignment.position.every(Number.isFinite)
+      || !Array.isArray(assignment.rotation)
+      || assignment.rotation.length !== 4
+      || !assignment.rotation.every(Number.isFinite)
+      || assignment.rotation.every((component) => component === 0)) {
+    throw new TypeError(`Kickoff assignment for ${sessionId} is missing or invalid.`);
+  }
+}
+
+class PreparedKickoffResetImpl implements PreparedKickoffReset {
+  private state: 'prepared' | 'applied' | 'rolled-back' = 'prepared';
+
+  constructor(
+    private readonly ballBody: RAPIER.RigidBody,
+    private readonly ballSnapshot: RigidBodySnapshot,
+    private readonly ballPosition: Readonly<{ x: number; y: number; z: number }>,
+    private readonly cars: readonly Readonly<{
+      sessionId: string;
+      entry: KickoffCarBody;
+      assignment: Readonly<KickoffAssignment>;
+      snapshot: CarResetSnapshot;
+    }>[],
+  ) {}
+
+  apply(): void {
+    if (this.state !== 'prepared') {
+      throw new Error('A prepared kickoff reset can be applied only once.');
+    }
+
+    try {
+      this.ballBody.setTranslation(this.ballPosition, true);
+      this.ballBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      this.ballBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
+
+      for (const { entry, assignment } of this.cars) {
+        entry.body.setTranslation({
+          x: assignment.position[0],
+          y: assignment.position[1],
+          z: assignment.position[2],
+        }, true);
+        entry.body.setRotation({
+          x: assignment.rotation[0],
+          y: assignment.rotation[1],
+          z: assignment.rotation[2],
+          w: assignment.rotation[3],
+        }, true);
+        entry.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+        entry.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+        resetCarPhysicsState(entry.jumpState);
+      }
+      this.state = 'applied';
+    } catch (cause) {
+      try {
+        this.restoreSnapshots();
+        this.state = 'rolled-back';
+      } catch (rollbackCause) {
+        throw new AggregateError(
+          [cause, rollbackCause],
+          'Kickoff reset failed and could not restore its body snapshots.',
+        );
+      }
+      throw cause;
+    }
+  }
+
+  rollback(): void {
+    if (this.state === 'rolled-back') return;
+    if (this.state === 'applied') this.restoreSnapshots();
+    this.state = 'rolled-back';
+  }
+
+  private restoreSnapshots(): void {
+    restoreBody(this.ballBody, this.ballSnapshot);
+    for (const { entry, snapshot } of this.cars) {
+      restoreBody(entry.body, snapshot.body);
+      restoreJumpState(entry.jumpState, snapshot.jumpState);
+    }
+  }
+}
+
 /**
- * Reset ball and cars to kickoff positions.
+ * Validate exact identity coverage and capture every rollback snapshot without
+ * moving a body. Callers may then coordinate this transaction with assignment
+ * cache/state commits.
  */
-export function resetToKickoff(
+export function prepareResetToKickoff(
   ballBody: RAPIER.RigidBody,
-  carBodies: Map<string, { body: RAPIER.RigidBody; jumpState: CarPhysicsState }>,
-  players: Map<string, { team: string }>,
-  getKickoffPosition: (sessionId: string, team: string) => { x: number; y: number; z: number }
-): void {
+  carBodies: ReadonlyMap<string, KickoffCarBody>,
+  assignments: ReadonlyMap<string, Readonly<KickoffAssignment>>,
+): PreparedKickoffReset {
+  if (carBodies.size === 0 || assignments.size !== carBodies.size) {
+    throw new TypeError('Kickoff reset requires one assignment for every current car.');
+  }
+
+  const orderedCars = [...carBodies.entries()]
+    .sort(([left], [right]) => left.localeCompare(right));
+  for (const sessionId of assignments.keys()) {
+    if (!carBodies.has(sessionId)) {
+      throw new TypeError(`Kickoff assignment ${sessionId} has no current car.`);
+    }
+  }
+
+  const cars = orderedCars.map(([sessionId, entry]) => {
+    const assignment = assignments.get(sessionId);
+    validateAssignment(sessionId, assignment);
+    return Object.freeze({
+      sessionId,
+      entry,
+      assignment,
+      snapshot: Object.freeze({
+        body: captureBody(entry.body),
+        jumpState: cloneJumpState(entry.jumpState),
+      }),
+    });
+  });
   const ballRadius = getConstant('BALL.RADIUS');
 
-  // Reset ball to center
-  ballBody.setTranslation({
-    x: 0,
-    y: ballRadius + getConstant('BALL.SPAWN_CLEARANCE'),
-    z: 0,
-  }, true);
-  ballBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
-  ballBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
+  return new PreparedKickoffResetImpl(
+    ballBody,
+    captureBody(ballBody),
+    Object.freeze({
+      x: 0,
+      y: ballRadius + getConstant('BALL.SPAWN_CLEARANCE'),
+      z: 0,
+    }),
+    Object.freeze(cars),
+  );
+}
 
-  // Reset cars
-  for (const [sessionId, carEntry] of carBodies) {
-    const playerData = players.get(sessionId);
-    if (!playerData) continue;
-
-    const pos = getKickoffPosition(sessionId, playerData.team);
-    const rotation = playerData.team === 'orange'
-      ? { x: 0, y: 1, z: 0, w: 0 }
-      : { x: 0, y: 0, z: 0, w: 1 };
-
-    carEntry.body.setTranslation(pos, true);
-    carEntry.body.setRotation(rotation, true);
-    carEntry.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
-    carEntry.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-    resetCarPhysicsState(carEntry.jumpState);
-  }
+/** Reset a fully assigned kickoff immediately through the atomic compatibility path. */
+export function resetToKickoff(
+  ballBody: RAPIER.RigidBody,
+  carBodies: ReadonlyMap<string, KickoffCarBody>,
+  assignments: ReadonlyMap<string, Readonly<KickoffAssignment>>,
+): void {
+  prepareResetToKickoff(ballBody, carBodies, assignments).apply();
 }

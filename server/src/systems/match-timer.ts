@@ -1,44 +1,19 @@
+/**
+ * Compatibility entry point retained while room adapters migrate to MatchFlow.
+ * Wall-clock/delta mutation has been removed; all timing now advances through
+ * one exact fixed step in match-flow.ts.
+ */
+export * from './match-flow.js';
+
 import {
   DEFAULT_TUNING_REGISTRY_SNAPSHOT,
-  TUNING_IDS,
-  getScalarTuningValue,
-} from '@rocket-arena/shared/tuning';
+  type TuningRegistrySnapshot,
+} from '@rocket-arena/shared';
+import { createMatchFlowConfig } from './match-flow.js';
 
-export interface TimerState {
-  timeRemaining: number;
-  phase: string;
-  goalResetTimer: number;
-}
-
-/** Legacy fixed-step timer compatibility path pending the pure match reducer. */
-export function updateTimer(state: TimerState, dt: number): string | null {
-  if (state.phase === 'playing') {
-    state.timeRemaining -= dt;
-    if (state.timeRemaining <= 0) {
-      state.timeRemaining = 0;
-      return 'time-up';
-    }
-  }
-
-  if (state.phase === 'goal-reset') {
-    state.goalResetTimer -= dt;
-    if (state.goalResetTimer <= 0) {
-      state.goalResetTimer = 0;
-      return 'reset-complete';
-    }
-  }
-
-  return null;
-}
-
-export function resolveTimeUp(blueScore: number, orangeScore: number): 'ended' | 'overtime' {
-  return blueScore === orangeScore ? 'overtime' : 'ended';
-}
-
-/** Read the staged two-second hypothesis from the immutable tuning snapshot. */
-export function getGoalResetDelay(): number {
-  return getScalarTuningValue(
-    DEFAULT_TUNING_REGISTRY_SNAPSHOT,
-    TUNING_IDS.match.regulationGoalResetSeconds,
-  );
+/** Read the room-pinnable staged goal-reset hypothesis in seconds. */
+export function getGoalResetDelay(
+  tuning: Pick<TuningRegistrySnapshot, 'get'> = DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+): number {
+  return createMatchFlowConfig('quick', tuning).goalResetDurationSeconds;
 }

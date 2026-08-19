@@ -21,6 +21,8 @@ export type ReleaseGateIssueCode =
   | 'missing-browser-evidence'
   | 'confirmed-change-without-evidence'
   | 'confirmed-change-without-rationale'
+  | 'invalid-evidence-record'
+  | 'invalid-approval-record'
   | 'duplicate-record';
 
 export interface ReleaseGateIssue {
@@ -50,8 +52,48 @@ function gateIssue(
   return Object.freeze({ code, tuningId, message });
 }
 
-function nonEmptyStrings(values: readonly string[]): boolean {
-  return values.length > 0 && values.every((value) => typeof value === 'string' && value.trim().length > 0);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isStringList(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every(isNonEmptyString);
+}
+
+function nonEmptyStrings(values: unknown): values is readonly string[] {
+  return isStringList(values) && values.length > 0;
+}
+
+function isCompleteEvidenceRecord(record: unknown): record is ReferenceEvidenceRecord {
+  return isRecord(record)
+    && isNonEmptyString(record.id)
+    && isNonEmptyString(record.tuningId)
+    && Number.isSafeInteger(record.registryVersion)
+    && (record.registryVersion as number) >= 1
+    && isNonEmptyString(record.sourceIdentity)
+    && isNonEmptyString(record.sourceVersionOrAccessDate)
+    && isNonEmptyString(record.originalValueAndUnit)
+    && isNonEmptyString(record.conversion)
+    && isNonEmptyString(record.resultingValueAndRange)
+    && (record.approvalStatus === 'pending'
+      || record.approvalStatus === 'approved'
+      || record.approvalStatus === 'rejected');
+}
+
+function isCompleteApprovalRecord(record: unknown): record is TuningApprovalRecord {
+  return isRecord(record)
+    && isNonEmptyString(record.id)
+    && isNonEmptyString(record.tuningId)
+    && Number.isSafeInteger(record.registryVersion)
+    && (record.registryVersion as number) >= 1
+    && isStringList(record.deterministicHarnessEvidence)
+    && isStringList(record.browserEvidence)
+    && isNonEmptyString(record.approvedBy)
+    && isNonEmptyString(record.approvedAt);
 }
 
 function changedPayload(before: TuningEntry, after: TuningEntry): boolean {
@@ -84,7 +126,16 @@ export function evaluateReleaseGate(input: ReleaseGateInput): ReleaseGateResult 
   }
 
   const evidenceById = new Map<string, ReferenceEvidenceRecord>();
-  for (const record of input.evidence) {
+  for (const record of input.evidence as readonly unknown[]) {
+    if (!isCompleteEvidenceRecord(record)) {
+      const recordShape = isRecord(record) ? record : null;
+      issues.push(gateIssue(
+        'invalid-evidence-record',
+        recordShape && isNonEmptyString(recordShape.tuningId) ? recordShape.tuningId : null,
+        `Evidence record ${String(recordShape?.id ?? record)} is incomplete or malformed.`,
+      ));
+      continue;
+    }
     if (evidenceById.has(record.id)) {
       issues.push(gateIssue('duplicate-record', record.tuningId, `Duplicate evidence record ${record.id}.`));
     } else {
@@ -92,7 +143,16 @@ export function evaluateReleaseGate(input: ReleaseGateInput): ReleaseGateResult 
     }
   }
   const approvalsById = new Map<string, TuningApprovalRecord>();
-  for (const record of input.approvals) {
+  for (const record of input.approvals as readonly unknown[]) {
+    if (!isCompleteApprovalRecord(record)) {
+      const recordShape = isRecord(record) ? record : null;
+      issues.push(gateIssue(
+        'invalid-approval-record',
+        recordShape && isNonEmptyString(recordShape.tuningId) ? recordShape.tuningId : null,
+        `Approval record ${String(recordShape?.id ?? record)} is incomplete or malformed.`,
+      ));
+      continue;
+    }
     if (approvalsById.has(record.id)) {
       issues.push(gateIssue('duplicate-record', record.tuningId, `Duplicate approval record ${record.id}.`));
     } else {
@@ -124,7 +184,7 @@ export function evaluateReleaseGate(input: ReleaseGateInput): ReleaseGateResult 
       continue;
     }
     if (approval.tuningId !== entry.id || approval.registryVersion !== entry.registryVersion
-      || approval.approvedBy.trim().length === 0 || approval.approvedAt.trim().length === 0) {
+      || !isNonEmptyString(approval.approvedBy) || !isNonEmptyString(approval.approvedAt)) {
       issues.push(gateIssue('stale-approval', entry.id, `${entry.id} approval does not match the accepted entry version.`));
     }
     if (entry.affects.includes('authority')

@@ -22,6 +22,7 @@ import {
   type ScalarTuningEntry,
   type TuningApprovalRecord,
   type TuningEntry,
+  type TuningProposal,
 } from '../src/tuning/model.js';
 import type { FeatureStatusRecord } from '../src/types/room.js';
 
@@ -269,6 +270,42 @@ test('release gate fails without evidence or approval and passes one fully evide
   assert.equal(passed.eligible, true);
   assert.deepEqual(passed.issues, []);
 
+  const incompleteEvidence = evaluateReleaseGate({
+    snapshot: registry.snapshot,
+    evidence: [{ ...evidence, sourceIdentity: '' }],
+    approvals: [approval],
+    featureStatus: status,
+  });
+  assert.equal(incompleteEvidence.eligible, false);
+  assert.ok(incompleteEvidence.issues.some(({ code }) => code === 'invalid-evidence-record'));
+
+  const incompleteApproval = evaluateReleaseGate({
+    snapshot: registry.snapshot,
+    evidence: [evidence],
+    approvals: [{ ...approval, approvedBy: '' }],
+    featureStatus: status,
+  });
+  assert.equal(incompleteApproval.eligible, false);
+  assert.ok(incompleteApproval.issues.some(({ code }) => code === 'invalid-approval-record'));
+
+  const malformedEvidence = evaluateReleaseGate({
+    snapshot: registry.snapshot,
+    evidence: [null] as unknown as readonly ReferenceEvidenceRecord[],
+    approvals: [approval],
+    featureStatus: status,
+  });
+  assert.equal(malformedEvidence.eligible, false);
+  assert.ok(malformedEvidence.issues.some(({ code }) => code === 'invalid-evidence-record'));
+
+  const malformedApproval = evaluateReleaseGate({
+    snapshot: registry.snapshot,
+    evidence: [evidence],
+    approvals: [null] as unknown as readonly TuningApprovalRecord[],
+    featureStatus: status,
+  });
+  assert.equal(malformedApproval.eligible, false);
+  assert.ok(malformedApproval.issues.some(({ code }) => code === 'invalid-approval-record'));
+
   const staging = evaluateReleaseGate({
     snapshot: registry.snapshot,
     evidence: [evidence],
@@ -293,4 +330,32 @@ test('legacy numeric reads remain available while global mechanics overrides are
   assert.equal(getOverrides().get(visualPath), original + 0.1);
   clearOverrides();
   assert.equal(getConstant(visualPath), original);
+});
+
+test('proposal schema rejects immutable and unknown metadata atomically', () => {
+  const registry = new VersionedTuningRegistry();
+  const before = registry.snapshot;
+  const beforeEntries = JSON.stringify(before.entries);
+  const attempts: readonly (readonly [string, Record<string, unknown>])[] = [
+    ['classification', { classification: 'confirmed-starting-target', verificationStatus: 'confirmed' }],
+    ['unit', { unit: 'untrusted-unit' }],
+    ['affects', { affects: ['camera'] }],
+    ['kind', { kind: 'vector' }],
+    ['registry-version', { registryVersion: 999 }],
+    ['unknown', { releaseEligible: true }],
+  ];
+
+  for (const [name, patch] of attempts) {
+    const result = registry.propose({
+      proposalId: `immutable-${name}`,
+      expectedVersion: before.version,
+      changes: [{ id: TUNING_IDS.ball.linearDamping, ...patch }],
+    } as unknown as TuningProposal);
+
+    assert.equal(result.accepted, false, name);
+    assert.ok(!result.accepted && result.issues.some(({ code }) => code === 'invalid-patch-field'));
+    assert.equal(registry.snapshot.version, before.version);
+    assert.equal(registry.snapshot.contentHash, before.contentHash);
+    assert.equal(JSON.stringify(registry.snapshot.entries), beforeEntries);
+  }
 });

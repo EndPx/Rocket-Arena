@@ -152,6 +152,57 @@ test('structural validation rejects non-finite, non-mirrored, duplicate, and ope
 
   const openTopology = cloneSpec();
   openTopology.topology.boundarySurfaceIds.pop();
-  assert.throws(() => validateArenaGeometrySpec(openTopology), InvalidArenaGeometrySpecError);
+  assert.throws(
+    () => validateArenaGeometrySpec(openTopology),
+    (error: unknown) => error instanceof InvalidArenaGeometrySpecError
+      && error.code === 'open-topology',
+  );
   assert.equal(isArenaGeometrySpec(openTopology), false);
+
+  const unknownBoundary = cloneSpec();
+  unknownBoundary.topology.boundarySurfaceIds[0] = 'field.unknown';
+  assert.throws(
+    () => validateArenaGeometrySpec(unknownBoundary),
+    (error: unknown) => error instanceof InvalidArenaGeometrySpecError
+      && error.code === 'invalid-surface-reference',
+  );
+});
+
+test('structural validation rejects malformed semantic descriptors and registry references', () => {
+  const invalidAxes = cloneSpec();
+  invalidAxes.axes.width = 'z';
+  assert.throws(() => validateArenaGeometrySpec(invalidAxes), InvalidArenaGeometrySpecError);
+
+  const invalidOrigin = cloneSpec();
+  invalidOrigin.center = [0, 1, 0];
+  assert.throws(() => validateArenaGeometrySpec(invalidOrigin), InvalidArenaGeometrySpecError);
+
+  const sparseOrigin = cloneSpec();
+  sparseOrigin.center = new Array(3);
+  assert.throws(() => validateArenaGeometrySpec(sparseOrigin), InvalidArenaGeometrySpecError);
+
+  const invalidOpening = cloneSpec();
+  invalidOpening.goal.ends[0].opening.width = 18;
+  assert.throws(() => validateArenaGeometrySpec(invalidOpening), InvalidArenaGeometrySpecError);
+
+  const invalidGoalSurface = cloneSpec();
+  invalidGoalSurface.goal.ends[0].surfaceIds[0] = 'field.floor';
+  assert.throws(() => validateArenaGeometrySpec(invalidGoalSurface), InvalidArenaGeometrySpecError);
+
+  const invalidCornerSurface = cloneSpec();
+  invalidCornerSurface.cornerCuts[0].surfaceId = 'field.floor';
+  assert.throws(() => validateArenaGeometrySpec(invalidCornerSurface), InvalidArenaGeometrySpecError);
+
+  const invalidSurfaceKind = cloneSpec();
+  invalidSurfaceKind.surfaces[0].kind = 'wall';
+  assert.throws(() => validateArenaGeometrySpec(invalidSurfaceKind), InvalidArenaGeometrySpecError);
+
+  const bypassedExterior = cloneSpec();
+  bypassedExterior.surfaces.at(-1).closesExterior = false;
+  bypassedExterior.topology.boundarySurfaceIds.pop();
+  assert.throws(() => validateArenaGeometrySpec(bypassedExterior), InvalidArenaGeometrySpecError);
+
+  const unknownRegistryId = cloneSpec();
+  unknownRegistryId.registryReferences.camera[0] = 'camera.unregistered.value';
+  assert.throws(() => validateArenaGeometrySpec(unknownRegistryId), InvalidArenaGeometrySpecError);
 });
