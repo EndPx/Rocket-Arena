@@ -195,7 +195,7 @@ Every implementation task must leave its code wired into the preceding increment
     - _Depends on: 3.5, 4.2_
     - _Requirements: 5.5-5.12_
 
-  - [ ] 4.4 Replace wall-clock countdown/reset logic with a pure fixed-step match-state reducer skeleton
+  - [x] 4.4 Replace wall-clock countdown/reset logic with a pure fixed-step match-state reducer skeleton
     - Add `server/src/systems/match-flow.ts` and replace `server/src/systems/match-timer.ts` behavior with typed states, integer `regulationStepsRemaining`, 180-step kickoff countdowns, registry-derived goal-reset steps, disabled-control gates, regulation preservation, frozen overtime-countdown state, immutable Ended_State fields, and transition results that take effect only after the completing step.
     - Initialize the first regulation countdown with exactly 18,000 future regulation Active_Play steps, share the same confirmed rule object across Quick and Custom, and retain hooks for the finalized above-zero, Hard_Regulation_Cutoff, and sudden-death outcomes completed in Task 6.4.
     - Add `server/src/systems/match-flow.test.ts` for exactly 180 countdown steps, exactly 120 reset steps at the 2-second starting hypothesis, no early Active_Play, preserved scores/regulation time, disabled controls, edge synchronization, deterministic reset output, frozen overtime kickoff state, and immutable Ended_State projection.
