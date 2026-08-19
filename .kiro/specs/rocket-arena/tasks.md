@@ -265,7 +265,7 @@ Every implementation task must leave its code wired into the preceding increment
     - _Depends on: 5.1_
     - _Requirements: 8.1-8.10, 8.17_
 
-  - [ ] 5.3 Implement grounded steering, lateral grip, and powerslide
+  - [x] 5.3 Implement grounded steering, lateral grip, and powerslide
     - Extend `server/src/physics/car-controller.ts` with surface-normal steering curvature, finite yaw decay, exponential lateral grip, lower powerslide grip, greater same-direction powerslide curvature, and no simulated wheel-torque propulsion.
     - Add deterministic unit/Rapier cases in `server/src/physics/test-controller.ts` for monotonic lateral decay, equal-state normal/powerslide ordering, zero-steer yaw decay, curve bounds, and no speed-cap bypass; retain `try/finally` cleanup.
     - _Depends on: 5.2_
