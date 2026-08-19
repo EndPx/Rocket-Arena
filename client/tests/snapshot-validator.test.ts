@@ -453,3 +453,119 @@ test('mixed-version migration permits one V1-to-V2 upgrade and enforces stream s
   delete unversionedV2.protocolVersion;
   rejected(decodeSnapshot(unversionedV2, { roomMode: 'quick' }), 'mixed-protocol-payload');
 });
+
+
+test('terminal validation uses shared target and margin boundaries and rejects wrong winners', async () => {
+  const {
+    REGULATION_GOAL_TARGET,
+    REGULATION_WIN_MARGIN,
+  } = await import('@rocket-arena/shared');
+
+  const applyScores = (payload: MutableRecord, blueScore: number, orangeScore: number): void => {
+    payload.blueScore = blueScore;
+    payload.orangeScore = orangeScore;
+
+    const terminal = payload.terminalResult as MutableRecord;
+    terminal.blueScore = blueScore;
+    terminal.orangeScore = orangeScore;
+
+    const transition = payload.latestTransition as MutableRecord;
+    const transitionTerminal = transition.terminal as MutableRecord;
+    transitionTerminal.blueScore = blueScore;
+    transitionTerminal.orangeScore = orangeScore;
+
+    for (const goal of [terminal.goal, transition.goal, transitionTerminal.goal]) {
+      if (goal && typeof goal === 'object') {
+        const mutableGoal = goal as MutableRecord;
+        mutableGoal.blueScore = blueScore;
+        mutableGoal.orangeScore = orangeScore;
+      }
+    }
+  };
+
+  const boundary = makeEndedV2('regulation-target-and-margin', 80, 80);
+  applyScores(
+    boundary,
+    REGULATION_GOAL_TARGET,
+    REGULATION_GOAL_TARGET - REGULATION_WIN_MARGIN,
+  );
+  accepted(decodeSnapshot(boundary, { roomMode: 'custom' }));
+
+  const belowTarget = makeEndedV2('regulation-target-and-margin', 81, 81);
+  applyScores(
+    belowTarget,
+    REGULATION_GOAL_TARGET - 1,
+    REGULATION_GOAL_TARGET - 1 - REGULATION_WIN_MARGIN,
+  );
+  rejected(decodeSnapshot(belowTarget, { roomMode: 'custom' }), 'terminal-coherence');
+
+  const belowMargin = makeEndedV2('regulation-target-and-margin', 82, 82);
+  applyScores(
+    belowMargin,
+    REGULATION_GOAL_TARGET,
+    REGULATION_GOAL_TARGET - REGULATION_WIN_MARGIN + 1,
+  );
+  rejected(decodeSnapshot(belowMargin, { roomMode: 'custom' }), 'terminal-coherence');
+
+  const rejectTerminalFor = (
+    payload: MutableRecord,
+    expectedMessage: RegExp,
+  ): void => {
+    const result = decodeSnapshot(payload, { roomMode: 'custom' });
+    rejected(result, 'terminal-coherence');
+    if (result.ok) assert.fail('expected terminal rejection');
+    assert.equal(result.error.path, 'snapshot.terminalResult');
+    assert.match(result.error.message, expectedMessage);
+  };
+
+  for (const [blueScore, orangeScore] of [[4, 5], [5, 5]] as const) {
+    const wrongHardCutoffWinner = makeEndedV2('hard-regulation-cutoff', 83, 83);
+    applyScores(wrongHardCutoffWinner, blueScore, orangeScore);
+    rejectTerminalFor(wrongHardCutoffWinner, /terminal winner must lead/i);
+  }
+
+  const wrongOvertimeScorer = makeEndedV2('overtime-goal', 84, 84);
+  const overtimeTerminal = wrongOvertimeScorer.terminalResult as MutableRecord;
+  const overtimeTransition = wrongOvertimeScorer.latestTransition as MutableRecord;
+  const transitionTerminal = overtimeTransition.terminal as MutableRecord;
+  for (const goal of [
+    overtimeTerminal.goal,
+    overtimeTransition.goal,
+    transitionTerminal.goal,
+  ]) {
+    (goal as MutableRecord).team = 'orange';
+  }
+  rejectTerminalFor(wrongOvertimeScorer, /winning goal in the same event/i);
+});
+
+test('rejected candidates preserve caller payloads and previous accepted state', () => {
+  const previous = accepted(decodeSnapshot(makeV2('quick', 6, 90), {
+    roomMode: 'quick',
+  }));
+  const previousBefore = structuredClone(previous);
+
+  const duplicate = makeV2('quick', 6, 91);
+  const duplicateCars = duplicate.cars as MutableRecord[];
+  duplicateCars[1].sessionId = duplicateCars[0].sessionId;
+  const duplicateBefore = structuredClone(duplicate);
+
+  rejected(
+    decodeSnapshot(duplicate, { roomMode: 'quick', previousSnapshot: previous }),
+    'duplicate-identity',
+  );
+  assert.deepEqual(duplicate, duplicateBefore);
+
+  const sequenceRegression = makeV2('quick', 6, 90);
+  const sequenceRegressionBefore = structuredClone(sequenceRegression);
+  rejected(
+    decodeSnapshot(sequenceRegression, {
+      roomMode: 'quick',
+      previousSnapshot: previous,
+    }),
+    'sequence-regression',
+  );
+  assert.deepEqual(sequenceRegression, sequenceRegressionBefore);
+
+  assert.deepEqual(previous, previousBefore);
+  assert.equal(Object.isFrozen(previous), true);
+});

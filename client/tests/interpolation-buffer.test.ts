@@ -191,3 +191,31 @@ test('generated linear snapshots preserve interpolation bounds and normalized ro
     assert.ok(Math.abs(quaternionLength - 1) < 1e-12);
   }
 });
+
+
+test('accepted snapshots are defensively owned against later caller mutation', () => {
+  const callerEntity = { ...IDENTITY_ENTITY, x: 4, vx: 0 };
+  const callerSnapshot = {
+    sequence: 1,
+    serverTime: 1_700_000_000_100,
+    simulationTime: 100,
+    kickoffEpoch: 3,
+    entities: { car: callerEntity },
+  };
+  const buffer = new SnapshotBuffer({ interpolationDelayMs: 0 });
+
+  assert.equal(buffer.accept(callerSnapshot, 100), true);
+
+  callerSnapshot.sequence = 99;
+  callerSnapshot.simulationTime = 9_900;
+  callerSnapshot.kickoffEpoch = 99;
+  callerEntity.x = 999;
+  callerSnapshot.entities.car = { ...callerEntity, x: -999 };
+
+  const frame = buffer.sampleAt(100);
+  assert.ok(frame);
+  assert.deepEqual(buffer.getSnapshotSequences(), [1]);
+  assert.equal(frame.simulationTime, 100);
+  assert.equal(frame.kickoffEpoch, 3);
+  assert.equal(frame.entities.car.x, 4);
+});

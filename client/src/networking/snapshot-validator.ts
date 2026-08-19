@@ -1,5 +1,7 @@
 import {
   MATCH_PHASES,
+  REGULATION_GOAL_TARGET,
+  REGULATION_WIN_MARGIN,
   ROOM_POLICIES,
   SNAPSHOT_PROTOCOL_VERSION,
   SnapshotContractError,
@@ -303,11 +305,14 @@ function validateTerminalSemantics(snapshot: SnapshotEnvelopeV2): void {
   if (terminal.reason === 'regulation-target-and-margin') {
     const winnerScore = terminal.winner === 'blue' ? terminal.blueScore : terminal.orangeScore;
     const loserScore = terminal.winner === 'blue' ? terminal.orangeScore : terminal.blueScore;
-    if (winnerScore < 6 || winnerScore - loserScore < 2) {
+    if (
+      winnerScore < REGULATION_GOAL_TARGET
+      || winnerScore - loserScore < REGULATION_WIN_MARGIN
+    ) {
       fail(
         'terminal-coherence',
         'snapshot.terminalResult',
-        'regulation terminal score must satisfy the six-goal, two-goal-margin rule',
+        'regulation terminal score must satisfy the shared goal-target and win-margin rule',
       );
     }
   }

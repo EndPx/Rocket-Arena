@@ -154,3 +154,24 @@ test('generated jitter schedules preserve accounting, bounded work, and remainde
     previousSimulationTime = result.simulationTimeMs;
   }
 });
+
+
+test('snapshot cadence advances only by the sanitized long-callback delta', () => {
+  const scheduler = createScheduler();
+  assert.equal(scheduler.advance(0).snapshotDecision.reason, 'initial');
+
+  const stalled = scheduler.advance(1_000);
+  const clampedDeltaMs = PHYSICS.MAX_FRAME_DELTA_SECONDS * 1_000;
+  assert.equal(stalled.clampedDeltaMs, clampedDeltaMs);
+  assert.equal(stalled.snapshotDue, true);
+  assert.equal(stalled.snapshotDecision.reason, 'interval');
+  assert.equal(stalled.snapshotDecision.elapsedMs, clampedDeltaMs);
+
+  const carriedPhaseMs = clampedDeltaMs % NETCODE.SNAPSHOT_TARGET_INTERVAL_MS;
+  const earliestDueMs = NETCODE.SNAPSHOT_TARGET_INTERVAL_MS
+    - NETCODE.SNAPSHOT_SCHEDULING_TOLERANCE_MS;
+  const pendingDeltaMs = earliestDueMs - carriedPhaseMs - 0.01;
+  assert.ok(pendingDeltaMs > 0);
+  assert.equal(scheduler.advance(pendingDeltaMs).snapshotDue, false);
+  assert.equal(scheduler.advance(0.02).snapshotDue, true);
+});

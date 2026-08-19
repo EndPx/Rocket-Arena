@@ -189,3 +189,37 @@ test('repeated evaluation is identical and does not mutate caller-owned inputs',
   assert.ok(first.assignments.every(Object.isFrozen));
   assert.ok(Object.isFrozen(first.finalCounts));
 });
+
+
+test('Custom Room direct choices cover equal and unequal available counts', () => {
+  const policy = ROOM_POLICIES.custom;
+
+  assert.equal(chooseTeam(policy, 0, 0), 'blue');
+  assert.equal(chooseTeam(policy, 2, 2), 'blue');
+  assert.equal(chooseTeam(policy, 3, 2), 'orange');
+  assert.equal(chooseTeam(policy, 2, 3), 'blue');
+  assert.equal(chooseTeam(policy, 4, 3), 'orange');
+  assert.equal(chooseTeam(policy, 3, 4), 'blue');
+});
+
+test('unreachable imbalanced Quick seeds converge without reassigning existing players', () => {
+  const existingRoster: AssignedRosterIdentity[] = [
+    assigned('blue-0', 0, 'blue'),
+    assigned('blue-1', 1, 'blue'),
+    assigned('blue-2', 2, 'blue'),
+  ];
+  const before = structuredClone(existingRoster);
+
+  const plan = assignTeamsInStableRosterOrder(
+    ROOM_POLICIES.quick,
+    existingRoster,
+    [
+      { sessionId: 'repair-1', acceptedJoinOrdinal: 3 },
+      { sessionId: 'repair-2', acceptedJoinOrdinal: 4 },
+    ],
+  );
+
+  assert.deepEqual(plan.assignments.map(({ team }) => team), ['orange', 'orange']);
+  assert.deepEqual(plan.finalCounts, { blue: 3, orange: 2 });
+  assert.deepEqual(existingRoster, before);
+});
