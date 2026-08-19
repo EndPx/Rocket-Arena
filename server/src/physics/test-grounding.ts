@@ -1,0 +1,415 @@
+import assert from 'node:assert/strict';
+import RAPIER from '@dimforge/rapier3d-compat';
+import {
+  ARENA_GEOMETRY_SPEC,
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  TUNING_IDS,
+  getConstant,
+  type ArenaSurfaceDescriptor,
+  type TuningEntry,
+  type TuningRegistrySnapshot,
+} from '@rocket-arena/shared';
+import { createArenaColliders } from './arena.js';
+import {
+  ADVANCED_SURFACE_GROUNDING_ENABLED,
+  ArenaSurfaceRegistry,
+  createSurfaceRelativeBasis,
+  detectGroundSupport,
+  projectSurfaceCommand,
+  type GroundingQuaternion,
+  type GroundingTuningSnapshot,
+} from './grounding.js';
+import { initPhysics } from './world.js';
+
+const EPSILON = 1e-8;
+const CAR_HALF_HEIGHT = 0.18;
+const disposalTracker = { created: 0, freed: 0 };
+const SURFACES = new Map(
+  ARENA_GEOMETRY_SPEC.surfaces.map((surface) => [surface.id, surface]),
+);
+
+function descriptor(id: string): ArenaSurfaceDescriptor {
+  const value = SURFACES.get(id);
+  if (value === undefined) throw new Error(`Missing test surface descriptor ${id}`);
+  return value;
+}
+
+function createTrackedWorld(): RAPIER.World {
+  disposalTracker.created += 1;
+  return new RAPIER.World({ x: 0, y: -6.5, z: 0 });
+}
+
+function freeTrackedWorld(world: RAPIER.World): void {
+  world.free();
+  disposalTracker.freed += 1;
+}
+
+function rotationAroundX(radians: number): GroundingQuaternion {
+  return { x: Math.sin(radians / 2), y: 0, z: 0, w: Math.cos(radians / 2) };
+}
+
+function rotationAroundZ(radians: number): GroundingQuaternion {
+  return { x: 0, y: 0, z: Math.sin(radians / 2), w: Math.cos(radians / 2) };
+}
+
+function createProbe(
+  world: RAPIER.World,
+  translation: { x: number; y: number; z: number },
+  rotation: GroundingQuaternion = { x: 0, y: 0, z: 0, w: 1 },
+): RAPIER.RigidBody {
+  return world.createRigidBody(
+    RAPIER.RigidBodyDesc.dynamic()
+      .setTranslation(translation.x, translation.y, translation.z)
+      .setRotation(rotation),
+  );
+}
+
+function createFloorCollider(
+  world: RAPIER.World,
+  sensor = false,
+): RAPIER.Collider {
+  return world.createCollider(
+    RAPIER.ColliderDesc.cuboid(2, 0.05, 2)
+      .setTranslation(0, -0.05, 0)
+      .setSensor(sensor),
+  );
+}
+
+function tuningWith(
+  overrides: ReadonlyMap<string, number | readonly number[]>,
+): GroundingTuningSnapshot {
+  return {
+    get(id: string): TuningEntry | undefined {
+      const entry = DEFAULT_TUNING_REGISTRY_SNAPSHOT.get(id);
+      const replacement = overrides.get(id);
+      if (entry === undefined || replacement === undefined) return entry;
+      if (entry.kind === 'scalar' && typeof replacement === 'number') {
+        return { ...entry, value: replacement };
+      }
+      if (entry.kind === 'vector' && Array.isArray(replacement)) {
+        return { ...entry, value: replacement };
+      }
+      return entry;
+    },
+  } satisfies Pick<TuningRegistrySnapshot, 'get'>;
+}
+
+function assertApproximately(actual: number, expected: number, label: string): void {
+  assert.ok(Math.abs(actual - expected) <= EPSILON, `${label}: ${actual} != ${expected}`);
+}
+
+function assertFiniteResultGeometry(result: ReturnType<typeof detectGroundSupport>): void {
+  assert.equal(result.grounded, true);
+  assert.ok(result.normal !== null && result.basis !== null);
+  for (const vector of [
+    result.normal,
+    result.basis.normal,
+    result.basis.forward,
+    result.basis.right,
+  ]) {
+    assert.ok([vector.x, vector.y, vector.z].every(Number.isFinite));
+    assertApproximately(Math.hypot(vector.x, vector.y, vector.z), 1, 'basis unit vector');
+  }
+  assertApproximately(
+    result.basis.normal.x * result.basis.forward.x
+      + result.basis.normal.y * result.basis.forward.y
+      + result.basis.normal.z * result.basis.forward.z,
+    0,
+    'surface forward tangent',
+  );
+  const command = projectSurfaceCommand(result.basis, 1, 1);
+  assert.ok([command.x, command.y, command.z].every(Number.isFinite));
+  assert.ok(Math.hypot(command.x, command.y, command.z) <= 1 + EPSILON);
+}
+
+function runArenaSupportCases(): void {
+  const world = createTrackedWorld();
+  try {
+    const registry = createArenaColliders(world);
+    const entries = registry.entries();
+    assert.ok(entries.some((entry) => entry.surfaceId === 'field.floor' && entry.groundingEnabled));
+    for (const id of [
+      'field.ramp.west',
+      'field.ramp.east',
+      'field.ramp.blue-end',
+      'field.ramp.orange-end',
+      'goal.blue.floor',
+      'goal.blue.side-west',
+      'goal.blue.side-east',
+      'goal.blue.roof',
+      'goal.blue.back',
+      'goal.orange.floor',
+      'goal.orange.side-west',
+      'goal.orange.side-east',
+      'goal.orange.roof',
+      'goal.orange.back',
+    ]) {
+      assert.ok(entries.some((entry) => entry.surfaceId === id && entry.groundingEnabled), `${id} must be enabled Core metadata`);
+    }
+    assert.equal(ADVANCED_SURFACE_GROUNDING_ENABLED, false);
+    assert.ok(
+      entries.filter((entry) => entry.capability === 'advanced')
+        .every((entry) => entry.groundingEnabled === false),
+      'all present Advanced surfaces must be capability-disabled',
+    );
+
+    const floorProbe = createProbe(world, { x: 0, y: CAR_HALF_HEIGHT + 0.02, z: 0 });
+    world.updateSceneQueries();
+    const floor = detectGroundSupport(world, floorProbe, registry);
+    assert.equal(floor.grounded, true);
+    assert.ok(floor.acceptedHits.length >= 4, 'all four registry points should support on floor');
+    assert.ok(floor.acceptedHits.every((hit) => hit.surfaceId === 'field.floor'));
+    assertFiniteResultGeometry(floor);
+
+    floorProbe.setTranslation({ x: 0, y: 3, z: 0 }, true);
+    world.updateSceneQueries();
+    const miss = detectGroundSupport(world, floorProbe, registry);
+    assert.deepEqual(
+      miss,
+      { grounded: false, normal: null, basis: null, acceptedHits: [] },
+      'all misses must clear support without stale normal reuse',
+    );
+
+    const rampHeight = ARENA_GEOMETRY_SPEC.floorWallRamp.height;
+    const arenaHalfWidth = getConstant('ARENA.WIDTH') / 2;
+    const rampRotation = rotationAroundZ(Math.PI / 4);
+    const rampNormal = { x: -Math.SQRT1_2, y: Math.SQRT1_2, z: 0 };
+    const rampPoint = {
+      x: arenaHalfWidth - rampHeight / 2,
+      y: rampHeight / 2,
+      z: 0,
+    };
+    const rampProbe = createProbe(world, {
+      x: rampPoint.x + rampNormal.x * (CAR_HALF_HEIGHT + 0.02),
+      y: rampPoint.y + rampNormal.y * (CAR_HALF_HEIGHT + 0.02),
+      z: 0,
+    }, rampRotation);
+    world.updateSceneQueries();
+    const ramp = detectGroundSupport(world, rampProbe, registry);
+    assert.equal(ramp.grounded, true, 'rotated car must ground on lower ramp');
+    assert.ok(ramp.acceptedHits.some((hit) => hit.surfaceId === 'field.ramp.east'));
+    assertFiniteResultGeometry(ramp);
+
+    const goalCenterZ = getConstant('ARENA.LENGTH') / 2
+      + getConstant('ARENA.GOAL.DEPTH') / 2;
+    const goalFloorProbe = createProbe(world, {
+      x: 0,
+      y: CAR_HALF_HEIGHT + 0.02,
+      z: goalCenterZ,
+    });
+    world.updateSceneQueries();
+    const goalFloor = detectGroundSupport(world, goalFloorProbe, registry);
+    assert.ok(goalFloor.acceptedHits.some((hit) => hit.surfaceId === 'goal.orange.floor'));
+
+    const sideNormal = { x: -1, y: 0, z: 0 };
+    const sideProbe = createProbe(world, {
+      x: getConstant('ARENA.GOAL.WIDTH') / 2
+        + sideNormal.x * (CAR_HALF_HEIGHT + 0.02),
+      y: getConstant('ARENA.GOAL.HEIGHT') / 2,
+      z: goalCenterZ,
+    }, rotationAroundZ(Math.PI / 2));
+    world.updateSceneQueries();
+    const goalSide = detectGroundSupport(world, sideProbe, registry);
+    assert.equal(goalSide.grounded, true, 'rotated car must ground on solid goal interior');
+    assert.ok(goalSide.acceptedHits.some((hit) => hit.surfaceId === 'goal.orange.side-east'));
+    assertFiniteResultGeometry(goalSide);
+  } finally {
+    freeTrackedWorld(world);
+  }
+}
+
+function runAdjacentAndConfiguredCases(): void {
+  const adjacentWorld = createTrackedWorld();
+  try {
+    const registry = new ArenaSurfaceRegistry(adjacentWorld);
+    const first = adjacentWorld.createCollider(
+      RAPIER.ColliderDesc.cuboid(0.5, 0.05, 1).setTranslation(-0.5, -0.05, 0),
+    );
+    const second = adjacentWorld.createCollider(
+      RAPIER.ColliderDesc.cuboid(0.5, 0.05, 1).setTranslation(0.5, -0.05, 0),
+    );
+    registry.register(first, descriptor('goal.blue.floor'));
+    registry.register(second, descriptor('field.floor'));
+    const probe = createProbe(adjacentWorld, { x: 0, y: CAR_HALF_HEIGHT + 0.02, z: 0 });
+    adjacentWorld.updateSceneQueries();
+    const result = detectGroundSupport(adjacentWorld, probe, registry);
+    assert.equal(result.grounded, true, 'adjacent Core surfaces must combine support');
+    assert.deepEqual(
+      [...new Set(result.acceptedHits.map((hit) => hit.surfaceId))],
+      ['field.floor', 'goal.blue.floor'],
+      'accepted normals must be combined in stable semantic-ID order',
+    );
+    assertFiniteResultGeometry(result);
+  } finally {
+    freeTrackedWorld(adjacentWorld);
+  }
+
+  const distanceWorld = createTrackedWorld();
+  try {
+    const registry = new ArenaSurfaceRegistry(distanceWorld);
+    registry.register(createFloorCollider(distanceWorld), descriptor('field.floor'));
+    const probe = createProbe(distanceWorld, { x: 0, y: CAR_HALF_HEIGHT + 0.2, z: 0 });
+    distanceWorld.updateSceneQueries();
+    assert.equal(detectGroundSupport(distanceWorld, probe, registry).grounded, true);
+    const shortRay = tuningWith(new Map<string, number | readonly number[]>([[TUNING_IDS.support.rayDistance, 0.1]]));
+    assert.equal(
+      detectGroundSupport(distanceWorld, probe, registry, { tuning: shortRay }).grounded,
+      false,
+      'configured ray distance must be enforced',
+    );
+  } finally {
+    freeTrackedWorld(distanceWorld);
+  }
+
+  const thresholdWorld = createTrackedWorld();
+  try {
+    const registry = new ArenaSurfaceRegistry(thresholdWorld);
+    registry.register(createFloorCollider(thresholdWorld), descriptor('field.floor'));
+    const probe = createProbe(
+      thresholdWorld,
+      { x: 0, y: 0.15, z: 0 },
+      rotationAroundZ(50 * Math.PI / 180),
+    );
+    const contactPoints = [
+      0, -CAR_HALF_HEIGHT, -0.3,
+      0, -CAR_HALF_HEIGHT, -0.1,
+      0, -CAR_HALF_HEIGHT, 0.1,
+      0, -CAR_HALF_HEIGHT, 0.3,
+    ];
+    const permissive = tuningWith(new Map<string, number | readonly number[]>([
+      [TUNING_IDS.support.contactPoints, contactPoints],
+      [TUNING_IDS.support.normalAngleThresholdDegrees, 60],
+    ]));
+    const strict = tuningWith(new Map<string, number | readonly number[]>([
+      [TUNING_IDS.support.contactPoints, contactPoints],
+      [TUNING_IDS.support.normalAngleThresholdDegrees, 40],
+    ]));
+    thresholdWorld.updateSceneQueries();
+    assert.equal(
+      detectGroundSupport(thresholdWorld, probe, registry, { tuning: permissive }).grounded,
+      true,
+      'surface within configured normal threshold must support',
+    );
+    assert.equal(
+      detectGroundSupport(thresholdWorld, probe, registry, { tuning: strict }).grounded,
+      false,
+      'surface outside configured normal threshold must be rejected',
+    );
+  } finally {
+    freeTrackedWorld(thresholdWorld);
+  }
+}
+
+function assertRejectedSurface(
+  label: string,
+  setup: (world: RAPIER.World, registry: ArenaSurfaceRegistry) => void,
+): void {
+  const world = createTrackedWorld();
+  try {
+    const registry = new ArenaSurfaceRegistry(world);
+    setup(world, registry);
+    const probe = createProbe(world, { x: 0, y: CAR_HALF_HEIGHT + 0.02, z: 0 });
+    world.updateSceneQueries();
+    const result = detectGroundSupport(world, probe, registry);
+    assert.deepEqual(
+      result,
+      { grounded: false, normal: null, basis: null, acceptedHits: [] },
+      `${label} must not provide support`,
+    );
+  } finally {
+    freeTrackedWorld(world);
+  }
+}
+
+function runFilteringCases(): void {
+  assertRejectedSurface('dynamic car', (world, registry) => {
+    const body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(0, -0.05, 0));
+    const collider = world.createCollider(RAPIER.ColliderDesc.cuboid(2, 0.05, 2), body);
+    registry.register(collider, descriptor('field.floor'));
+  });
+  assertRejectedSurface('dynamic ball', (world, registry) => {
+    const body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(0, -0.2, 0));
+    const collider = world.createCollider(RAPIER.ColliderDesc.ball(0.2), body);
+    registry.register(collider, descriptor('field.floor'));
+  });
+  assertRejectedSurface('sensor', (world, registry) => {
+    registry.register(createFloorCollider(world, true), descriptor('field.floor'));
+  });
+  assertRejectedSurface('disabled collider', (world, registry) => {
+    const collider = createFloorCollider(world);
+    collider.setEnabled(false);
+    registry.register(collider, descriptor('field.floor'));
+  });
+  assertRejectedSurface('disabled Advanced surface', (world, registry) => {
+    const collider = createFloorCollider(world);
+    const metadata = registry.register(collider, descriptor('field.ceiling'), true);
+    assert.equal(metadata.capability, 'advanced');
+    assert.equal(metadata.groundingEnabled, false);
+  });
+  assertRejectedSurface('untagged fixed geometry', (world) => {
+    createFloorCollider(world);
+  });
+
+  const firstWorld = createTrackedWorld();
+  try {
+    const secondWorld = createTrackedWorld();
+    try {
+      const firstRegistry = new ArenaSurfaceRegistry(firstWorld);
+      firstRegistry.register(createFloorCollider(firstWorld), descriptor('field.floor'));
+      const secondProbe = createProbe(secondWorld, { x: 0, y: CAR_HALF_HEIGHT, z: 0 });
+      assert.throws(
+        () => detectGroundSupport(secondWorld, secondProbe, firstRegistry),
+        /different Rapier world/,
+        'per-world registries must prevent cross-world handle aliasing',
+      );
+    } finally {
+      freeTrackedWorld(secondWorld);
+    }
+  } finally {
+    freeTrackedWorld(firstWorld);
+  }
+}
+
+function assertStandaloneBasisFallback(): void {
+  const basis = createSurfaceRelativeBasis(
+    { x: Number.NaN, y: 0, z: 0 },
+    { x: 0, y: 1, z: 0 },
+  );
+  const command = projectSurfaceCommand(basis, Number.POSITIVE_INFINITY, 0.5);
+  assert.ok([command.x, command.y, command.z].every(Number.isFinite));
+}
+
+function assertSetupFailureCleanup(): void {
+  assert.throws(() => {
+    const world = createTrackedWorld();
+    try {
+      const registry = new ArenaSurfaceRegistry(world);
+      registry.register(createFloorCollider(world), descriptor('field.floor'));
+      throw new Error('synthetic grounding setup assertion failure');
+    } finally {
+      freeTrackedWorld(world);
+    }
+  }, /synthetic grounding setup assertion failure/);
+}
+
+async function main(): Promise<void> {
+  await initPhysics();
+  runArenaSupportCases();
+  runAdjacentAndConfiguredCases();
+  runFilteringCases();
+  assertStandaloneBasisFallback();
+  assertSetupFailureCleanup();
+  assert.equal(
+    disposalTracker.freed,
+    disposalTracker.created,
+    'every grounding-harness Rapier world must be freed',
+  );
+  console.log('=== GROUNDING HARNESS: PASS ===');
+  console.log(`cleanup=${disposalTracker.freed}/${disposalTracker.created} worlds`);
+}
+
+main().catch((error: unknown) => {
+  console.error('=== GROUNDING HARNESS: FAIL ===');
+  console.error(error);
+  process.exitCode = 1;
+});

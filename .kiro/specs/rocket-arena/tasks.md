@@ -258,7 +258,7 @@ Every implementation task must leave its code wired into the preceding increment
     - _Depends on: 1.4, 4.11_
     - _Requirements: 7.1-7.12, 11.1-11.11, 18.7, 18.11, 18.26_
 
-  - [ ] 5.2 Implement speed-dependent throttle, boost actuation, drag, and propulsion bounds
+  - [x] 5.2 Implement speed-dependent throttle, boost actuation, drag, and propulsion bounds
     - Add `server/src/physics/car-controller.ts` with pure command planning for the validated non-increasing throttle curve, normalized input scaling, zero positive throttle acceleration at/above 14.1 m/s, exact 9.91666 m/s² local-forward boost in air or on ground, optional opposite-motion drag, and 23 m/s propulsion projection.
     - Add focused controller unit tests and Rapier traces in `server/src/physics/test-controller.ts` for sub-target acceleration, target cutoff, boost direction, finite fallback, and speed limits; free all Rapier resources in `finally`.
     - Keep inventory ownership separate for Stage 7 while accepting an authoritative available-boost amount as controller input.
@@ -278,7 +278,7 @@ Every implementation task must leave its code wired into the preceding increment
     - _Depends on: 1.2, 5.3_
     - _Requirements: 9.1-9.17, 18.5-18.6_
 
-  - [ ] 5.5 Implement local-down grounding for Core surfaces
+  - [x] 5.5 Implement local-down grounding for Core surfaces
     - Add `server/src/physics/grounding.ts` with at least four registry-configured footprint points, Local_Down rays, static non-sensor filtering, Core surface tags, distance/normal thresholds, deterministic sorted normal combination, and no stale support when all rays miss.
     - Refactor `server/src/physics/arena.ts` only enough to tag the current floor, lower ramps, and solid goal-interior Core surfaces; keep Advanced surfaces capability-gated and explicitly disabled for the staging increment.
     - Add `server/src/physics/test-grounding.ts` for rotated cars, floor/ramp/goal support, adjacent surfaces, dynamic/ball/sensor/disabled exclusions, all-miss airborne behavior, surface-relative commands, and guaranteed Rapier cleanup.
