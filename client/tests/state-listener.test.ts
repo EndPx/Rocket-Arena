@@ -8,6 +8,7 @@ import {
   type RoomMode,
 } from '@rocket-arena/shared';
 import { acceptedSnapshotStore } from '../src/networking/accepted-snapshot-store.js';
+import { createAcceptedLobbyView } from '../src/ui/lobby-state.js';
 import {
   clearEntityMeshes,
   getBallMesh,
@@ -553,6 +554,81 @@ test('payloads emitted by rollback callbacks run only after rollback completes',
     assert.equal(getInterpolationStats().acceptedSnapshots, 2, 'sequence 2 was rolled back');
     assert.equal(scene.children.length, 3);
   } finally {
+    room.leave();
+  }
+});
+
+test('listener rejects a missing joined mode before replacing accepted room state', () => {
+  const scene = new THREE.Scene();
+  const activeRoom = new FakeRoom('arena');
+  setup(activeRoom, scene, 'quick');
+
+  try {
+    activeRoom.emit(payload('quick', ['preserved-driver'], 1));
+    const beforeLocal = getLocalState();
+    const beforeStore = acceptedSnapshotStore.getState();
+    const beforeMeshes = new Map(getCarMeshes());
+    const beforeChildren = [...scene.children];
+    const unownedRoom = new FakeRoom('custom');
+
+    assert.throws(
+      () => setupStateListener(asRoom(unownedRoom), scene),
+      /explicit joined room mode/,
+    );
+    assert.strictEqual(getLocalState(), beforeLocal);
+    assert.strictEqual(acceptedSnapshotStore.getState(), beforeStore);
+    assert.deepEqual([...getCarMeshes()], [...beforeMeshes]);
+    assert.deepEqual(scene.children, beforeChildren);
+  } finally {
+    activeRoom.leave();
+  }
+});
+
+test('accepted lobby views ignore rejected navigation payloads and expose the maximum Custom Host', () => {
+  const scene = new THREE.Scene();
+  const room = new FakeRoom('custom');
+  setup(room, scene, 'custom');
+  const views: ReturnType<typeof createAcceptedLobbyView>[] = [];
+  const unsubscribe = acceptedSnapshotStore.subscribe((change) => {
+    if (change.type === 'commit' && change.current.snapshot !== null) {
+      views.push(createAcceptedLobbyView(change.current.snapshot, 'driver-0'));
+    }
+  });
+
+  try {
+    const ids = Array.from({ length: 8 }, (_, index) => `driver-${index}`);
+    const waiting = payload('custom', ids, 1);
+    waiting.phase = 'waiting';
+    room.emit(waiting);
+
+    assert.equal(views.length, 1);
+    assert.equal(views[0]?.totalCount, 8);
+    assert.equal(views[0]?.totalCapacity, 8);
+    assert.equal(views[0]?.blueCars.length, 4);
+    assert.equal(views[0]?.orangeCars.length, 4);
+    assert.equal(views[0]?.localIsHost, true);
+    assert.equal(views[0]?.enterGameplay, false);
+
+    const unsupported = payload('custom', ids, 2);
+    unsupported.protocolVersion = 999;
+    unsupported.phase = 'playing';
+    room.emit(unsupported);
+    const mixed = payload('custom', ids, 2);
+    mixed.players = {};
+    mixed.phase = 'playing';
+    room.emit(mixed);
+
+    assert.equal(views.length, 1, 'rejected payloads cannot update lobby or navigation state');
+    assert.equal(getLocalState()?.phase, 'waiting');
+    assert.equal(acceptedSnapshotStore.getSnapshot()?.phase, 'waiting');
+
+    const playing = payload('custom', ids, 2);
+    playing.phase = 'playing';
+    room.emit(playing);
+    assert.equal(views.length, 2);
+    assert.equal(views[1]?.enterGameplay, true);
+  } finally {
+    unsubscribe();
     room.leave();
   }
 });

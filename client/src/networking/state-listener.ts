@@ -526,9 +526,9 @@ function commitPreparedAcceptance(
   return true;
 }
 
-function resolveRoomMode(room: Room, explicitMode: RoomMode | undefined): RoomMode {
-  if (explicitMode !== undefined) return explicitMode;
-  return room.name === 'custom' ? 'custom' : 'quick';
+function requireRoomMode(explicitMode: RoomMode | undefined): RoomMode {
+  if (explicitMode === 'quick' || explicitMode === 'custom') return explicitMode;
+  throw new TypeError('State listener requires the explicit joined room mode.');
 }
 
 /**
@@ -541,10 +541,10 @@ export function setupStateListener(
   scene: THREE.Scene,
   options: StateListenerOptions = {},
 ): void {
+  const roomMode = requireRoomMode(options.roomMode);
   const generation = ++listenerGeneration;
   cleanupEntityMeshes();
   const acceptedGeneration = resetAcceptedSnapshotStore();
-  const roomMode = resolveRoomMode(room, options.roomMode);
   const carMeshFactory = options.carMeshFactory ?? createCarMesh;
   const ballMeshFactory = options.ballMeshFactory ?? createBallMesh;
   const clock = options.clock ?? nowMs;

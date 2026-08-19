@@ -142,7 +142,7 @@ Every implementation task must leave its code wired into the preceding increment
     - _Depends on: 3.2, 3.3_
     - _Requirements: 6.9-6.12_
 
-  - [ ] 3.5 Switch both room adapters and the client connection path to V2
+  - [x] 3.5 Switch both room adapters and the client connection path to V2
     - Wire `server/src/rooms/authoritative-room-core.ts`, `server/src/rooms/arena-room.ts`, and `server/src/rooms/custom-room.ts` to `SnapshotBuilder`, and update `client/src/networking/client.ts` to pass joined room mode into decoding.
     - Keep the V1 adapter only for migration, verify unsupported versions are never partially applied, and add server/client integration tests for maximum-capacity Custom transport, post-disconnect omission, and coherent repeated terminal score/winner/reason/transition snapshots.
     - _Depends on: 2.4, 2.5, 3.1, 3.4_

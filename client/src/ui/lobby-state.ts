@@ -61,3 +61,54 @@ export function getRoomCodeValidationMessage(code: string): string | null {
   if (code.length !== ROOM_CODE_LENGTH) return `Room code must be ${ROOM_CODE_LENGTH} characters.`;
   return null;
 }
+
+export interface AcceptedLobbyCar {
+  readonly sessionId: string;
+  readonly team: 'blue' | 'orange';
+  readonly name: string;
+  readonly isHost: boolean;
+}
+
+export interface AcceptedLobbySnapshot {
+  readonly phase: string;
+  readonly totalCapacity: number;
+  readonly cars: readonly Readonly<AcceptedLobbyCar>[];
+}
+
+export interface LobbyCarView extends AcceptedLobbyCar {
+  readonly isLocal: boolean;
+}
+
+export interface AcceptedLobbyView {
+  readonly phase: string;
+  readonly totalCapacity: number;
+  readonly totalCount: number;
+  readonly cars: readonly Readonly<LobbyCarView>[];
+  readonly blueCars: readonly Readonly<LobbyCarView>[];
+  readonly orangeCars: readonly Readonly<LobbyCarView>[];
+  readonly localIsHost: boolean;
+  readonly matchStarting: boolean;
+  readonly enterGameplay: boolean;
+}
+
+/** Project only decoder-accepted snapshots into lobby rendering/navigation state. */
+export function createAcceptedLobbyView(
+  snapshot: Readonly<AcceptedLobbySnapshot>,
+  localSessionId: string,
+): Readonly<AcceptedLobbyView> {
+  const cars = Object.freeze(snapshot.cars.map((car) => Object.freeze({
+    ...car,
+    isLocal: car.sessionId === localSessionId,
+  })));
+  return Object.freeze({
+    phase: snapshot.phase,
+    totalCapacity: snapshot.totalCapacity,
+    totalCount: cars.length,
+    cars,
+    blueCars: Object.freeze(cars.filter((car) => car.team === 'blue')),
+    orangeCars: Object.freeze(cars.filter((car) => car.team === 'orange')),
+    localIsHost: cars.some((car) => car.isLocal && car.isHost),
+    matchStarting: snapshot.phase === 'countdown',
+    enterGameplay: snapshot.phase === 'playing' || snapshot.phase === 'overtime',
+  });
+}

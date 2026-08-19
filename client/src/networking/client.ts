@@ -1,67 +1,122 @@
-import { Client, Room } from 'colyseus.js';
-import { GameState } from '@rocket-arena/shared';
+import { Client, type Room } from 'colyseus.js';
+import { GameState, type RoomMode } from '@rocket-arena/shared';
 
-const SERVER_URL = `ws://${window.location.hostname}:2567`;
+type GameRoom = Room<GameState>;
+type RoomObserver = (room: GameRoom | null) => void;
+type DebugWindow = Window & { __debugRoom?: GameRoom | null };
 
-let client: Client;
-let room: Room<GameState> | null = null;
+/** Owns one client connection's room identity and explicit decode mode. */
+export class RoomConnectionManager {
+  private room: GameRoom | null = null;
+  private readonly joinedRoomModes = new WeakMap<GameRoom, RoomMode>();
 
-type DebugWindow = Window & { __debugRoom?: Room<GameState> | null };
+  constructor(
+    readonly client: Client,
+    private readonly observeRoom: RoomObserver = () => {},
+  ) {}
 
-function exposeDebugRoom(nextRoom: Room<GameState> | null): void {
+  async joinArena(name?: string): Promise<GameRoom> {
+    const joinedRoom = this.ownRoom(
+      await this.client.joinOrCreate<GameState>('arena', { name: name || 'Player' }),
+      'quick',
+    );
+    console.log(`[Net] Joined arena room: ${joinedRoom.id}, sessionId: ${joinedRoom.sessionId}`);
+    return joinedRoom;
+  }
+
+  async createCustomRoom(name?: string): Promise<GameRoom> {
+    const joinedRoom = this.ownRoom(
+      await this.client.create<GameState>('custom', { name: name || 'Player' }),
+      'custom',
+    );
+    console.log(`[Net] Created custom room: ${joinedRoom.id}`);
+    return joinedRoom;
+  }
+
+  async joinCustomRoom(code: string, name?: string): Promise<GameRoom> {
+    const rooms = await this.client.getAvailableRooms('custom');
+    const target = rooms.find((candidate) => candidate.metadata?.code === code.toUpperCase());
+    if (!target) throw new Error('Room not found');
+    const joinedRoom = this.ownRoom(
+      await this.client.joinById<GameState>(target.roomId, { name: name || 'Player' }),
+      'custom',
+    );
+    console.log(`[Net] Joined custom room: ${joinedRoom.id} (code: ${code})`);
+    return joinedRoom;
+  }
+
+  getJoinedRoomMode(joinedRoom: GameRoom): RoomMode {
+    const mode = this.joinedRoomModes.get(joinedRoom);
+    if (mode === undefined) {
+      throw new Error('Joined room mode is unavailable for this connection.');
+    }
+    return mode;
+  }
+
+  getRoom(): GameRoom | null {
+    if (this.room && !this.room.connection.isOpen) this.clearCurrentRoom(this.room);
+    return this.room;
+  }
+
+  private ownRoom(nextRoom: GameRoom, mode: RoomMode): GameRoom {
+    this.room = nextRoom;
+    this.joinedRoomModes.set(nextRoom, mode);
+    this.observeRoom(nextRoom);
+    nextRoom.onLeave(() => this.clearCurrentRoom(nextRoom));
+    return nextRoom;
+  }
+
+  private clearCurrentRoom(expectedRoom: GameRoom): void {
+    this.joinedRoomModes.delete(expectedRoom);
+    if (this.room !== expectedRoom) return;
+    this.room = null;
+    this.observeRoom(null);
+  }
+}
+
+let client: Client | null = null;
+let connectionManager: RoomConnectionManager | null = null;
+
+function exposeDebugRoom(nextRoom: GameRoom | null): void {
+  if (typeof window === 'undefined') return;
   (window as DebugWindow).__debugRoom = nextRoom;
 }
 
-function clearCurrentRoom(expectedRoom: Room<GameState>): void {
-  if (room !== expectedRoom) return;
-  room = null;
-  exposeDebugRoom(null);
-}
-
-function ownRoom(nextRoom: Room<GameState>): Room<GameState> {
-  room = nextRoom;
-  exposeDebugRoom(nextRoom);
-  nextRoom.onLeave(() => clearCurrentRoom(nextRoom));
-  return nextRoom;
+function getServerUrl(): string {
+  if (typeof window === 'undefined') {
+    throw new Error('The browser networking client requires a Window location.');
+  }
+  return `ws://${window.location.hostname}:2567`;
 }
 
 export function getClient(): Client {
-  if (!client) {
-    client = new Client(SERVER_URL);
-  }
+  if (client === null) client = new Client(getServerUrl());
   return client;
 }
 
-export async function joinArena(name?: string): Promise<Room<GameState>> {
-  const c = getClient();
-  const joinedRoom = ownRoom(
-    await c.joinOrCreate<GameState>('arena', { name: name || 'Player' }),
-  );
-  console.log(`[Net] Joined arena room: ${joinedRoom.id}, sessionId: ${joinedRoom.sessionId}`);
-  return joinedRoom;
+function getConnectionManager(): RoomConnectionManager {
+  if (connectionManager === null) {
+    connectionManager = new RoomConnectionManager(getClient(), exposeDebugRoom);
+  }
+  return connectionManager;
 }
 
-export async function createCustomRoom(name?: string): Promise<Room<GameState>> {
-  const c = getClient();
-  const joinedRoom = ownRoom(await c.create<GameState>('custom', { name: name || 'Player' }));
-  console.log(`[Net] Created custom room: ${joinedRoom.id}`);
-  return joinedRoom;
+export function joinArena(name?: string): Promise<GameRoom> {
+  return getConnectionManager().joinArena(name);
 }
 
-export async function joinCustomRoom(code: string, name?: string): Promise<Room<GameState>> {
-  const c = getClient();
-  // Find room by metadata code
-  const rooms = await c.getAvailableRooms('custom');
-  const target = rooms.find(r => r.metadata?.code === code.toUpperCase());
-  if (!target) throw new Error('Room not found');
-  const joinedRoom = ownRoom(
-    await c.joinById<GameState>(target.roomId, { name: name || 'Player' }),
-  );
-  console.log(`[Net] Joined custom room: ${joinedRoom.id} (code: ${code})`);
-  return joinedRoom;
+export function createCustomRoom(name?: string): Promise<GameRoom> {
+  return getConnectionManager().createCustomRoom(name);
 }
 
-export function getRoom(): Room<GameState> | null {
-  if (room && !room.connection.isOpen) clearCurrentRoom(room);
-  return room;
+export function joinCustomRoom(code: string, name?: string): Promise<GameRoom> {
+  return getConnectionManager().joinCustomRoom(code, name);
+}
+
+export function getJoinedRoomMode(joinedRoom: GameRoom): RoomMode {
+  return getConnectionManager().getJoinedRoomMode(joinedRoom);
+}
+
+export function getRoom(): GameRoom | null {
+  return getConnectionManager().getRoom();
 }

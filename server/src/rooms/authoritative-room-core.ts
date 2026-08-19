@@ -13,6 +13,7 @@ import {
   type RoomPinnedTuningSnapshot,
   type RoomPolicy,
   type RosterEntry,
+  type SnapshotEnvelopeV2,
   type Vector3Tuple,
   type VersionedTuningRegistry,
 } from '@rocket-arena/shared';
@@ -45,6 +46,7 @@ import {
   type RoomMutationState,
 } from '../systems/room-mutations.js';
 import { FixedStepScheduler } from './fixed-step-scheduler.js';
+import { SnapshotBuilder } from '../systems/snapshot-builder.js';
 
 const DEFAULT_TUNING_REGISTRY = createVersionedTuningRegistry();
 
@@ -489,6 +491,7 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
   private readonly onFatal?: (error: Error) => void;
   private readonly onMutationResult?: (result: AuthoritativeRoomMutationResult) => void;
   private readonly scheduler: FixedStepScheduler;
+  private readonly snapshotBuilder: SnapshotBuilder;
   private readonly kickoffAssignmentService: DeterministicKickoffAssignmentService;
   private readonly matchFlowConfig: Readonly<MatchFlowConfig>;
 
@@ -524,6 +527,7 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
     this.tuningSnapshot = (options.tuningRegistry ?? DEFAULT_TUNING_REGISTRY)
       .pinForRoom(this.roomId);
     this.matchFlowConfig = createMatchFlowConfig(this.policy.mode, this.tuningSnapshot);
+    this.snapshotBuilder = new SnapshotBuilder({ policy: this.policy });
     this.kickoffAssignmentService = new DeterministicKickoffAssignmentService({
       policy: this.policy,
       tuningRegistry: this.tuningSnapshot,
@@ -1067,6 +1071,144 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
     } catch (cause) {
       this.failRoom(cause, 'Authoritative state projection failed.');
       return null;
+    }
+  }
+
+  /**
+   * Convert one current authoritative projection into the room's next V2 wire
+   * snapshot. The builder is room-long-lived, so sequence, recovery, and
+   * terminal-event identity survive across broadcasts.
+   */
+  buildSnapshotV2(
+    projection: Readonly<AuthoritativeRoomProjection>,
+    serverTime: number,
+  ): Readonly<SnapshotEnvelopeV2> | null {
+    if (!this.canPublishSnapshots || this.stateValue === null) return null;
+
+    try {
+      const state = this.stateValue;
+      const flow = this.matchFlowStateValue;
+      if (flow === null) {
+        throw new Error('V2 snapshot production requires initialized match-flow state.');
+      }
+      if (
+        projection.roomId !== this.roomId
+        || projection.policy !== this.policy
+        || projection.revision !== state.revision
+        || projection.simulationTimeMs !== this.scheduler.simulationTimeMs
+        || projection.phase !== flow.phase
+        || projection.countdownKind !== flow.countdownKind
+        || projection.blueScore !== flow.blueScore
+        || projection.orangeScore !== flow.orangeScore
+      ) {
+        throw new Error('V2 snapshot projection is stale or belongs to another room.');
+      }
+
+      this.ensureTerminalSnapshotTransition(flow);
+      const roster = Object.freeze(projection.cars.map((car) => Object.freeze({
+        sessionId: car.sessionId,
+        acceptedJoinOrdinal: car.acceptedJoinOrdinal,
+        team: car.team,
+        name: car.name,
+        isHost: car.isHost,
+      } satisfies RosterEntry)));
+      const cars = new Map(projection.cars.map((car) => [car.sessionId, Object.freeze({
+        position: car.position,
+        rotation: car.rotation,
+        linearVelocity: car.linearVelocity,
+        boost: car.boost,
+      })]));
+      const phaseSteps = flow.phase === 'countdown'
+        ? flow.countdownStepsRemaining
+        : flow.phase === 'goal-reset'
+          ? flow.goalResetStepsRemaining
+          : 0;
+
+      return this.snapshotBuilder.build({
+        serverTime,
+        simulationTime: projection.simulationTimeMs,
+        phase: flow.phase,
+        countdownKind: flow.countdownKind,
+        phaseSecondsRemaining: phaseSteps / this.matchFlowConfig.rules.fixedStepsPerSecond,
+        regulationSecondsRemaining: flow.regulationStepsRemaining
+          / this.matchFlowConfig.rules.fixedStepsPerSecond,
+        kickoffEpoch: flow.kickoffEpoch,
+        blueScore: flow.blueScore,
+        orangeScore: flow.orangeScore,
+        winner: flow.winner,
+        roster,
+        cars,
+        ball: Object.freeze({
+          position: projection.ball.position,
+          rotation: projection.ball.rotation,
+          linearVelocity: projection.ball.linearVelocity,
+        }),
+      });
+    } catch (cause) {
+      this.failRoom(cause, 'Authoritative V2 snapshot build failed.');
+      return null;
+    }
+  }
+
+  /**
+   * Convert a synchronous encoder/broadcaster failure into the same idempotent
+   * fatal boundary used by authoritative build failures. A partially delivered
+   * snapshot is never retried because its room-local sequence may be observable.
+   */
+  failSnapshotPublication(cause: unknown): void {
+    this.failRoom(cause, 'Authoritative V2 snapshot publication failed.');
+  }
+
+  private ensureTerminalSnapshotTransition(flow: Readonly<MatchFlowState>): void {
+    if (flow.phase !== 'ended') return;
+    const terminal = flow.terminalResult;
+    if (terminal === null) {
+      throw new Error('Ended match-flow state is missing its terminal result.');
+    }
+
+    const committed = this.snapshotBuilder.latestTransition?.terminal ?? null;
+    if (committed !== null) {
+      if (
+        committed.reason !== terminal.reason
+        || committed.winner !== terminal.winner
+        || committed.blueScore !== terminal.blueScore
+        || committed.orangeScore !== terminal.orangeScore
+      ) {
+        throw new Error('Authoritative terminal result changed after V2 publication.');
+      }
+      return;
+    }
+
+    const goal = terminal.goal === null || terminal.goal === undefined
+      ? null
+      : Object.freeze({
+        team: terminal.goal.team,
+        kickoffEpoch: terminal.goal.kickoffEpoch,
+        blueScore: terminal.goal.blueScore,
+        orangeScore: terminal.goal.orangeScore,
+      });
+    switch (terminal.reason) {
+      case 'regulation-target-and-margin':
+        if (goal === null) throw new Error('Regulation terminal goal is missing.');
+        this.snapshotBuilder.commitTransition({ kind: 'regulation-terminal-goal', goal });
+        return;
+      case 'hard-regulation-cutoff':
+        this.snapshotBuilder.commitTransition({
+          kind: 'hard-cutoff',
+          winner: terminal.winner,
+          blueScore: terminal.blueScore,
+          orangeScore: terminal.orangeScore,
+          goal,
+        });
+        return;
+      case 'overtime-goal':
+        if (goal === null) throw new Error('Overtime terminal goal is missing.');
+        this.snapshotBuilder.commitTransition({ kind: 'overtime-terminal-goal', goal });
+        return;
+      default: {
+        const exhaustiveReason: never = terminal.reason;
+        throw new TypeError(`Unsupported terminal reason: ${String(exhaustiveReason)}.`);
+      }
     }
   }
 

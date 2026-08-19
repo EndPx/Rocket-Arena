@@ -38,6 +38,7 @@ import {
   type AuthoritativeRoomProjection,
   type AuthoritativeRoomWorldBundle,
 } from './authoritative-room-core.js';
+import { broadcastDueV2Snapshot } from './room-snapshot-transport.js';
 
 const { Room } = colyseus;
 
@@ -281,16 +282,9 @@ function legacyInputCommand(
 export class CustomRoom extends Room<GameState> {
   private core!: CustomRoomCore;
   private readonly legacyInputEdges = new Map<string, LegacyInputEdgeState>();
-  private snapshotSequence = 0;
 
-  onCreate(options: unknown): void {
-    this.setState(new GameState());
-    this.applyPolicyMetadata();
-    this.maxClients = CUSTOM_ROOM_POLICY.totalCapacity;
-    this.setPatchRate(getConstant('NETCODE.PATCH_RATE_MS'));
-
-    const requested = isRecord(options) ? options : {};
-    this.core = createCustomRoomCore({
+  protected createAuthoritativeCore(requested: Record<string, unknown>): CustomRoomCore {
+    return createCustomRoomCore({
       roomId: this.roomId,
       totalCapacity: requested.totalCapacity,
       teamCapacity: requested.teamCapacity,
@@ -299,6 +293,16 @@ export class CustomRoom extends Room<GameState> {
         console.error(`[CustomRoom] Authoritative core failed: ${error.message}`, error);
       },
     });
+  }
+
+  onCreate(options: unknown): void {
+    this.setState(new GameState());
+    this.applyPolicyMetadata();
+    this.maxClients = CUSTOM_ROOM_POLICY.totalCapacity;
+    this.setPatchRate(getConstant('NETCODE.PATCH_RATE_MS'));
+
+    const requested = isRecord(options) ? options : {};
+    this.core = this.createAuthoritativeCore(requested);
 
     const code = generateRoomCode();
     this.setMetadata({ code });
@@ -452,9 +456,13 @@ export class CustomRoom extends Room<GameState> {
   private advanceSimulation(deltaTimeMs: number): void {
     const frame = this.core.advanceSimulation(deltaTimeMs);
     const projection = this.synchronizeState();
-    if (frame.snapshotDue && projection !== null) {
-      this.broadcastLegacyState(projection);
-    }
+    broadcastDueV2Snapshot(
+      frame.snapshotDue,
+      projection,
+      this.core,
+      Date.now(),
+      (type, snapshot) => { this.broadcast(type, snapshot); },
+    );
   }
 
   private applyPolicyMetadata(): void {
@@ -531,50 +539,6 @@ export class CustomRoom extends Room<GameState> {
     this.state.refreshAuthoritativeOccupancy(projection.policy);
 
     return projection;
-  }
-
-  /** Temporary V1 envelope retained until the staged V2 transport task. */
-  private broadcastLegacyState(projection: Readonly<AuthoritativeRoomProjection>): void {
-    const players = Object.fromEntries(projection.cars.map((car) => [car.sessionId, {
-      x: car.position[0],
-      y: car.position[1],
-      z: car.position[2],
-      qx: car.rotation[0],
-      qy: car.rotation[1],
-      qz: car.rotation[2],
-      qw: car.rotation[3],
-      vx: car.linearVelocity[0],
-      vy: car.linearVelocity[1],
-      vz: car.linearVelocity[2],
-      boost: car.boost,
-      team: car.team,
-      name: car.name,
-      isHost: car.isHost,
-    }]));
-
-    const ball = projection.ball;
-    this.broadcast('state-sync', {
-      sequence: ++this.snapshotSequence,
-      serverTime: Date.now(),
-      simulationTime: projection.simulationTimeMs,
-      players,
-      ball: {
-        x: ball.position[0],
-        y: ball.position[1],
-        z: ball.position[2],
-        qx: ball.rotation[0],
-        qy: ball.rotation[1],
-        qz: ball.rotation[2],
-        qw: ball.rotation[3],
-        vx: ball.linearVelocity[0],
-        vy: ball.linearVelocity[1],
-        vz: ball.linearVelocity[2],
-      },
-      blueScore: projection.blueScore,
-      orangeScore: projection.orangeScore,
-      timeRemaining: this.state.timeRemaining,
-      phase: projection.phase,
-    });
   }
 
   private sendMutationRejection(

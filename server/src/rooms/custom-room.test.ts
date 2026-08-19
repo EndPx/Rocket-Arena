@@ -3,6 +3,9 @@ import test from 'node:test';
 import {
   INPUT_PROTOCOL_VERSION,
   PHYSICS,
+  SNAPSHOT_PROTOCOL_VERSION,
+  deserializeSnapshotEnvelopeV2,
+  serializeSnapshotEnvelopeV2,
   type InputCommandV2,
   type RoomMutationErrorCode,
   type RosterEntry,
@@ -640,4 +643,358 @@ test('final leave clears roster, Host, occupancy, cars, inputs, kickoff assignme
 
   core.dispose();
   assert.equal(world.disposeCount, 1, 'cleanup remains idempotent after empty-room disposal');
+});
+
+// Validates: Requirements 6.2-6.8, 18.17
+
+test('Custom core produces full-capacity V2 snapshots and omits a tombstoned leave next', async () => {
+  const { core } = await makeCore();
+  try {
+    for (let index = 0; index < 8; index += 1) await join(core, `transport-${index}`);
+
+    const full = core.buildSnapshotV2(projection(core), 10_000);
+    assert.ok(full);
+    assert.equal(full.protocolVersion, SNAPSHOT_PROTOCOL_VERSION);
+    assert.equal(full.roomMode, 'custom');
+    assert.equal(full.totalCapacity, 8);
+    assert.equal(full.teamCapacity, 4);
+    assert.equal(full.sequence, 0);
+    assert.equal(full.cars.length, 8);
+    assert.equal(new Set(full.cars.map((car) => car.sessionId)).size, 8);
+    assert.equal('players' in (full as unknown as Record<string, unknown>), false);
+    assert.equal(
+      full.cars.filter((car) => car.isHost).map((car) => car.sessionId).join(','),
+      'transport-0',
+    );
+
+    const roundTripped = deserializeSnapshotEnvelopeV2(serializeSnapshotEnvelopeV2(full));
+    assert.deepEqual(roundTripped, full);
+
+    const leaveCompletion = core.queueMutation({
+      kind: 'leave',
+      sessionId: 'transport-3',
+    });
+    const next = core.buildSnapshotV2(projection(core), 10_033);
+    assert.ok(next);
+    assert.equal(next.sequence, 1);
+    assert.equal(next.cars.length, 7);
+    assert.equal(next.cars.some((car) => car.sessionId === 'transport-3'), false);
+    assert.deepEqual(
+      next.cars.map((car) => car.sessionId),
+      full.cars
+        .filter((car) => car.sessionId !== 'transport-3')
+        .map((car) => car.sessionId),
+    );
+
+    const frame = core.advanceSimulation(PHYSICS.TIMESTEP * 1000);
+    assert.equal(frame.scheduledFixedSteps, 1);
+    const leaveResult = await leaveCompletion;
+    assert.equal(leaveResult.ok, true, leaveResult.ok ? undefined : leaveResult.message);
+  } finally {
+    core.dispose();
+  }
+});
+
+interface CustomAdapterBroadcast {
+  readonly type: string | number | object;
+  readonly message: unknown;
+}
+
+interface CustomAdapterClient {
+  readonly sessionId: string;
+  readonly sent: Array<readonly [string, unknown]>;
+  send(type: string, message: unknown): void;
+}
+
+function customAdapterClient(sessionId: string): CustomAdapterClient {
+  const sent: Array<readonly [string, unknown]> = [];
+  return {
+    sessionId,
+    sent,
+    send(type, message) {
+      sent.push([type, message]);
+    },
+  };
+}
+
+async function createCustomAdapterHarness(core: unknown) {
+  const { CustomRoom } = await import('./custom-room.js');
+
+  class CustomAdapterHarness extends CustomRoom {
+    simulationCallback: ((deltaTimeMs: number) => void) | null = null;
+    simulationDelayMs: number | null = null;
+    publicationError: Error | null = null;
+    broadcastAttempts = 0;
+    readonly broadcasts: CustomAdapterBroadcast[] = [];
+    readonly metadataUpdates: Array<Record<string, unknown>> = [];
+
+    constructor() {
+      super();
+      this.autoDispose = false;
+    }
+
+    protected override createAuthoritativeCore(): never {
+      return core as never;
+    }
+
+    override setPatchRate(_milliseconds: number | null): void {
+      // Avoid framework timers; onCreate still crosses the real adapter method.
+    }
+
+    override setSimulationInterval(
+      callback?: (deltaTimeMs: number) => void,
+      delay?: number,
+    ): void {
+      this.simulationCallback = callback ?? null;
+      this.simulationDelayMs = delay ?? null;
+    }
+
+    override setMetadata(meta: Record<string, unknown>): Promise<void> {
+      this.metadataUpdates.push({ ...meta });
+      return Promise.resolve();
+    }
+
+    override broadcast(
+      typeOrSchema: string | number | object,
+      message?: unknown,
+    ): any {
+      this.broadcastAttempts += 1;
+      if (this.publicationError !== null) throw this.publicationError;
+      this.broadcasts.push({ type: typeOrSchema, message });
+    }
+
+    tick(deltaTimeMs: number): void {
+      assert.ok(this.simulationCallback, 'CustomRoom must install one simulation callback');
+      this.simulationCallback(deltaTimeMs);
+    }
+  }
+
+  const room = new CustomAdapterHarness();
+  room.roomId = 'custom-room-test';
+  room.onCreate({});
+  await Promise.resolve();
+  return room;
+}
+
+function staleCustomSnapshotPort(core: TestCore) {
+  let buildCalls = 0;
+  return {
+    get buildCalls(): number {
+      return buildCalls;
+    },
+    get lifecycle() {
+      return core.lifecycle;
+    },
+    initialize: () => core.initialize(),
+    submitInput: core.submitInput.bind(core),
+    queueMutation: core.queueMutation.bind(core),
+    advanceSimulation: core.advanceSimulation.bind(core),
+    projectAuthoritativeState: core.projectAuthoritativeState.bind(core),
+    buildSnapshotV2(value: Readonly<AuthoritativeRoomProjection>, serverTime: number) {
+      buildCalls += 1;
+      return core.buildSnapshotV2(Object.freeze({
+        ...value,
+        revision: value.revision + 1,
+      }), serverTime);
+    },
+    failSnapshotPublication: core.failSnapshotPublication.bind(core),
+    dispose: core.dispose.bind(core),
+  };
+}
+
+// Validates: Requirements 4.1-4.20, 6.2-6.8, 18.15, 18.17
+
+test('CustomRoom production adapter publishes maximum capacity and omits the next disconnect', async () => {
+  const { core, world } = await makeCore();
+  const room = await createCustomAdapterHarness(core);
+  const clients = Array.from({ length: 8 }, (_, index) => (
+    customAdapterClient(`adapter-${index}`)
+  ));
+
+  try {
+    assert.equal(room.maxClients, CUSTOM_ROOM_POLICY.totalCapacity);
+    assert.equal(room.simulationDelayMs, PHYSICS.TIMESTEP * 1000);
+    assert.equal(room.metadataUpdates.length, 1);
+    assert.match(String(room.metadataUpdates[0]?.code), /^[A-HJ-NP-Z2-9]{6}$/);
+
+    const joins = clients.map((client, index) => room.onJoin(
+      client as never,
+      { name: `Adapter Player ${index}` },
+    ));
+    room.tick(PHYSICS.TIMESTEP * 1000);
+    await Promise.all(joins);
+
+    assert.deepEqual(
+      {
+        total: room.state.totalOccupancy,
+        blue: room.state.blueOccupancy,
+        orange: room.state.orangeOccupancy,
+      },
+      { total: 8, blue: 4, orange: 4 },
+    );
+    assert.equal(room.state.hostSessionId, 'adapter-0');
+    assert.equal(room.broadcasts.length, 1);
+    const full = room.broadcasts[0]?.message as any;
+    assert.equal(full.protocolVersion, SNAPSHOT_PROTOCOL_VERSION);
+    assert.equal(full.roomMode, 'custom');
+    assert.equal(full.totalCapacity, 8);
+    assert.equal(full.teamCapacity, 4);
+    assert.equal(full.cars.length, 8);
+    assert.equal(new Set(full.cars.map((car: any) => car.sessionId)).size, 8);
+    assert.deepEqual(
+      full.cars.filter((car: any) => car.isHost).map((car: any) => car.sessionId),
+      ['adapter-0'],
+    );
+    assert.equal('players' in full, false);
+
+    const ninth = customAdapterClient('adapter-8');
+    const rejectedJoin = assert.rejects(
+      room.onJoin(ninth as never, { name: 'Ninth Adapter Player' }),
+      /total-capacity/,
+    );
+    room.tick(PHYSICS.TIMESTEP * 1000);
+    await rejectedJoin;
+    assert.equal(world.cars.has('adapter-8'), false);
+    assert.equal(ninth.sent[0]?.[0], 'room-rejection');
+
+    const leave = room.onLeave(clients[3] as never);
+    room.tick(PHYSICS.TIMESTEP * 1000);
+    await leave;
+
+    assert.equal(room.broadcasts.length, 2, 'the disconnect boundary reaches the next due V2 frame');
+    const afterLeave = room.broadcasts[1]?.message as any;
+    assert.equal(afterLeave.sequence, full.sequence + 1);
+    assert.equal(afterLeave.cars.length, 7);
+    assert.equal(afterLeave.cars.some((car: any) => car.sessionId === 'adapter-3'), false);
+    assert.deepEqual(
+      afterLeave.cars.map((car: any) => car.sessionId),
+      full.cars
+        .filter((car: any) => car.sessionId !== 'adapter-3')
+        .map((car: any) => car.sessionId),
+    );
+    assert.equal(room.state.totalOccupancy, 7);
+    assert.deepEqual(world.removedSessionIds, ['adapter-3']);
+  } finally {
+    room.onDispose();
+  }
+  assert.equal(world.disposeCount, 1);
+});
+
+test('CustomRoom production adapter fails closed on build and publication errors', async (t) => {
+  await t.test('builder failure closes the real adapter before any publication', async () => {
+    const { core, world } = await makeCore();
+    const port = staleCustomSnapshotPort(core);
+    const room = await createCustomAdapterHarness(port);
+    try {
+      assert.doesNotThrow(() => { room.tick(0); });
+      assert.equal(port.buildCalls, 1);
+      assert.equal(room.broadcastAttempts, 0);
+      assert.equal(core.lifecycle, 'fatal');
+      assert.match(core.fatalError?.message ?? '', /snapshot build failed/i);
+      assert.equal(world.disposeCount, 1);
+
+      room.tick(1000);
+      assert.equal(port.buildCalls, 1);
+      assert.equal(room.broadcastAttempts, 0);
+      assert.equal(world.fixedSteps, 0);
+    } finally {
+      room.onDispose();
+    }
+    assert.equal(world.disposeCount, 1);
+  });
+
+  await t.test('serializer failure is swallowed and fatalizes the real adapter once', async () => {
+    const { core, world } = await makeCore();
+    const room = await createCustomAdapterHarness(core);
+    const publicationError = new Error('injected CustomRoom serializer failure');
+    room.publicationError = publicationError;
+    try {
+      assert.doesNotThrow(() => { room.tick(0); });
+      assert.equal(room.broadcastAttempts, 1);
+      assert.equal(room.broadcasts.length, 0);
+      assert.equal(core.lifecycle, 'fatal');
+      assert.strictEqual(core.fatalError?.cause, publicationError);
+      assert.match(core.fatalError?.message ?? '', /snapshot publication failed/i);
+      assert.equal(world.disposeCount, 1);
+
+      room.tick(1000);
+      assert.equal(room.broadcastAttempts, 1, 'fatal rooms cannot attempt a later publication');
+      assert.equal(world.fixedSteps, 0, 'fatal rooms cannot execute later simulation work');
+    } finally {
+      room.onDispose();
+    }
+    assert.equal(world.disposeCount, 1);
+  });
+});
+
+test('CustomRoom forwards repeated terminal snapshots without changing terminal event identity', async () => {
+  const { SnapshotBuilder } = await import('../systems/snapshot-builder.js');
+  const { core } = await makeCore();
+  const baseProjection = projection(core);
+  const builder = new SnapshotBuilder({ policy: CUSTOM_ROOM_POLICY });
+  builder.commitTransition({
+    kind: 'hard-cutoff',
+    winner: 'blue',
+    blueScore: 5,
+    orangeScore: 4,
+  });
+  let simulationTime = 1_000;
+  const terminalProjection = Object.freeze({
+    ...baseProjection,
+    phase: 'ended' as const,
+    countdownKind: null,
+    countdownStepsRemaining: 0,
+    regulationStepsRemaining: 0,
+    blueScore: 5,
+    orangeScore: 4,
+  });
+  const port = {
+    lifecycle: 'ready' as const,
+    initialize: () => Promise.resolve(),
+    advanceSimulation: () => ({ snapshotDue: true }),
+    projectAuthoritativeState: () => terminalProjection,
+    buildSnapshotV2: (_value: Readonly<AuthoritativeRoomProjection>, serverTime: number) => {
+      const snapshot = builder.build({
+        serverTime,
+        simulationTime,
+        phase: 'ended',
+        countdownKind: null,
+        phaseSecondsRemaining: 0,
+        regulationSecondsRemaining: 0,
+        kickoffEpoch: 0,
+        blueScore: 5,
+        orangeScore: 4,
+        winner: 'blue',
+        roster: [],
+        cars: new Map(),
+        ball: {
+          position: terminalProjection.ball.position,
+          rotation: terminalProjection.ball.rotation,
+          linearVelocity: terminalProjection.ball.linearVelocity,
+        },
+      });
+      simulationTime += PHYSICS.TIMESTEP * 1000;
+      return snapshot;
+    },
+    failSnapshotPublication: () => { assert.fail('terminal publication should succeed'); },
+    dispose: () => { core.dispose(); },
+  };
+  const room = await createCustomAdapterHarness(port);
+
+  try {
+    room.tick(0);
+    room.tick(0);
+    assert.equal(room.broadcasts.length, 2);
+    const first = room.broadcasts[0]?.message as any;
+    const second = room.broadcasts[1]?.message as any;
+    assert.equal(second.sequence, first.sequence + 1);
+    assert.equal(second.blueScore, first.blueScore);
+    assert.equal(second.orangeScore, first.orangeScore);
+    assert.equal(second.winner, first.winner);
+    assert.deepEqual(second.terminalResult, first.terminalResult);
+    assert.deepEqual(second.latestTransition, first.latestTransition);
+    assert.equal(second.terminalResult.eventId, second.latestTransition.eventId);
+  } finally {
+    room.onDispose();
+  }
 });

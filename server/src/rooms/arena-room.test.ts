@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   INPUT_PROTOCOL_VERSION,
   PHYSICS,
+  SNAPSHOT_PROTOCOL_VERSION,
   type InputCommandV2,
   type RoomMutationErrorCode,
 } from '@rocket-arena/shared';
@@ -495,5 +496,264 @@ test('active-play disconnect removes only one identity and preserves all remaini
     assert.equal(core.isStartEligible, false);
   } finally {
     core.dispose();
+  }
+});
+
+// Validates: Requirements 6.2-6.8
+
+test('Quick core produces one monotonic policy-bound V2 snapshot stream', async () => {
+  const { core } = await makeCore();
+  try {
+    await join(core, 'quick-transport');
+    const first = core.buildSnapshotV2(projection(core), 20_000);
+    assert.ok(first);
+    assert.equal(first.protocolVersion, SNAPSHOT_PROTOCOL_VERSION);
+    assert.equal(first.policyVersion, QUICK_MATCH_POLICY.version);
+    assert.equal(first.roomMode, 'quick');
+    assert.equal(first.totalCapacity, 6);
+    assert.equal(first.teamCapacity, 3);
+    assert.equal(first.sequence, 0);
+    assert.equal(first.cars.length, 1);
+    assert.equal(first.cars[0]?.sessionId, 'quick-transport');
+    assert.equal(first.cars[0]?.isHost, false);
+    assert.equal('players' in (first as unknown as Record<string, unknown>), false);
+
+    const second = core.buildSnapshotV2(projection(core), 20_033);
+    assert.ok(second);
+    assert.equal(second.sequence, 1);
+    assert.ok(second.serverTime >= first.serverTime);
+    assert.ok(second.simulationTime >= first.simulationTime);
+    assert.deepEqual(second.cars, first.cars);
+  } finally {
+    core.dispose();
+  }
+});
+
+interface ArenaAdapterBroadcast {
+  readonly type: string | number | object;
+  readonly message: unknown;
+}
+
+async function createArenaAdapterHarness(core: unknown) {
+  const { ArenaRoom } = await import('./arena-room.js');
+
+  class ArenaAdapterHarness extends ArenaRoom {
+    simulationCallback: ((deltaTimeMs: number) => void) | null = null;
+    simulationDelayMs: number | null = null;
+    publicationError: Error | null = null;
+    broadcastAttempts = 0;
+    readonly broadcasts: ArenaAdapterBroadcast[] = [];
+
+    constructor() {
+      super();
+      this.autoDispose = false;
+    }
+
+    protected override createAuthoritativeCore(): never {
+      return core as never;
+    }
+
+    override setPatchRate(_milliseconds: number | null): void {
+      // Avoid framework timers; onCreate still crosses the real adapter method.
+    }
+
+    override setSimulationInterval(
+      callback?: (deltaTimeMs: number) => void,
+      delay?: number,
+    ): void {
+      this.simulationCallback = callback ?? null;
+      this.simulationDelayMs = delay ?? null;
+    }
+
+    override broadcast(
+      typeOrSchema: string | number | object,
+      message?: unknown,
+    ): any {
+      this.broadcastAttempts += 1;
+      if (this.publicationError !== null) throw this.publicationError;
+      this.broadcasts.push({ type: typeOrSchema, message });
+    }
+
+    tick(deltaTimeMs: number): void {
+      assert.ok(this.simulationCallback, 'ArenaRoom must install one simulation callback');
+      this.simulationCallback(deltaTimeMs);
+    }
+  }
+
+  const room = new ArenaAdapterHarness();
+  room.roomId = 'quick-room-test';
+  room.onCreate({});
+  await Promise.resolve();
+  return room;
+}
+
+function staleQuickSnapshotPort(core: TestCore) {
+  let buildCalls = 0;
+  return {
+    get buildCalls(): number {
+      return buildCalls;
+    },
+    get lifecycle() {
+      return core.lifecycle;
+    },
+    initialize: () => core.initialize(),
+    submitInput: core.submitInput.bind(core),
+    queueMutation: core.queueMutation.bind(core),
+    advanceSimulation: core.advanceSimulation.bind(core),
+    projectAuthoritativeState: core.projectAuthoritativeState.bind(core),
+    buildSnapshotV2(value: Readonly<AuthoritativeRoomProjection>, serverTime: number) {
+      buildCalls += 1;
+      return core.buildSnapshotV2(Object.freeze({
+        ...value,
+        revision: value.revision + 1,
+      }), serverTime);
+    },
+    failSnapshotPublication: core.failSnapshotPublication.bind(core),
+    dispose: core.dispose.bind(core),
+  };
+}
+
+// Validates: Requirements 6.2-6.8
+
+test('ArenaRoom production adapter gates V2 cadence and fails closed on build/publication errors', async (t) => {
+  await t.test('due and non-due callbacks publish only V2 through the exported adapter', async () => {
+    const { core, world } = await makeCore();
+    const room = await createArenaAdapterHarness(core);
+    try {
+      assert.equal(room.maxClients, QUICK_MATCH_POLICY.totalCapacity);
+      assert.equal(room.simulationDelayMs, PHYSICS.TIMESTEP * 1000);
+
+      room.tick(0);
+      assert.equal(room.broadcasts.length, 1);
+      const first = room.broadcasts[0]?.message as Record<string, unknown> | undefined;
+      assert.ok(first);
+      assert.equal(first.protocolVersion, SNAPSHOT_PROTOCOL_VERSION);
+      assert.equal(first.roomMode, 'quick');
+      assert.equal(first.totalCapacity, 6);
+      assert.equal('players' in first, false);
+
+      room.tick(0);
+      assert.equal(room.broadcasts.length, 1, 'a non-due callback must not build or publish');
+    } finally {
+      room.onDispose();
+    }
+    assert.equal(world.disposeCount, 1);
+  });
+
+  await t.test('builder failure closes the real adapter before any publication', async () => {
+    const { core, world } = await makeCore();
+    const port = staleQuickSnapshotPort(core);
+    const room = await createArenaAdapterHarness(port);
+    try {
+      assert.doesNotThrow(() => { room.tick(0); });
+      assert.equal(port.buildCalls, 1);
+      assert.equal(room.broadcastAttempts, 0);
+      assert.equal(core.lifecycle, 'fatal');
+      assert.match(core.fatalError?.message ?? '', /snapshot build failed/i);
+      assert.equal(world.disposeCount, 1);
+
+      room.tick(1000);
+      assert.equal(port.buildCalls, 1);
+      assert.equal(room.broadcastAttempts, 0);
+      assert.equal(world.fixedSteps, 0);
+    } finally {
+      room.onDispose();
+    }
+    assert.equal(world.disposeCount, 1);
+  });
+
+  await t.test('serializer failure is swallowed and fatalizes the real adapter once', async () => {
+    const { core, world } = await makeCore();
+    const room = await createArenaAdapterHarness(core);
+    const publicationError = new Error('injected ArenaRoom serializer failure');
+    room.publicationError = publicationError;
+    try {
+      assert.doesNotThrow(() => { room.tick(0); });
+      assert.equal(room.broadcastAttempts, 1);
+      assert.equal(room.broadcasts.length, 0);
+      assert.equal(core.lifecycle, 'fatal');
+      assert.strictEqual(core.fatalError?.cause, publicationError);
+      assert.match(core.fatalError?.message ?? '', /snapshot publication failed/i);
+      assert.equal(world.disposeCount, 1);
+
+      room.tick(1000);
+      assert.equal(room.broadcastAttempts, 1, 'fatal rooms cannot attempt a later publication');
+      assert.equal(world.fixedSteps, 0, 'fatal rooms cannot execute later simulation work');
+    } finally {
+      room.onDispose();
+    }
+    assert.equal(world.disposeCount, 1);
+  });
+});
+
+test('ArenaRoom forwards repeated terminal snapshots without changing terminal event identity', async () => {
+  const { SnapshotBuilder } = await import('../systems/snapshot-builder.js');
+  const { core } = await makeCore();
+  const baseProjection = projection(core);
+  const builder = new SnapshotBuilder({ policy: QUICK_MATCH_POLICY });
+  builder.commitTransition({
+    kind: 'hard-cutoff',
+    winner: 'blue',
+    blueScore: 5,
+    orangeScore: 4,
+  });
+  let simulationTime = 1_000;
+  const terminalProjection = Object.freeze({
+    ...baseProjection,
+    phase: 'ended' as const,
+    countdownKind: null,
+    countdownStepsRemaining: 0,
+    regulationStepsRemaining: 0,
+    blueScore: 5,
+    orangeScore: 4,
+  });
+  const port = {
+    lifecycle: 'ready' as const,
+    initialize: () => Promise.resolve(),
+    advanceSimulation: () => ({ snapshotDue: true }),
+    projectAuthoritativeState: () => terminalProjection,
+    buildSnapshotV2: (_value: Readonly<AuthoritativeRoomProjection>, serverTime: number) => {
+      const snapshot = builder.build({
+        serverTime,
+        simulationTime,
+        phase: 'ended',
+        countdownKind: null,
+        phaseSecondsRemaining: 0,
+        regulationSecondsRemaining: 0,
+        kickoffEpoch: 0,
+        blueScore: 5,
+        orangeScore: 4,
+        winner: 'blue',
+        roster: [],
+        cars: new Map(),
+        ball: {
+          position: terminalProjection.ball.position,
+          rotation: terminalProjection.ball.rotation,
+          linearVelocity: terminalProjection.ball.linearVelocity,
+        },
+      });
+      simulationTime += PHYSICS.TIMESTEP * 1000;
+      return snapshot;
+    },
+    failSnapshotPublication: () => { assert.fail('terminal publication should succeed'); },
+    dispose: () => { core.dispose(); },
+  };
+  const room = await createArenaAdapterHarness(port);
+
+  try {
+    room.tick(0);
+    room.tick(0);
+    assert.equal(room.broadcasts.length, 2);
+    const first = room.broadcasts[0]?.message as any;
+    const second = room.broadcasts[1]?.message as any;
+    assert.equal(second.sequence, first.sequence + 1);
+    assert.equal(second.blueScore, first.blueScore);
+    assert.equal(second.orangeScore, first.orangeScore);
+    assert.equal(second.winner, first.winner);
+    assert.deepEqual(second.terminalResult, first.terminalResult);
+    assert.deepEqual(second.latestTransition, first.latestTransition);
+    assert.equal(second.terminalResult.eventId, second.latestTransition.eventId);
+  } finally {
+    room.onDispose();
   }
 });

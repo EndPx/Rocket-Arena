@@ -1,5 +1,13 @@
-import { joinArena, createCustomRoom, joinCustomRoom, getClient } from '../networking/client.js';
+import {
+  joinArena,
+  createCustomRoom,
+  joinCustomRoom,
+  getClient,
+  getJoinedRoomMode,
+} from '../networking/client.js';
 import { setupStateListener } from '../networking/state-listener.js';
+import { acceptedSnapshotStore } from '../networking/accepted-snapshot-store.js';
+import type { DomainSnapshot } from '../networking/snapshot-validator.js';
 import type { Room } from 'colyseus.js';
 import * as THREE from 'three';
 import logoUrl from '../assets/generated/rocket-arena-logo.png';
@@ -10,6 +18,7 @@ import {
   normalizeRoomCode,
   ROOM_CODE_ALPHABET,
 } from './lobby-input.js';
+import { createAcceptedLobbyView } from './lobby-state.js';
 
 const PLAYER_NAME_STORAGE_KEY = 'rocket-arena-name';
 
@@ -18,6 +27,7 @@ let onJoinCallback: ((room: Room) => void) | null = null;
 let currentRoom: Room | null = null;
 let scene: THREE.Scene | null = null;
 let currentPlayerName = 'Player';
+let stopAcceptedLobbyUpdates: (() => void) | null = null;
 
 export function createLobby(onJoin: (room: Room) => void, sceneRef: THREE.Scene): void {
   onJoinCallback = onJoin;
@@ -40,6 +50,7 @@ export function createLobby(onJoin: (room: Room) => void, sceneRef: THREE.Scene)
 // ============================================================
 
 function showMainMenu(): void {
+  clearAcceptedLobbyUpdates();
   lobbyEl.innerHTML = `
     <div class="lobby-card">
       <h1 class="lobby-brand">
@@ -98,6 +109,7 @@ function showMainMenu(): void {
 // ============================================================
 
 function showCustomScreen(): void {
+  clearAcceptedLobbyUpdates();
   lobbyEl.innerHTML = `
     <div class="lobby-card">
       <h2>Custom Room</h2>
@@ -120,6 +132,7 @@ function showCustomScreen(): void {
 // ============================================================
 
 function showJoinCodeScreen(): void {
+  clearAcceptedLobbyUpdates();
   lobbyEl.innerHTML = `
     <div class="lobby-card">
       <h2>Join Custom Room</h2>
@@ -174,7 +187,9 @@ async function handleQuickMatch(): Promise<void> {
     const room = await joinArena(name);
     currentRoom = room;
     // Setup state listener immediately so we receive state-sync during lobby
-    if (scene) setupStateListener(room, scene);
+    if (scene) {
+      setupStateListener(room, scene, { roomMode: getJoinedRoomMode(room) });
+    }
     showWaitingRoom(room);
   } catch (error: unknown) {
     setStatus(status, `Error: ${getErrorMessage(error, 'Connection failed')}`, true);
@@ -197,7 +212,9 @@ async function handleCreateRoom(): Promise<void> {
     const room = await createCustomRoom(name);
     currentRoom = room;
     // Setup state listener immediately so we receive state-sync during lobby
-    if (scene) setupStateListener(room, scene);
+    if (scene) {
+      setupStateListener(room, scene, { roomMode: getJoinedRoomMode(room) });
+    }
     showCustomLobby(room);
   } catch (error: unknown) {
     setStatus(status, `Error: ${getErrorMessage(error, 'Failed to create room')}`, true);
@@ -233,7 +250,9 @@ async function handleJoinByCode(event: SubmitEvent): Promise<void> {
     const room = await joinCustomRoom(code, getPlayerName());
     currentRoom = room;
     // Setup state listener immediately so we receive state-sync during lobby
-    if (scene) setupStateListener(room, scene);
+    if (scene) {
+      setupStateListener(room, scene, { roomMode: getJoinedRoomMode(room) });
+    }
     showCustomLobby(room);
   } catch (error: unknown) {
     setStatus(status, `Error: ${getErrorMessage(error, 'Room not found')}`, true);
@@ -246,12 +265,49 @@ async function handleJoinByCode(event: SubmitEvent): Promise<void> {
 // Screen 4: Waiting Room (Quick Match)
 // ============================================================
 
+function clearAcceptedLobbyUpdates(): void {
+  stopAcceptedLobbyUpdates?.();
+  stopAcceptedLobbyUpdates = null;
+}
+
+function observeAcceptedRoom(
+  room: Room,
+  onSnapshot: (snapshot: Readonly<DomainSnapshot>) => void,
+): void {
+  clearAcceptedLobbyUpdates();
+  const generation = acceptedSnapshotStore.getGeneration();
+  let active = true;
+  const unsubscribe = acceptedSnapshotStore.subscribe((change) => {
+    if (
+      active
+      && change.current.generation === generation
+      && change.current.snapshot !== null
+    ) {
+      onSnapshot(change.current.snapshot);
+    }
+  });
+  const stop = (): void => {
+    if (!active) return;
+    active = false;
+    unsubscribe();
+    if (stopAcceptedLobbyUpdates === stop) stopAcceptedLobbyUpdates = null;
+  };
+  stopAcceptedLobbyUpdates = stop;
+  room.onLeave(stop);
+
+  const current = acceptedSnapshotStore.getState();
+  if (current.generation === generation && current.snapshot !== null) {
+    onSnapshot(current.snapshot);
+  }
+}
+
 function showWaitingRoom(room: Room): void {
+  clearAcceptedLobbyUpdates();
   lobbyEl.innerHTML = `
     <div class="lobby-card waiting-card">
       <h2>Quick Match</h2>
       <p class="waiting-text" id="waiting-text">Waiting for players...</p>
-      <p class="player-count" id="player-count">1/4</p>
+      <p class="player-count" id="player-count">0/6</p>
       <ul class="player-list" id="player-list"></ul>
       <button class="btn-danger" id="leave-room">Leave Room</button>
       <p class="lobby-status" id="lobby-status" role="status" aria-live="polite" aria-atomic="true"></p>
@@ -267,15 +323,15 @@ function showWaitingRoom(room: Room): void {
 
   let joined = false;
 
-  // Listen for state-sync to update player list and detect phase transitions
-  room.onMessage('state-sync', (data: any) => {
-    updatePlayerList(data);
+  observeAcceptedRoom(room, (snapshot) => {
+    updatePlayerList(snapshot, room.sessionId);
+    const view = createAcceptedLobbyView(snapshot, room.sessionId);
 
-    if (data.phase === 'countdown') {
+    if (view.matchStarting) {
       const waitText = document.getElementById('waiting-text');
       if (waitText) waitText.textContent = 'Match starting...';
     }
-    if ((data.phase === 'playing' || data.phase === 'overtime') && !joined) {
+    if (view.enterGameplay && !joined) {
       joined = true;
       hideLobby();
       onJoinCallback?.(room);
@@ -283,21 +339,22 @@ function showWaitingRoom(room: Room): void {
   });
 }
 
-function updatePlayerList(data: any): void {
+function updatePlayerList(snapshot: Readonly<DomainSnapshot>, localSessionId: string): void {
   const listEl = document.getElementById('player-list');
   const countEl = document.getElementById('player-count');
-  if (!listEl || !countEl || !data?.players) return;
+  if (!listEl || !countEl) return;
 
-  const items: HTMLLIElement[] = [];
-  for (const [, player] of Object.entries(data.players) as [string, any][]) {
+  const view = createAcceptedLobbyView(snapshot, localSessionId);
+  const items = view.cars.map((player) => {
     const item = document.createElement('li');
+    if (player.isLocal) item.classList.add('local-player');
     item.style.color = player.team === 'blue' ? '#4488ff' : '#ff8844';
     item.textContent = `${player.name} (${player.team})`;
-    items.push(item);
-  }
+    return item;
+  });
 
   listEl.replaceChildren(...items);
-  countEl.textContent = `${items.length}/4`;
+  countEl.textContent = `${view.totalCount}/${view.totalCapacity}`;
 }
 
 // ============================================================
@@ -305,6 +362,7 @@ function updatePlayerList(data: any): void {
 // ============================================================
 
 function showCustomLobby(room: Room): void {
+  clearAcceptedLobbyUpdates();
   lobbyEl.innerHTML = `
     <div class="lobby-card custom-card">
       <h2>Custom Room</h2>
@@ -324,7 +382,7 @@ function showCustomLobby(room: Room): void {
           <button class="btn-team btn-orange" id="join-orange">Join Orange</button>
         </div>
       </div>
-      <p class="player-count" id="player-count">1/4</p>
+      <p class="player-count" id="player-count">0/8</p>
       <button class="btn-primary btn-start hidden" id="start-match">Start Match</button>
       <button class="btn-danger" id="leave-room">Leave Room</button>
       <p class="lobby-status" id="lobby-status" role="status" aria-live="polite" aria-atomic="true"></p>
@@ -356,15 +414,15 @@ function showCustomLobby(room: Room): void {
 
   let joined = false;
 
-  // Listen for state-sync to update team lists and detect phase transitions
-  room.onMessage('state-sync', (data: any) => {
-    updateTeamLists(data, room);
+  observeAcceptedRoom(room, (snapshot) => {
+    updateTeamLists(snapshot, room);
+    const view = createAcceptedLobbyView(snapshot, room.sessionId);
 
     const statusEl = document.getElementById('lobby-status');
-    if (data.phase === 'countdown') {
-      if (statusEl) statusEl.textContent = 'Match starting...';
+    if (view.matchStarting && statusEl) {
+      statusEl.textContent = 'Match starting...';
     }
-    if ((data.phase === 'playing' || data.phase === 'overtime') && !joined) {
+    if (view.enterGameplay && !joined) {
       joined = true;
       hideLobby();
       onJoinCallback?.(room);
@@ -372,22 +430,18 @@ function showCustomLobby(room: Room): void {
   });
 }
 
-function updateTeamLists(data: any, room: Room): void {
+function updateTeamLists(snapshot: Readonly<DomainSnapshot>, room: Room): void {
   const blueList = document.getElementById('blue-list');
   const orangeList = document.getElementById('orange-list');
   const countEl = document.getElementById('player-count');
   const startBtn = document.getElementById('start-match');
-  if (!blueList || !orangeList || !countEl || !startBtn || !data?.players) return;
+  if (!blueList || !orangeList || !countEl || !startBtn) return;
 
-  const blueItems: HTMLLIElement[] = [];
-  const orangeItems: HTMLLIElement[] = [];
-  let localIsHost = false;
-
-  for (const [sessionId, player] of Object.entries(data.players) as [string, any][]) {
-    const isLocal = sessionId === room.sessionId;
+  const view = createAcceptedLobbyView(snapshot, room.sessionId);
+  const itemFor = (player: (typeof view.cars)[number]): HTMLLIElement => {
     const item = document.createElement('li');
-    if (isLocal) item.classList.add('local-player');
-    item.append(document.createTextNode(String(player.name)));
+    if (player.isLocal) item.classList.add('local-player');
+    item.append(document.createTextNode(player.name));
 
     if (player.isHost) {
       const hostBadge = document.createElement('span');
@@ -395,28 +449,13 @@ function updateTeamLists(data: any, room: Room): void {
       hostBadge.textContent = 'HOST';
       item.append(' ', hostBadge);
     }
+    return item;
+  };
 
-    if (player.team === 'blue') {
-      blueItems.push(item);
-    } else {
-      orangeItems.push(item);
-    }
-
-    if (isLocal && player.isHost) {
-      localIsHost = true;
-    }
-  }
-
-  blueList.replaceChildren(...blueItems);
-  orangeList.replaceChildren(...orangeItems);
-  countEl.textContent = `${blueItems.length + orangeItems.length}/4`;
-
-  // Show start button only for host
-  if (localIsHost) {
-    startBtn.classList.remove('hidden');
-  } else {
-    startBtn.classList.add('hidden');
-  }
+  blueList.replaceChildren(...view.blueCars.map(itemFor));
+  orangeList.replaceChildren(...view.orangeCars.map(itemFor));
+  countEl.textContent = `${view.totalCount}/${view.totalCapacity}`;
+  startBtn.classList.toggle('hidden', !view.localIsHost);
 }
 
 async function fetchRoomCode(room: Room): Promise<void> {
@@ -493,6 +532,7 @@ function getErrorMessage(error: unknown, fallback: string): string {
 }
 
 export function hideLobby(): void {
+  clearAcceptedLobbyUpdates();
   if (lobbyEl) lobbyEl.style.display = 'none';
 }
 
