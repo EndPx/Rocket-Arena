@@ -612,3 +612,163 @@ test('explicit tombstoning immediately gates input and snapshot visibility befor
   assert.deepEqual(visibleRosterEntries(result.next).map(({ sessionId }) => sessionId), ['host']);
   assert.equal(canAcceptRoomInput(state, 'guest'), true, 'prior state remains immutable');
 });
+
+
+test('join preparation rejects nullish or untracked resources and rolls back ownership', () => {
+  const state = makeState(ROOM_POLICIES.custom);
+  const before = stateSnapshot(state);
+  const plan = expectPlan(state, {
+    kind: 'join',
+    sessionId: 'candidate',
+    name: 'Candidate',
+  });
+
+  const undefinedCarTracked = { current: null as TestCar | null };
+  const undefinedCar = prepareRoomMutation<TestCar, TestInput, TestBall, string>(plan, {
+    prepareJoin: ({ entry }, scope) => {
+      undefinedCarTracked.current = scope.track<TestCar>(
+        { id: `temporary:${entry.sessionId}`, disposed: false },
+        (resource) => { resource.disposed = true; },
+      );
+      return {
+        car: undefined as unknown as TestCar,
+        input: { throttle: 0, jumpSequence: 0 },
+      };
+    },
+  });
+  assertRejection(undefinedCar, 'physics-not-ready');
+  assert.equal(undefinedCarTracked.current?.disposed, true);
+  assertUnchanged(state, before);
+
+  const undefinedInputTracked = { current: null as TestCar | null };
+  const undefinedInput = prepareRoomMutation<TestCar, TestInput, TestBall, string>(plan, {
+    prepareJoin: ({ entry }, scope) => {
+      const car = scope.track<TestCar>(
+        { id: `car:${entry.sessionId}`, disposed: false },
+        (resource) => { resource.disposed = true; },
+      );
+      undefinedInputTracked.current = car;
+      return {
+        car,
+        input: undefined as unknown as TestInput,
+      };
+    },
+  });
+  assertRejection(undefinedInput, 'physics-not-ready');
+  assert.equal(undefinedInputTracked.current?.disposed, true);
+  assertUnchanged(state, before);
+
+  const trackedDummy = { id: 'tracked-dummy', disposed: false };
+  const untrackedCar = { id: 'untracked-car', disposed: false };
+  const untrackedReturn = prepareRoomMutation<TestCar, TestInput, TestBall, string>(plan, {
+    prepareJoin: (_request, scope) => {
+      scope.track(trackedDummy, (resource) => { resource.disposed = true; });
+      return {
+        car: untrackedCar,
+        input: { throttle: 0, jumpSequence: 0 },
+      };
+    },
+  });
+  assertRejection(untrackedReturn, 'physics-not-ready');
+  assert.equal(trackedDummy.disposed, true);
+  assert.equal(untrackedCar.disposed, false);
+  assertUnchanged(state, before);
+});
+
+test('stale join commit rolls back its tracked car without changing either state', () => {
+  const state = makeState(ROOM_POLICIES.custom);
+  const stateBefore = stateSnapshot(state);
+  const plan = expectPlan(state, {
+    kind: 'join',
+    sessionId: 'candidate',
+    name: 'Candidate',
+  });
+  const trackedCar = { current: null as TestCar | null };
+  const preparation = prepareRoomMutation<TestCar, TestInput, TestBall, string>(plan, {
+    prepareJoin: ({ entry }, scope) => {
+      const car = scope.track<TestCar>(
+        { id: `car:${entry.sessionId}`, disposed: false },
+        (resource) => { resource.disposed = true; },
+      );
+      trackedCar.current = car;
+      return { car, input: { throttle: 0, jumpSequence: 0 } };
+    },
+  });
+  assert.equal(preparation.ok, true, preparation.ok ? undefined : preparation.message);
+  if (!preparation.ok) return;
+
+  const staleCurrent = makeState(ROOM_POLICIES.custom);
+  const staleBefore = stateSnapshot(staleCurrent);
+  const committed = preparation.prepared.commit(staleCurrent);
+  assert.equal(committed.ok, false);
+  if (committed.ok) assert.fail('expected stale-base rejection');
+  assert.equal(committed.code, 'invalid-roster');
+  assert.equal(preparation.prepared.settled, true);
+  assert.equal(trackedCar.current?.disposed, true);
+  assertUnchanged(state, stateBefore);
+  assertUnchanged(staleCurrent, staleBefore);
+});
+
+test('state validation rejects nullish authoritative car or input values atomically', () => {
+  for (const invalidValue of ['car', 'input'] as const) {
+    const state = makeState(
+      ROOM_POLICIES.custom,
+      [rosterEntry('host', 0, 'blue', true)],
+    );
+    if (invalidValue === 'car') {
+      (state.cars as unknown as Map<string, TestCar | undefined>).set('host', undefined);
+    } else {
+      (state.inputs as unknown as Map<string, TestInput | null>).set('host', null);
+    }
+    const before = stateSnapshot(state);
+
+    const result = planRoomMutation(
+      state,
+      { kind: 'start', sessionId: 'host' },
+      { physicsReady: true },
+    );
+
+    assertRejection(result, 'invalid-roster');
+    assertUnchanged(state, before);
+  }
+});
+
+test('wrong-phase join/start and missing leave preparation reject atomically', () => {
+  const activeQuick = makeState(ROOM_POLICIES.quick, [], { phase: 'playing' });
+  const activeQuickBefore = stateSnapshot(activeQuick);
+  assertRejection(
+    planRoomMutation(
+      activeQuick,
+      { kind: 'join', sessionId: 'late', name: 'Late Join' },
+      { physicsReady: true },
+    ),
+    'wrong-phase',
+  );
+  assertUnchanged(activeQuick, activeQuickBefore);
+
+  const activeCustom = makeState(
+    ROOM_POLICIES.custom,
+    [rosterEntry('host', 0, 'blue', true)],
+    { phase: 'playing' },
+  );
+  const activeCustomBefore = stateSnapshot(activeCustom);
+  assertRejection(
+    planRoomMutation(
+      activeCustom,
+      { kind: 'start', sessionId: 'host' },
+      { physicsReady: true },
+    ),
+    'wrong-phase',
+  );
+  assertUnchanged(activeCustom, activeCustomBefore);
+
+  const waitingCustom = makeState(
+    ROOM_POLICIES.custom,
+    [rosterEntry('host', 0, 'blue', true)],
+  );
+  const waitingBefore = stateSnapshot(waitingCustom);
+  const leavePlan = expectPlan(waitingCustom, { kind: 'leave', sessionId: 'host' });
+  const missingLeavePreparer = prepareRoomMutation<TestCar, TestInput, TestBall, string>(leavePlan);
+  assertRejection(missingLeavePreparer, 'physics-not-ready');
+  assertUnchanged(waitingCustom, waitingBefore);
+});

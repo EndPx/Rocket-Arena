@@ -435,10 +435,19 @@ function stateValidationError(
     );
   }
   for (const sessionId of state.roster.keys()) {
-    if (!state.cars.has(sessionId) || !state.inputs.has(sessionId)) {
+    const car = state.cars.get(sessionId);
+    const input = state.inputs.get(sessionId);
+    if (
+      !state.cars.has(sessionId)
+      || !state.inputs.has(sessionId)
+      || car === null
+      || car === undefined
+      || input === null
+      || input === undefined
+    ) {
       return reject(
         'invalid-roster',
-        `Represented identity ${sessionId} is missing an authoritative car or input slot.`,
+        `Represented identity ${sessionId} is missing a valid authoritative car or input slot.`,
       );
     }
   }
@@ -762,19 +771,22 @@ export function planRoomMutation<
 
 class TrackedPreparationScope implements RoomMutationPreparationScope {
   private disposers: Array<() => void> = [];
+  private readonly trackedResources = new Set<unknown>();
 
-  get size(): number {
-    return this.disposers.length;
+  has(resource: unknown): boolean {
+    return this.trackedResources.has(resource);
   }
 
   track<T>(resource: T, dispose: (resource: T) => void): T {
     if (typeof dispose !== 'function') throw new TypeError('Resource disposer must be a function.');
+    this.trackedResources.add(resource);
     this.disposers.push(() => dispose(resource));
     return resource;
   }
 
   release(): void {
     this.disposers = [];
+    this.trackedResources.clear();
   }
 
   rollback(): void {
@@ -787,6 +799,7 @@ class TrackedPreparationScope implements RoomMutationPreparationScope {
       }
     }
     this.disposers = [];
+    this.trackedResources.clear();
     if (errors.length === 1) throw errors[0];
     if (errors.length > 1) throw new AggregateError(errors, 'Multiple resource disposals failed.');
   }
@@ -896,10 +909,15 @@ class PreparedRoomMutationImpl<
 function isPreparedJoinResources<TCar, TInput>(
   value: unknown,
 ): value is PreparedJoinResources<TCar, TInput> {
-  return typeof value === 'object'
-    && value !== null
-    && Object.prototype.hasOwnProperty.call(value, 'car')
-    && Object.prototype.hasOwnProperty.call(value, 'input');
+  if (typeof value !== 'object' || value === null) return false;
+
+  const candidate = value as Partial<PreparedJoinResources<TCar, TInput>>;
+  return Object.prototype.hasOwnProperty.call(value, 'car')
+    && Object.prototype.hasOwnProperty.call(value, 'input')
+    && candidate.car !== null
+    && candidate.car !== undefined
+    && candidate.input !== null
+    && candidate.input !== undefined;
 }
 
 /**
@@ -936,9 +954,9 @@ export function prepareRoomMutation<
         { policy: plan.base.policy, entry: plan.operation.entry },
         scope,
       );
-      if (!isPreparedJoinResources<TCar, TInput>(prepared) || scope.size === 0) {
+      if (!isPreparedJoinResources<TCar, TInput>(prepared) || !scope.has(prepared.car)) {
         throw new TypeError(
-          'Join preparation must return car/input resources and track temporary body ownership.',
+          'Join preparation must return non-null car/input resources and track the returned car ownership.',
         );
       }
       cars.set(plan.operation.entry.sessionId, prepared.car);
