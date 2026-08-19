@@ -487,6 +487,7 @@ export class AuthoritativeRoomCore<
       maxFrameDeltaSeconds: PHYSICS.MAX_FRAME_DELTA_SECONDS,
       maxSubsteps: PHYSICS.MAX_FIXED_SUBSTEPS,
       snapshotIntervalMs: NETCODE.SNAPSHOT_TARGET_INTERVAL_MS,
+      snapshotSchedulingToleranceMs: NETCODE.SNAPSHOT_SCHEDULING_TOLERANCE_MS,
     });
 
     this.logger.info(

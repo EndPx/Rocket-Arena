@@ -1,58 +1,69 @@
 import { NETCODE } from '@rocket-arena/shared';
 
 export interface EntitySnapshot {
-  x: number;
-  y: number;
-  z: number;
-  qx: number;
-  qy: number;
-  qz: number;
-  qw: number;
-  vx: number;
-  vy: number;
-  vz: number;
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly qx: number;
+  readonly qy: number;
+  readonly qz: number;
+  readonly qw: number;
+  readonly vx: number;
+  readonly vy: number;
+  readonly vz: number;
 }
 
+/**
+ * Compatibility input for the legacy state-sync adapter. Validated V2 callers
+ * should use ValidatedTimelineSnapshot and SnapshotBuffer.accept().
+ */
 export interface AuthoritativeSnapshot {
-  sequence: number;
-  serverTime: number;
-  simulationTime: number;
-  entities: Readonly<Record<string, EntitySnapshot>>;
+  readonly sequence: number;
+  readonly serverTime: number;
+  readonly simulationTime: number;
+  readonly kickoffEpoch?: number;
+  readonly entities: Readonly<Record<string, Readonly<EntitySnapshot>>>;
+}
+
+/** Deeply immutable interpolation input produced after snapshot validation. */
+export interface ValidatedTimelineSnapshot extends AuthoritativeSnapshot {
+  readonly kickoffEpoch: number;
 }
 
 export type InterpolationMode = 'held' | 'interpolated' | 'extrapolated' | 'teleport';
 
 export interface InterpolatedFrame {
-  simulationTime: number;
-  mode: InterpolationMode;
-  underrun: boolean;
-  entities: Readonly<Record<string, EntitySnapshot>>;
+  readonly simulationTime: number;
+  readonly kickoffEpoch: number;
+  readonly mode: InterpolationMode;
+  readonly underrun: boolean;
+  readonly entities: Readonly<Record<string, EntitySnapshot>>;
 }
 
 export interface InterpolationStats {
-  size: number;
-  delayMs: number;
-  latestSequence: number | null;
-  bufferedSpanMs: number;
-  acceptedSnapshots: number;
-  rejectedSnapshots: number;
-  underrunFrames: number;
-  extrapolatedFrames: number;
-  teleportFrames: number;
+  readonly size: number;
+  readonly delayMs: number;
+  readonly latestSequence: number | null;
+  readonly bufferedSpanMs: number;
+  readonly acceptedSnapshots: number;
+  readonly rejectedSnapshots: number;
+  readonly underrunFrames: number;
+  readonly extrapolatedFrames: number;
+  readonly teleportFrames: number;
 }
 
 export interface SnapshotBufferOptions {
-  capacity?: number;
-  interpolationDelayMs?: number;
-  maxExtrapolationMs?: number;
-  teleportThreshold?: number;
+  readonly capacity?: number;
+  readonly interpolationDelayMs?: number;
+  readonly maxExtrapolationMs?: number;
+  readonly teleportThreshold?: number;
 }
 
 interface QuaternionLike {
-  x: number;
-  y: number;
-  z: number;
-  w: number;
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly w: number;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -137,8 +148,10 @@ function cloneEntity(entity: EntitySnapshot): EntitySnapshot {
   };
 }
 
-function immutableSnapshot(snapshot: AuthoritativeSnapshot): AuthoritativeSnapshot {
-  const entities: Record<string, EntitySnapshot> = {};
+function immutableSnapshot(
+  snapshot: ValidatedTimelineSnapshot,
+): Readonly<ValidatedTimelineSnapshot> {
+  const entities: Record<string, Readonly<EntitySnapshot>> = {};
   for (const [id, entity] of Object.entries(snapshot.entities)) {
     entities[id] = Object.freeze(cloneEntity(entity));
   }
@@ -146,16 +159,42 @@ function immutableSnapshot(snapshot: AuthoritativeSnapshot): AuthoritativeSnapsh
     sequence: snapshot.sequence,
     serverTime: snapshot.serverTime,
     simulationTime: snapshot.simulationTime,
+    kickoffEpoch: snapshot.kickoffEpoch,
     entities: Object.freeze(entities),
   });
 }
 
-function isValidSnapshot(snapshot: AuthoritativeSnapshot): boolean {
+function isFiniteEntity(value: unknown): value is EntitySnapshot {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const entity = value as Partial<Record<keyof EntitySnapshot, unknown>>;
+  return [
+    entity.x,
+    entity.y,
+    entity.z,
+    entity.qx,
+    entity.qy,
+    entity.qz,
+    entity.qw,
+    entity.vx,
+    entity.vy,
+    entity.vz,
+  ].every((component) => typeof component === 'number' && Number.isFinite(component));
+}
+
+function isValidSnapshot(snapshot: ValidatedTimelineSnapshot): boolean {
   if (!Number.isSafeInteger(snapshot.sequence) || snapshot.sequence < 0) return false;
+  if (!Number.isSafeInteger(snapshot.kickoffEpoch) || snapshot.kickoffEpoch < 0) return false;
   if (!Number.isFinite(snapshot.serverTime) || !Number.isFinite(snapshot.simulationTime)) {
     return false;
   }
-  return Object.values(snapshot.entities).every((entity) => Object.values(entity).every(Number.isFinite));
+  if (
+    typeof snapshot.entities !== 'object'
+    || snapshot.entities === null
+    || Array.isArray(snapshot.entities)
+  ) {
+    return false;
+  }
+  return Object.values(snapshot.entities).every(isFiniteEntity);
 }
 
 function interpolateEntity(
@@ -206,7 +245,7 @@ export class SnapshotBuffer {
   private readonly delayMs: number;
   private readonly maxExtrapolationMs: number;
   private readonly teleportThresholdSquared: number;
-  private snapshots: readonly AuthoritativeSnapshot[] = [];
+  private snapshots: readonly Readonly<ValidatedTimelineSnapshot>[] = [];
   private localTimelineOffsetMs: number | null = null;
   private acceptedSnapshots = 0;
   private rejectedSnapshots = 0;
@@ -238,7 +277,8 @@ export class SnapshotBuffer {
     this.teleportFrames = 0;
   }
 
-  push(snapshot: AuthoritativeSnapshot, receivedAtMs: number): boolean {
+  /** Accept a validated immutable timeline without mutating the caller's value. */
+  accept(snapshot: ValidatedTimelineSnapshot, receivedAtMs: number): boolean {
     const latest = this.snapshots.at(-1);
     if (
       !isValidSnapshot(snapshot)
@@ -246,6 +286,7 @@ export class SnapshotBuffer {
       || (latest !== undefined && (
         snapshot.sequence <= latest.sequence
         || snapshot.simulationTime <= latest.simulationTime
+        || snapshot.kickoffEpoch < latest.kickoffEpoch
       ))
     ) {
       this.rejectedSnapshots += 1;
@@ -260,6 +301,17 @@ export class SnapshotBuffer {
       : Math.min(this.localTimelineOffsetMs, offsetCandidate);
     this.acceptedSnapshots += 1;
     return true;
+  }
+
+  /** Temporary compatibility adapter for unversioned V1 snapshots. */
+  push(snapshot: AuthoritativeSnapshot, receivedAtMs: number): boolean {
+    return this.accept({
+      sequence: snapshot.sequence,
+      serverTime: snapshot.serverTime,
+      simulationTime: snapshot.simulationTime,
+      kickoffEpoch: snapshot.kickoffEpoch ?? 0,
+      entities: snapshot.entities,
+    }, receivedAtMs);
   }
 
   sample(localNowMs: number): InterpolatedFrame | null {
@@ -278,6 +330,7 @@ export class SnapshotBuffer {
     if (simulationTime <= first.simulationTime) {
       return {
         simulationTime: first.simulationTime,
+        kickoffEpoch: first.kickoffEpoch,
         mode: 'held',
         underrun: false,
         entities: this.cloneEntities(first.entities),
@@ -297,6 +350,7 @@ export class SnapshotBuffer {
       if (extrapolationMs > 0) this.extrapolatedFrames += 1;
       return {
         simulationTime: latest.simulationTime + extrapolationMs,
+        kickoffEpoch: latest.kickoffEpoch,
         mode: extrapolationMs > 0 ? 'extrapolated' : 'held',
         underrun: true,
         entities,
@@ -315,9 +369,21 @@ export class SnapshotBuffer {
 
     const span = after.simulationTime - before.simulationTime;
     const amount = span > 0 ? (simulationTime - before.simulationTime) / span : 1;
+
+    if (before.kickoffEpoch !== after.kickoffEpoch) {
+      const epochSnapshot = amount < 1 ? before : after;
+      this.teleportFrames += 1;
+      return {
+        simulationTime,
+        kickoffEpoch: epochSnapshot.kickoffEpoch,
+        mode: 'teleport',
+        underrun: false,
+        entities: this.cloneEntities(epochSnapshot.entities),
+      };
+    }
+
     const entities: Record<string, EntitySnapshot> = {};
     let teleported = false;
-
     for (const [id, afterEntity] of Object.entries(after.entities)) {
       const beforeEntity = before.entities[id];
       if (!beforeEntity) {
@@ -336,6 +402,7 @@ export class SnapshotBuffer {
     if (teleported) this.teleportFrames += 1;
     return {
       simulationTime,
+      kickoffEpoch: after.kickoffEpoch,
       mode: teleported ? 'teleport' : 'interpolated',
       underrun: false,
       entities,
@@ -343,7 +410,7 @@ export class SnapshotBuffer {
   }
 
   getSnapshotSequences(): readonly number[] {
-    return this.snapshots.map((snapshot) => snapshot.sequence);
+    return Object.freeze(this.snapshots.map((snapshot) => snapshot.sequence));
   }
 
   getStats(): InterpolationStats {
@@ -363,7 +430,7 @@ export class SnapshotBuffer {
   }
 
   private cloneEntities(
-    source: Readonly<Record<string, EntitySnapshot>>,
+    source: Readonly<Record<string, Readonly<EntitySnapshot>>>,
   ): Readonly<Record<string, EntitySnapshot>> {
     const entities: Record<string, EntitySnapshot> = {};
     for (const [id, entity] of Object.entries(source)) {

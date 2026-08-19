@@ -3,11 +3,11 @@ import test from 'node:test';
 import {
   SnapshotBuffer,
   slerpShortest,
-  type AuthoritativeSnapshot,
   type EntitySnapshot,
+  type ValidatedTimelineSnapshot,
 } from '../src/networking/interpolation-buffer.js';
 
-const IDENTITY_ENTITY: EntitySnapshot = {
+const IDENTITY_ENTITY: EntitySnapshot = Object.freeze({
   x: 0,
   y: 0,
   z: 0,
@@ -18,19 +18,23 @@ const IDENTITY_ENTITY: EntitySnapshot = {
   vx: 0,
   vy: 0,
   vz: 0,
-};
+});
 
 function snapshot(
   sequence: number,
   simulationTime: number,
   entity: Partial<EntitySnapshot>,
-): AuthoritativeSnapshot {
-  return {
+  kickoffEpoch = 0,
+): ValidatedTimelineSnapshot {
+  return Object.freeze({
     sequence,
     serverTime: 1_700_000_000_000 + simulationTime,
     simulationTime,
-    entities: { car: { ...IDENTITY_ENTITY, ...entity } },
-  };
+    kickoffEpoch,
+    entities: Object.freeze({
+      car: Object.freeze({ ...IDENTITY_ENTITY, ...entity }),
+    }),
+  });
 }
 
 function entityAt(buffer: SnapshotBuffer, simulationTime: number): EntitySnapshot {
@@ -41,10 +45,23 @@ function entityAt(buffer: SnapshotBuffer, simulationTime: number): EntitySnapsho
   return entity;
 }
 
+// **Validates: Requirements 1.10**
+test('the default delayed render timeline remains 100 milliseconds', () => {
+  const buffer = new SnapshotBuffer({ teleportThreshold: 20 });
+  assert.equal(buffer.accept(snapshot(1, 0, { x: 0 }), 1000), true);
+  assert.equal(buffer.accept(snapshot(2, 100, { x: 10 }), 1100), true);
+
+  const frame = buffer.sample(1150);
+  assert.ok(frame);
+  assert.equal(buffer.getStats().delayMs, 100);
+  assert.equal(frame.simulationTime, 50);
+  assert.equal(frame.entities.car.x, 5);
+});
+
 test('position and velocity interpolation hits both endpoints and midpoint', () => {
   const buffer = new SnapshotBuffer({ interpolationDelayMs: 0, teleportThreshold: 20 });
-  assert.equal(buffer.push(snapshot(1, 0, { x: 0, vx: 0 }), 0), true);
-  assert.equal(buffer.push(snapshot(2, 100, { x: 10, vx: 20 }), 100), true);
+  assert.equal(buffer.accept(snapshot(1, 0, { x: 0, vx: 0 }), 0), true);
+  assert.equal(buffer.accept(snapshot(2, 100, { x: 10, vx: 20 }), 100), true);
 
   assert.equal(entityAt(buffer, 0).x, 0);
   assert.equal(entityAt(buffer, 50).x, 5);
@@ -52,6 +69,7 @@ test('position and velocity interpolation hits both endpoints and midpoint', () 
   assert.equal(entityAt(buffer, 100).x, 10);
 });
 
+// **Validates: Requirements 1.11**
 test('quaternion slerp takes the shortest path and always normalizes', () => {
   const degrees = Math.PI / 180;
   const from = { x: 0, y: Math.sin(85 * degrees), z: 0, w: Math.cos(85 * degrees) };
@@ -64,46 +82,60 @@ test('quaternion slerp takes the shortest path and always normalizes', () => {
   assert.ok(Math.abs(length - 1) < 1e-12, `quaternion length was ${length}`);
 });
 
-test('duplicate, regressed sequence, and regressed simulation time are rejected', () => {
+test('duplicate, regressed sequence, time, and kickoff epoch are rejected', () => {
   const buffer = new SnapshotBuffer();
-  assert.equal(buffer.push(snapshot(4, 100, {}), 100), true);
-  assert.equal(buffer.push(snapshot(4, 200, { x: 2 }), 200), false);
-  assert.equal(buffer.push(snapshot(3, 300, { x: 3 }), 300), false);
-  assert.equal(buffer.push(snapshot(5, 90, { x: 4 }), 400), false);
-  assert.equal(buffer.push(snapshot(5, 200, { x: 5 }), 500), true);
+  assert.equal(buffer.accept(snapshot(4, 100, {}, 1), 100), true);
+  assert.equal(buffer.accept(snapshot(4, 200, { x: 2 }, 1), 200), false);
+  assert.equal(buffer.accept(snapshot(3, 300, { x: 3 }, 1), 300), false);
+  assert.equal(buffer.accept(snapshot(5, 90, { x: 4 }, 1), 400), false);
+  assert.equal(buffer.accept(snapshot(5, 200, { x: 5 }, 2), 500), true);
+  assert.equal(buffer.accept(snapshot(6, 300, { x: 6 }, 1), 600), false);
 
   assert.deepEqual(buffer.getSnapshotSequences(), [4, 5]);
-  assert.equal(buffer.getStats().rejectedSnapshots, 3);
+  assert.equal(buffer.getStats().rejectedSnapshots, 4);
 });
 
-test('the immutable buffer prunes oldest snapshots at its configured bound', () => {
-  const buffer = new SnapshotBuffer({ capacity: 3 });
-  for (let sequence = 1; sequence <= 6; sequence++) {
-    assert.equal(buffer.push(snapshot(sequence, sequence * 33, { x: sequence }), sequence * 33), true);
+// **Validates: Requirements 1.9**
+test('the immutable buffer retains the 24 greatest accepted sequences', () => {
+  const buffer = new SnapshotBuffer();
+  for (let sequence = 1; sequence <= 30; sequence++) {
+    assert.equal(
+      buffer.accept(snapshot(sequence, sequence * 33, { x: sequence }), sequence * 33),
+      true,
+    );
   }
 
-  assert.deepEqual(buffer.getSnapshotSequences(), [4, 5, 6]);
-  assert.equal(buffer.getStats().size, 3);
+  assert.deepEqual(
+    buffer.getSnapshotSequences(),
+    Array.from({ length: 24 }, (_, index) => index + 7),
+  );
+  assert.equal(buffer.getStats().size, 24);
+  assert.equal(Object.isFrozen(buffer.getSnapshotSequences()), true);
 });
 
-test('underrun extrapolation uses velocity and stops at the configured bound', () => {
-  const buffer = new SnapshotBuffer({ maxExtrapolationMs: 50 });
-  buffer.push(snapshot(1, 100, { x: 2, vx: 10 }), 100);
+// **Validates: Requirements 1.12**
+test('underrun extrapolation stops at 80 milliseconds and holds the bounded result', () => {
+  const buffer = new SnapshotBuffer();
+  buffer.accept(snapshot(1, 100, { x: 2, vx: 10 }), 100);
 
-  const withinBound = buffer.sampleAt(140);
+  const atBound = buffer.sampleAt(180);
   const beyondBound = buffer.sampleAt(1000);
-  assert.ok(withinBound && beyondBound);
-  assert.equal(withinBound.mode, 'extrapolated');
-  assert.equal(withinBound.underrun, true);
-  assert.ok(Math.abs(withinBound.entities.car.x - 2.4) < 1e-12);
-  assert.ok(Math.abs(beyondBound.entities.car.x - 2.5) < 1e-12);
-  assert.equal(buffer.getStats().underrunFrames, 2);
+  const muchLater = buffer.sampleAt(10_000);
+  assert.ok(atBound && beyondBound && muchLater);
+  assert.equal(atBound.mode, 'extrapolated');
+  assert.equal(beyondBound.underrun, true);
+  assert.equal(atBound.simulationTime, 180);
+  assert.equal(beyondBound.simulationTime, 180);
+  assert.equal(muchLater.simulationTime, 180);
+  assert.ok(Math.abs(atBound.entities.car.x - 2.8) < 1e-12);
+  assert.equal(beyondBound.entities.car.x, atBound.entities.car.x);
+  assert.equal(muchLater.entities.car.x, atBound.entities.car.x);
 });
 
-test('teleports hold the old pose until the authoritative endpoint', () => {
+test('distance teleports hold the old pose until the authoritative endpoint', () => {
   const buffer = new SnapshotBuffer({ teleportThreshold: 8 });
-  buffer.push(snapshot(1, 0, { x: 0 }), 0);
-  buffer.push(snapshot(2, 100, { x: 20 }), 100);
+  buffer.accept(snapshot(1, 0, { x: 0 }), 0);
+  buffer.accept(snapshot(2, 100, { x: 20 }), 100);
 
   const midpoint = buffer.sampleAt(50);
   const endpoint = buffer.sampleAt(100);
@@ -113,10 +145,33 @@ test('teleports hold the old pose until the authoritative endpoint', () => {
   assert.equal(endpoint.entities.car.x, 20);
 });
 
-// **Validates: Requirements 5, 7**
+test('kickoff epoch changes rebase as teleport boundaries without cross-epoch interpolation', () => {
+  const buffer = new SnapshotBuffer({ teleportThreshold: 10_000 });
+  buffer.accept(snapshot(1, 0, { x: 0, vx: 100 }, 7), 0);
+  buffer.accept(snapshot(2, 100, { x: 1, vx: 0 }, 8), 100);
+
+  const beforeBoundary = buffer.sampleAt(50);
+  const boundary = buffer.sampleAt(100);
+  assert.ok(beforeBoundary && boundary);
+  assert.equal(beforeBoundary.mode, 'teleport');
+  assert.equal(beforeBoundary.kickoffEpoch, 7);
+  assert.equal(beforeBoundary.entities.car.x, 0);
+  assert.equal(boundary.mode, 'teleport');
+  assert.equal(boundary.kickoffEpoch, 8);
+  assert.equal(boundary.entities.car.x, 1);
+
+  buffer.accept(snapshot(3, 200, { x: 3, vx: 0 }, 8), 200);
+  const rebased = buffer.sampleAt(150);
+  assert.ok(rebased);
+  assert.equal(rebased.mode, 'interpolated');
+  assert.equal(rebased.kickoffEpoch, 8);
+  assert.equal(rebased.entities.car.x, 2);
+});
+
+// **Validates: Requirements 1.9-1.12**
 test('generated linear snapshots preserve interpolation bounds and normalized rotations', () => {
   let state = 0x1a2b3c4d;
-  for (let sample = 0; sample < 256; sample++) {
+  for (let sampleIndex = 0; sampleIndex < 256; sampleIndex++) {
     state = (state * 1664525 + 1013904223) >>> 0;
     const start = (state % 2000) - 1000;
     state = (state * 1664525 + 1013904223) >>> 0;
@@ -125,8 +180,8 @@ test('generated linear snapshots preserve interpolation bounds and normalized ro
     const amount = (state % 1001) / 1000;
 
     const buffer = new SnapshotBuffer({ teleportThreshold: 10_000 });
-    buffer.push(snapshot(1, 0, { x: start, qw: 3 }), 0);
-    buffer.push(snapshot(2, 1000, { x: end, qw: -7 }), 1000);
+    buffer.accept(snapshot(1, 0, { x: start, qw: 3 }), 0);
+    buffer.accept(snapshot(2, 1000, { x: end, qw: -7 }), 1000);
     const entity = entityAt(buffer, amount * 1000);
     const lower = Math.min(start, end);
     const upper = Math.max(start, end);
