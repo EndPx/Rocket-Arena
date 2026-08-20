@@ -24,8 +24,7 @@ interface ManagedBallBody {
   readonly maximumLinearSpeed: number;
   readonly maximumAngularSpeed: number;
   readonly fixedStepSeconds: number;
-  readonly softCcdTravelRatio: number;
-  readonly maximumSoftCcdPrediction: number;
+  readonly softCcdPrediction: number;
 }
 
 const MANAGED_BALL_BODIES = new WeakMap<RAPIER.RigidBody, ManagedBallBody>();
@@ -51,7 +50,6 @@ function makeManagedBall(
 ): ManagedBallBody {
   const maximumLinearSpeed = positiveTuningValue(tuning, TUNING_IDS.ball.maxLinearSpeed);
   const fixedStepSeconds = positiveTuningValue(tuning, TUNING_IDS.physics.fixedStepSeconds);
-  const softCcdTravelRatio = getConstant('BALL.SOFT_CCD_TRAVEL_RATIO');
   return {
     tracker: createFiniteRigidBodyStateTracker(body, {
       translation: fallbackTranslation,
@@ -62,28 +60,27 @@ function makeManagedBall(
     maximumLinearSpeed: maximumLinearSpeed + BALL_LINEAR_SPEED_TOLERANCE,
     maximumAngularSpeed: positiveTuningValue(tuning, TUNING_IDS.ball.maxAngularSpeed),
     fixedStepSeconds,
-    softCcdTravelRatio,
-    maximumSoftCcdPrediction: maximumLinearSpeed * fixedStepSeconds * softCcdTravelRatio,
+    softCcdPrediction: getConstant('BALL.SOFT_CCD_PREDICTION'),
   };
 }
 
 /**
- * Scale the soft-CCD prediction to the distance this ball covers in the coming
- * fixed step. Keeping the prediction strictly below that travel preserves the
- * genuine impact the restitution coefficient acts on, while keeping it a large
- * enough fraction of the travel prevents a visible transient sink at speed.
+ * Keep the ball's soft-CCD prediction at the configured distance.
+ *
+ * Any non-zero prediction lets the solver see the floor one step before the
+ * ball reaches it and brake the approach, which silently discards restitution.
+ * Whether that happens depends on where the impact falls inside the fixed step,
+ * so a non-zero prediction makes the bounce non-deterministic: measured
+ * effective restitution was `0.592` from 10 m and `0.585` from 3 m but only
+ * `0.159` from 5 m, which reads in game as the ball refusing to bounce and
+ * simply rolling. The prediction therefore stays at its configured value, and
+ * full nonlinear CCD remains responsible for fast-motion robustness.
  */
-function applyAdaptiveSoftCcdPrediction(
+function applyConfiguredSoftCcdPrediction(
   body: RAPIER.RigidBody,
   managed: ManagedBallBody,
-  linearVelocity: FiniteVector3,
 ): void {
-  const speed = Math.hypot(linearVelocity.x, linearVelocity.y, linearVelocity.z);
-  const travel = speed * managed.fixedStepSeconds;
-  const prediction = Math.min(
-    travel * managed.softCcdTravelRatio,
-    managed.maximumSoftCcdPrediction,
-  );
+  const prediction = managed.softCcdPrediction;
   body.setSoftCcdPrediction(Number.isFinite(prediction) && prediction > 0 ? prediction : 0);
 }
 
@@ -134,8 +131,6 @@ export function createBall(
         .setLinearDamping(linearDamping)
         .setAngularDamping(getConstant('BALL.ANGULAR_DAMPING'))
         .setCcdEnabled(true)
-        // The resting prediction is zero; every step then scales it to the
-        // ball's own speed through applyAdaptiveSoftCcdPrediction.
         .setSoftCcdPrediction(getConstant('BALL.SOFT_CCD_PREDICTION'))
         .setAdditionalSolverIterations(Math.round(
           getConstant('BALL.ADDITIONAL_SOLVER_ITERATIONS'),
@@ -165,7 +160,7 @@ export function createBall(
 export function recoverBallBeforeStep(body: RAPIER.RigidBody): FiniteRigidBodyState {
   const managed = managedBall(body);
   const recovered = recoverFiniteRigidBodyState(body, managed.tracker);
-  applyAdaptiveSoftCcdPrediction(body, managed, recovered.linearVelocity);
+  applyConfiguredSoftCcdPrediction(body, managed);
   return recovered;
 }
 

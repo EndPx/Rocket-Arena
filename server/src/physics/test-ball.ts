@@ -266,6 +266,79 @@ function runDropHarness(): {
   });
 }
 
+/**
+ * The bounce must not depend on where an impact happens to fall inside the
+ * fixed step, nor on how fast the ball is travelling along the surface. A
+ * single drop height cannot show that, so sweep several approaches and require
+ * every one of them to reproduce the tuned restitution.
+ */
+function runBounceConsistencySweep(): { readonly worstDeviation: number; readonly samples: number } {
+  const tunedRestitution = getScalarTuningValue(
+    DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+    TUNING_IDS.ball.restitution,
+  );
+  const radius = getScalarTuningValue(DEFAULT_TUNING_REGISTRY_SNAPSHOT, TUNING_IDS.ball.radius);
+  const tolerance = 0.09;
+  let worstDeviation = 0;
+  let samples = 0;
+
+  for (const dropHeight of [3, 4, 5, 6, 8, 10, 14]) {
+    for (const horizontalSpeed of [0, 12, 30]) {
+      withTrackedWorld((world) => {
+        const arena = createArenaColliders(world, ARENA_COLLISION_GEOMETRY);
+        try {
+          const ball = createBall(world, { x: 0, y: dropHeight, z: -20 });
+          ball.setLinvel({ x: 0, y: 0, z: horizontalSpeed }, true);
+
+          let previousVy = 0;
+          let impactSpeed = 0;
+          let reboundSpeed = 0;
+          let apex = 0;
+          let impacted = false;
+
+          for (let frame = 0; frame < 900; frame += 1) {
+            recoverBallBeforeStep(ball);
+            const beforeVy = ball.linvel().y;
+            world.step();
+            const state = recoverBallAfterStep(ball);
+            if (!impacted && previousVy < 0 && state.linearVelocity.y > 0) {
+              impacted = true;
+              impactSpeed = Math.abs(beforeVy);
+              reboundSpeed = state.linearVelocity.y;
+            }
+            if (impacted) apex = Math.max(apex, state.translation.y);
+            previousVy = state.linearVelocity.y;
+          }
+
+          const label = `drop ${dropHeight}m at ${horizontalSpeed}m/s along the floor`;
+          assert.ok(impacted, `${label} must produce a rebound`);
+          const effective = reboundSpeed / impactSpeed;
+          const deviation = Math.abs(effective - tunedRestitution);
+          worstDeviation = Math.max(worstDeviation, deviation);
+          samples += 1;
+          assert.ok(
+            deviation <= tolerance,
+            `${label}: effective restitution ${effective.toFixed(3)} must stay within`
+            + ` ${tolerance} of the tuned ${tunedRestitution}`,
+          );
+          assert.ok(
+            effective <= tunedRestitution + tolerance,
+            `${label} must not gain energy, received ${effective.toFixed(3)}`,
+          );
+          assert.ok(
+            apex > radius + 0.2,
+            `${label} must leave a visible gap after the rebound, apex=${apex.toFixed(3)}m`,
+          );
+        } finally {
+          arena.dispose();
+        }
+      });
+    }
+  }
+
+  return { worstDeviation, samples };
+}
+
 function assertSetupFailureCleanup(): void {
   assert.throws(
     () => withTrackedWorld((world) => {
@@ -280,6 +353,7 @@ async function main(): Promise<void> {
   await initPhysics();
   runConstructionAndRecovery();
   const drop = runDropHarness();
+  const bounce = runBounceConsistencySweep();
   assertSetupFailureCleanup();
   assert.equal(
     disposalTracker.freed,
@@ -290,6 +364,7 @@ async function main(): Promise<void> {
   console.log('=== BALL HARNESS: PASS ===');
   console.log(`drop=${DROP_HEIGHT.toFixed(2)}m impact=${drop.impactSeconds.toFixed(2)}s reboundApex=${drop.reboundApex.toFixed(2)}m`);
   console.log(`settled=${drop.settledSeconds.toFixed(2)}s restY=${drop.restY.toFixed(3)}m maxSpeed=${drop.maximumSpeed.toFixed(2)}m/s`);
+  console.log(`bounce sweep: ${bounce.samples} approaches, worst restitution deviation=${bounce.worstDeviation.toFixed(3)}`);
   console.log(`cleanup=${disposalTracker.freed}/${disposalTracker.created} worlds`);
 }
 
