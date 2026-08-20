@@ -63,6 +63,25 @@ export const CAR = {
     STICK_FORCE: 850,
   },
 
+  /**
+   * Driving on steep surfaces. Gentle slopes always support the car; steeper
+   * surfaces, including the field walls, support it only while it carries
+   * enough speed to hold itself against them. The two speeds form a hysteresis
+   * band so a car near the limit cannot flicker between grounded and airborne.
+   */
+  WALL_DRIVE: {
+    /** Slope beyond which the speed gate applies, in degrees from world up. */
+    GATED_SLOPE_DEGREES: 55,
+    /** Slope limit while the speed gate is satisfied, in degrees. */
+    MAXIMUM_SLOPE_DEGREES: 90,
+    /** Slope limit while it is not, in degrees. */
+    GROUNDED_SLOPE_DEGREES: 55,
+    /** Speed needed to start holding a steep surface, in metres/second. */
+    ENGAGE_SPEED: 9,
+    /** Speed below which a steep surface stops supporting the car, in m/s. */
+    RELEASE_SPEED: 5.5,
+  },
+
   /** Jump edge detection, landing rearm, and airborne control. */
   JUMP: {
     IMPULSE: 1020,

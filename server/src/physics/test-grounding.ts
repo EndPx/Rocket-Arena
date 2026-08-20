@@ -359,6 +359,91 @@ function runRideHeightProbeCases(): void {
   }
 }
 
+/**
+ * The lower transition curves continuously from the floor to the wall, so its
+ * upper segments are steep. Rejecting them turns the top of the ramp into thin
+ * air: throttle becomes air pitch and the car tumbles instead of driving up.
+ * The slope limit therefore has to be what decides, and it must decide per
+ * segment rather than cutting the ramp in half.
+ */
+function runSteepRampSupportCases(): void {
+  const world = createTrackedWorld();
+  let arena: ReturnType<typeof createArenaColliders> | null = null;
+  try {
+    arena = createArenaColliders(world, ARENA_COLLISION_GEOMETRY);
+    const registry = arena.registry;
+    const profile = ARENA_COLLISION_GEOMETRY.profiles.floorWall;
+    const segmentCount = profile.samples.length - 1;
+    assert.ok(segmentCount >= 4, 'the lower transition must be segmented');
+
+    let steepSegments = 0;
+    let gentleSegments = 0;
+
+    for (let index = 0; index < segmentCount; index += 1) {
+      const current = profile.samples[index]!;
+      const next = profile.samples[index + 1]!;
+      const pitch = Math.atan2(next.up - current.up, next.outward - current.outward);
+      const slopeDegrees = Math.abs(pitch) * 180 / Math.PI;
+      const normalX = -Math.sin(pitch);
+      const normalY = Math.cos(pitch);
+      const point = {
+        x: ARENA_COLLISION_GEOMETRY.bounds.max[0] - profile.run
+          + (current.outward + next.outward) / 2,
+        y: (current.up + next.up) / 2,
+      };
+      const probe = createProbe(world, {
+        x: point.x + normalX * CAR_HALF_HEIGHT,
+        y: point.y + normalY * CAR_HALF_HEIGHT,
+        z: 0,
+      }, rotationAroundZ(pitch));
+      world.updateSceneQueries();
+
+      const open = detectGroundSupport(world, probe, registry, {
+        maximumDriveableSlopeDegrees: 90,
+      });
+      assert.equal(
+        open.grounded,
+        true,
+        `segment ${index} at ${slopeDegrees.toFixed(1)} degrees must support a car`
+        + ' aligned to it when the slope limit allows the whole ramp',
+      );
+      assert.ok(
+        open.acceptedHits.some((hit) => hit.surfaceId.startsWith('field.ramp.')),
+        `segment ${index} must be supported by a ramp surface`,
+      );
+      assertFiniteResultGeometry(open);
+
+      const gated = detectGroundSupport(world, probe, registry, {
+        maximumDriveableSlopeDegrees: 55,
+      });
+      if (slopeDegrees > 55) {
+        steepSegments += 1;
+        assert.equal(
+          gated.grounded,
+          false,
+          `segment ${index} at ${slopeDegrees.toFixed(1)} degrees must be rejected`
+          + ' while the slope limit excludes it',
+        );
+      } else {
+        gentleSegments += 1;
+        assert.equal(
+          gated.grounded,
+          true,
+          `segment ${index} at ${slopeDegrees.toFixed(1)} degrees must always support a car`,
+        );
+      }
+
+      world.removeRigidBody(probe);
+    }
+
+    assert.ok(steepSegments > 0, 'the ramp must contain segments steeper than the gate');
+    assert.ok(gentleSegments > 0, 'the ramp must contain segments gentler than the gate');
+  } finally {
+    arena?.dispose();
+    freeTrackedWorld(world);
+  }
+}
+
 function runAdjacentAndConfiguredCases(): void {
   const adjacentWorld = createTrackedWorld();
   try {
@@ -551,6 +636,7 @@ function assertSetupFailureCleanup(): void {
 async function main(): Promise<void> {
   await initPhysics();
   runArenaSupportCases();
+  runSteepRampSupportCases();
   runRideHeightProbeCases();
   runAdjacentAndConfiguredCases();
   runFilteringCases();

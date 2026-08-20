@@ -44,6 +44,7 @@ export interface AuthoritativeRapierCar {
   boostRechargeDelaySeconds: number;
   boostRechargeArmed: boolean;
   dodgeIntentSteps: number;
+  wallDriveEngaged: boolean;
 }
 
 interface RapierCarKickoffState {
@@ -52,10 +53,40 @@ interface RapierCarKickoffState {
   readonly boostRechargeDelaySeconds: number;
   readonly boostRechargeArmed: boolean;
   readonly dodgeIntentSteps: number;
+  readonly wallDriveEngaged: boolean;
 }
 
 const DODGE_INTENT_MIN_STEPS = 3;
 const DODGE_DIRECTIONAL_THRESHOLD = 0.7;
+
+/**
+ * Resolve how steep a surface may be and still support this car.
+ *
+ * Gentle slopes always support it. Steeper surfaces, including the field walls,
+ * support it only while it carries enough speed to hold itself against them,
+ * which is what lets a car drive up a wall after building speed while stopping
+ * a slow car from standing itself up against one. The engage and release speeds
+ * form a hysteresis band so a car near the limit cannot flicker between
+ * grounded and airborne.
+ */
+function resolveDriveableSlopeDegrees(car: AuthoritativeRapierCar): number {
+  const velocity = car.body.linvel();
+  const speed = Math.hypot(velocity.x, velocity.y, velocity.z);
+  if (!Number.isFinite(speed)) {
+    car.wallDriveEngaged = false;
+    return getConstant('CAR.WALL_DRIVE.GROUNDED_SLOPE_DEGREES');
+  }
+
+  if (car.wallDriveEngaged) {
+    if (speed < getConstant('CAR.WALL_DRIVE.RELEASE_SPEED')) car.wallDriveEngaged = false;
+  } else if (speed >= getConstant('CAR.WALL_DRIVE.ENGAGE_SPEED')) {
+    car.wallDriveEngaged = true;
+  }
+
+  return car.wallDriveEngaged
+    ? getConstant('CAR.WALL_DRIVE.MAXIMUM_SLOPE_DEGREES')
+    : getConstant('CAR.WALL_DRIVE.GROUNDED_SLOPE_DEGREES');
+}
 
 export interface AuthoritativeRapierWorldOptions {
   /** Exact room-pinned geometry instance used for every boundary collider. */
@@ -92,6 +123,7 @@ function captureKickoffState(car: AuthoritativeRapierCar): RapierCarKickoffState
     boostRechargeDelaySeconds: car.boostRechargeDelaySeconds,
     boostRechargeArmed: car.boostRechargeArmed,
     dodgeIntentSteps: car.dodgeIntentSteps,
+    wallDriveEngaged: car.wallDriveEngaged,
   });
 }
 
@@ -104,6 +136,7 @@ function restoreKickoffState(
   car.boostRechargeDelaySeconds = snapshot.boostRechargeDelaySeconds;
   car.boostRechargeArmed = snapshot.boostRechargeArmed;
   car.dodgeIntentSteps = snapshot.dodgeIntentSteps;
+  car.wallDriveEngaged = snapshot.wallDriveEngaged;
 }
 
 function resetKickoffState(
@@ -115,6 +148,7 @@ function resetKickoffState(
   car.boostRechargeDelaySeconds = 0;
   car.boostRechargeArmed = false;
   car.dodgeIntentSteps = 0;
+  car.wallDriveEngaged = false;
 }
 
 /**
@@ -162,6 +196,7 @@ export async function initializeAuthoritativeRapierWorld(
               boostRechargeDelaySeconds: 0,
               boostRechargeArmed: false,
               dodgeIntentSteps: 0,
+              wallDriveEngaged: false,
               get boostAmount(): number {
                 return lastFiniteBoostAmount;
               },
@@ -233,13 +268,14 @@ export async function initializeAuthoritativeRapierWorld(
         authoritativeWorld.updateSceneQueries();
       },
       groundCar: ({ world: authoritativeWorld, car, tuning: roomTuning }) => {
+        const maximumDriveableSlopeDegrees = resolveDriveableSlopeDegrees(car);
         const result = detectGroundSupport(
           authoritativeWorld,
           car.body,
           surfaces,
           {
             tuning: roomTuning,
-            maximumDriveableSlopeDegrees: 60,
+            maximumDriveableSlopeDegrees,
           },
         );
         // Measured separately from the support rays because those start at the
@@ -247,7 +283,7 @@ export async function initializeAuthoritativeRapierWorld(
         const rideHeight = result.grounded
           ? probeRideHeight(authoritativeWorld, car.body, surfaces, {
             tuning: roomTuning,
-            maximumDriveableSlopeDegrees: 60,
+            maximumDriveableSlopeDegrees,
           })
           : null;
         return Object.freeze({
