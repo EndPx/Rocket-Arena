@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { VISUAL } from '@rocket-arena/shared';
-import { getCarMeshes, getLocalState } from '../networking/state-listener.js';
+import { getBallMesh, getCarMeshes, getLocalState } from '../networking/state-listener.js';
 import { getCarVisualRig, type CarVisualRig } from './car.js';
+import { getBallVisualRig, type BallVisualRig } from './ball.js';
 
 export interface SyncedPlayerVisualState {
   vx: number;
@@ -10,9 +11,21 @@ export interface SyncedPlayerVisualState {
   boost: number;
 }
 
+export interface SyncedBallVisualState {
+  vx: number;
+  vy: number;
+  vz: number;
+}
+
 const localForward = new THREE.Vector3(0, 0, 1);
 const worldForward = new THREE.Vector3();
 const horizontalVelocity = new THREE.Vector3();
+const ballVelocity = new THREE.Vector3();
+const ballSpinAxis = new THREE.Vector3();
+const trailDirection = new THREE.Vector3();
+const trailRotation = new THREE.Quaternion();
+const trailLocalRotation = new THREE.Quaternion();
+const coneAxis = new THREE.Vector3(0, 1, 0);
 
 function dampingAlpha(response: number, deltaSeconds: number): number {
   return 1 - Math.exp(-Math.max(0, response) * Math.max(0, deltaSeconds));
@@ -153,7 +166,112 @@ export function updateCarVisualRig(
   advanceRig(rig, car.quaternion, player, deltaSeconds, elapsedSeconds, phaseOffset);
 }
 
-/** Advance all car effects from the latest accepted snapshot projection. */
+/**
+ * Advance the ball rig from accepted presentation values only. Spin, pulse,
+ * trail, and proximity glow are finite and frame-rate bounded, and none of them
+ * infers a goal, a contact, or any score authority.
+ */
+export function updateBallVisualRig(
+  ball: THREE.Group,
+  velocity: SyncedBallVisualState,
+  nearestCarDistance: number | null,
+  deltaSeconds: number,
+): void {
+  const rig: BallVisualRig | null = getBallVisualRig(ball);
+  if (!rig || rig.isDisposed) return;
+
+  const tuning = VISUAL.BALL_MOTION;
+  const step = Math.max(0, finiteOrZero(deltaSeconds));
+  const motion = rig.motion;
+
+  ballVelocity.set(
+    finiteOrZero(velocity.vx),
+    finiteOrZero(velocity.vy),
+    finiteOrZero(velocity.vz),
+  );
+  const instantSpeed = ballVelocity.length();
+  motion.speed = THREE.MathUtils.lerp(
+    motion.speed,
+    instantSpeed,
+    dampingAlpha(tuning.SPEED_RESPONSE, step),
+  );
+  const speedRatio = THREE.MathUtils.clamp(motion.speed / tuning.SPEED_FOR_MAX, 0, 1);
+
+  // Presentation spin lives on an inner gyro so it never contradicts the
+  // authoritative shell orientation applied by the reconciler.
+  if (instantSpeed > 1e-3) {
+    ballSpinAxis.copy(ballVelocity).normalize().cross(coneAxis);
+    if (ballSpinAxis.lengthSq() < 1e-6) ballSpinAxis.set(1, 0, 0);
+    else ballSpinAxis.normalize();
+  } else if (ballSpinAxis.lengthSq() < 1e-6) {
+    ballSpinAxis.set(1, 0, 0);
+  }
+  motion.gyroAngle = (motion.gyroAngle + speedRatio * tuning.GYRO_MAX_RATE * step) % (Math.PI * 2);
+  rig.gyro.setRotationFromAxisAngle(ballSpinAxis, motion.gyroAngle);
+
+  motion.pulsePhase = (motion.pulsePhase + tuning.PULSE_RATE * step) % (Math.PI * 2);
+  const pulse = 1 + Math.sin(motion.pulsePhase) * tuning.PULSE_AMOUNT * (0.35 + speedRatio * 0.65);
+  const coreMaterial = rig.core.material;
+  if (coreMaterial instanceof THREE.MeshStandardMaterial) {
+    coreMaterial.emissiveIntensity = VISUAL.BALL.CORE_GLOW * pulse;
+  }
+  const nodeMaterial = rig.nodes.material;
+  if (nodeMaterial instanceof THREE.MeshStandardMaterial) {
+    nodeMaterial.emissiveIntensity = VISUAL.BALL.NODE_GLOW * pulse;
+  }
+
+  const trailTarget = motion.speed > tuning.TRAIL_MIN_SPEED ? speedRatio : 0;
+  motion.trailBlend = THREE.MathUtils.clamp(
+    THREE.MathUtils.lerp(motion.trailBlend, trailTarget, dampingAlpha(tuning.TRAIL_RESPONSE, step)),
+    0,
+    1,
+  );
+  const trailVisible = motion.trailBlend > 0.02 && instantSpeed > 1e-3;
+  rig.trail.visible = trailVisible;
+  if (trailVisible) {
+    // The root carries the authoritative rotation, so the trail is aligned in
+    // world space and then expressed back in the root's local frame.
+    trailDirection.copy(ballVelocity).normalize().negate();
+    trailRotation.setFromUnitVectors(coneAxis, trailDirection);
+    trailLocalRotation.copy(ball.quaternion).invert().multiply(trailRotation);
+    rig.trail.quaternion.copy(trailLocalRotation);
+    const length = Math.max(0.05, motion.trailBlend * tuning.TRAIL_MAX_LENGTH_SCALE);
+    rig.trail.scale.set(0.55 + motion.trailBlend * 0.35, length, 0.55 + motion.trailBlend * 0.35);
+    // Seat the cone so its base meets the ball and its tip trails behind.
+    rig.trail.position.copy(coneAxis)
+      .multiplyScalar(rig.trailHalfLength * length)
+      .applyQuaternion(trailLocalRotation);
+    const trailMaterial = rig.trail.material;
+    if (trailMaterial instanceof THREE.MeshBasicMaterial) {
+      trailMaterial.opacity = tuning.TRAIL_MAX_OPACITY * motion.trailBlend;
+    }
+  }
+
+  const proximityTarget = nearestCarDistance === null || !Number.isFinite(nearestCarDistance)
+    ? 0
+    : THREE.MathUtils.clamp(
+      1 - (nearestCarDistance - rig.radius) / tuning.PROXIMITY_RADIUS,
+      0,
+      1,
+    );
+  motion.proximityBlend = THREE.MathUtils.clamp(
+    THREE.MathUtils.lerp(
+      motion.proximityBlend,
+      proximityTarget,
+      dampingAlpha(tuning.PROXIMITY_RESPONSE, step),
+    ),
+    0,
+    1,
+  );
+  const glowVisible = motion.proximityBlend > 0.02;
+  rig.glow.visible = glowVisible;
+  const glowMaterial = rig.glow.material;
+  if (glowMaterial instanceof THREE.MeshBasicMaterial) {
+    glowMaterial.opacity = tuning.PROXIMITY_MAX_OPACITY * motion.proximityBlend;
+  }
+}
+
+/** Advance all car and ball effects from the latest accepted snapshot projection. */
 export function updateEntityEffects(deltaSeconds: number, elapsedSeconds: number): void {
   const state = getLocalState();
   if (!state) return;
@@ -166,6 +284,25 @@ export function updateEntityEffects(deltaSeconds: number, elapsedSeconds: number
     }
     index += 1;
   }
+
+  const ball = getBallMesh();
+  if (!ball) return;
+  updateBallVisualRig(ball, state.ball, nearestCarDistanceToBall(ball), deltaSeconds);
+}
+
+/**
+ * Distance from the ball to the closest presented car, or null when no car is
+ * presented. This is a proximity reading of accepted transforms only; it makes
+ * no claim that a contact occurred.
+ */
+function nearestCarDistanceToBall(ball: THREE.Group): number | null {
+  let nearest: number | null = null;
+  for (const car of getCarMeshes().values()) {
+    const distance = car.position.distanceTo(ball.position);
+    if (!Number.isFinite(distance)) continue;
+    if (nearest === null || distance < nearest) nearest = distance;
+  }
+  return nearest;
 }
 
 /**

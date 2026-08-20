@@ -125,6 +125,31 @@ export const VISUAL = {
     METALNESS: 0.58,
   },
 
+  /**
+   * Ball presentation response. Every value is a presentation-only tunable
+   * applied to smoothed accepted velocity; none of it feeds simulation.
+   */
+  BALL_MOTION: {
+    /** Smoothing rate for the presented ball speed, in reciprocal seconds. */
+    SPEED_RESPONSE: 8,
+    /** Speed that maps to the fullest presented response, in metres/second. */
+    SPEED_FOR_MAX: 34,
+    /** Upper bound on presented gyro spin, in radians/second. */
+    GYRO_MAX_RATE: 6.5,
+    /** Emissive pulse rate in radians/second and its relative amplitude. */
+    PULSE_RATE: 5.2,
+    PULSE_AMOUNT: 0.28,
+    /** Speed at which the motion trail starts to appear, in metres/second. */
+    TRAIL_MIN_SPEED: 7,
+    TRAIL_RESPONSE: 9,
+    TRAIL_MAX_OPACITY: 0.34,
+    TRAIL_MAX_LENGTH_SCALE: 1.15,
+    /** Distance at which a nearby car begins to raise the rim glow, in metres. */
+    PROXIMITY_RADIUS: 7,
+    PROXIMITY_RESPONSE: 10,
+    PROXIMITY_MAX_OPACITY: 0.3,
+  },
+
   /** Stadium geometry remains outside or coincident with authoritative colliders. */
   STADIUM: {
     FIELD: {

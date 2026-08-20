@@ -11,7 +11,13 @@ import {
   type CarVisualRig,
   type ShellSection,
 } from '../src/renderer/car.js';
-import { createBallMesh } from '../src/renderer/ball.js';
+import {
+  createBallMesh,
+  createBallVisualRig,
+  getBallVisualRig,
+  getSharedBallResourceReferenceCount,
+} from '../src/renderer/ball.js';
+import { updateBallVisualRig } from '../src/renderer/entity-effects.js';
 
 function seededRandom(seed: number): () => number {
   let state = seed >>> 0;
@@ -231,4 +237,115 @@ test('rig temporal state rebases without touching the transform', () => {
   } finally {
     rig.dispose();
   }
+});
+
+// Validates: Requirements 11.1, 12.10, 18.24 (Task 8.3 ball rig and effects)
+
+test('ball rigs reuse one immutable resource set and release it exactly once', () => {
+  const before = getSharedBallResourceReferenceCount();
+  const first = createBallVisualRig();
+  const second = createBallVisualRig();
+
+  try {
+    assert.equal(getSharedBallResourceReferenceCount(), before + 2);
+    assert.strictEqual(first.shell.geometry, second.shell.geometry);
+    assert.strictEqual(first.shell.material, second.shell.material);
+    assert.strictEqual(first.seams.geometry, second.seams.geometry);
+    assert.strictEqual(first.sockets.material, second.sockets.material);
+    assert.notStrictEqual(
+      first.nodes.material,
+      second.nodes.material,
+      'the pulsing node material is animated per rig',
+    );
+    assert.notStrictEqual(first.core.material, second.core.material);
+    assert.equal(first.radius, BALL.RADIUS);
+  } finally {
+    first.dispose();
+    second.dispose();
+  }
+
+  assert.equal(getSharedBallResourceReferenceCount(), before);
+  assert.ok(first.isDisposed && second.isDisposed);
+
+  const reacquired = createBallVisualRig();
+  const afterCreate = getSharedBallResourceReferenceCount();
+  reacquired.dispose();
+  reacquired.dispose();
+  assert.equal(
+    getSharedBallResourceReferenceCount(),
+    afterCreate - 1,
+    'repeated disposal must release only one shared reference',
+  );
+});
+
+test('ball effects stay finite and bounded and never move the accepted transform', () => {
+  const ball = createBallMesh();
+  const rig = getBallVisualRig(ball);
+  assert.ok(rig);
+
+  try {
+    ball.position.set(2, 3.5, -8);
+    ball.quaternion.setFromEuler(new THREE.Euler(0.4, 1.1, -0.6));
+    const acceptedPosition = ball.position.toArray();
+    const acceptedRotation = ball.quaternion.toArray();
+
+    assert.equal(rig.trail.visible, false, 'a resting ball shows no trail');
+    assert.equal(rig.glow.visible, false, 'a resting ball shows no proximity glow');
+
+    for (let frame = 0; frame < 240; frame++) {
+      updateBallVisualRig(ball, { vx: 18, vy: 4, vz: -26 }, 3.1, 1 / 60);
+    }
+
+    assert.deepEqual(ball.position.toArray(), acceptedPosition);
+    assert.deepEqual(ball.quaternion.toArray(), acceptedRotation);
+    assert.ok(rig.trail.visible, 'a fast ball presents a motion trail');
+    assert.ok(rig.glow.visible, 'a nearby car raises the proximity glow');
+
+    const trailMaterial = rig.trail.material as THREE.MeshBasicMaterial;
+    const glowMaterial = rig.glow.material as THREE.MeshBasicMaterial;
+    assert.ok(trailMaterial.opacity > 0 && trailMaterial.opacity <= VISUAL.BALL_MOTION.TRAIL_MAX_OPACITY + 1e-9);
+    assert.ok(glowMaterial.opacity > 0 && glowMaterial.opacity <= VISUAL.BALL_MOTION.PROXIMITY_MAX_OPACITY + 1e-9);
+    assert.ok(rig.motion.trailBlend > 0 && rig.motion.trailBlend <= 1);
+    assert.ok(rig.motion.proximityBlend > 0 && rig.motion.proximityBlend <= 1);
+    assert.ok(rig.motion.gyroAngle >= 0 && rig.motion.gyroAngle < Math.PI * 2);
+    assert.ok(Number.isFinite(rig.motion.speed) && rig.motion.speed > 0);
+
+    const coreMaterial = rig.core.material as THREE.MeshStandardMaterial;
+    const nodeMaterial = rig.nodes.material as THREE.MeshStandardMaterial;
+    for (const intensity of [coreMaterial.emissiveIntensity, nodeMaterial.emissiveIntensity]) {
+      assert.ok(Number.isFinite(intensity) && intensity > 0);
+    }
+    assert.ok(rig.gyro.quaternion.toArray().every(Number.isFinite));
+    assert.ok(rig.trail.position.toArray().every(Number.isFinite));
+
+    // Non-finite accepted velocity must not corrupt any presented value.
+    updateBallVisualRig(ball, { vx: Number.NaN, vy: 0, vz: Number.NaN }, Number.NaN, 1 / 60);
+    assert.ok(Number.isFinite(rig.motion.speed));
+    assert.ok(rig.trail.scale.toArray().every(Number.isFinite));
+
+    rig.resetTemporalState();
+    assert.equal(rig.motion.speed, 0);
+    assert.equal(rig.motion.trailBlend, 0);
+    assert.equal(rig.motion.proximityBlend, 0);
+    assert.equal(rig.motion.gyroAngle, 0);
+    assert.equal(rig.trail.visible, false);
+    assert.equal(rig.glow.visible, false);
+    assert.deepEqual(rig.gyro.rotation.toArray(), [0, 0, 0, 'XYZ']);
+    assert.equal(coreMaterial.emissiveIntensity, VISUAL.BALL.CORE_GLOW);
+    assert.equal(nodeMaterial.emissiveIntensity, VISUAL.BALL.NODE_GLOW);
+    assert.deepEqual(ball.position.toArray(), acceptedPosition, 'a rebase must not move the ball');
+  } finally {
+    rig.dispose();
+  }
+});
+
+test('ball effects are inert without a rig and after disposal', () => {
+  const plain = new THREE.Group();
+  assert.equal(getBallVisualRig(plain), null);
+  updateBallVisualRig(plain, { vx: 20, vy: 0, vz: 0 }, 2, 1 / 60);
+
+  const rig = createBallVisualRig();
+  rig.dispose();
+  updateBallVisualRig(rig.object, { vx: 20, vy: 0, vz: 0 }, 2, 1 / 60);
+  assert.equal(rig.motion.speed, 0, 'a disposed rig must not keep animating');
 });

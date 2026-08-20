@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { Room } from 'colyseus.js';
 import type { CountdownKind, MatchPhase, RoomMode, Team } from '@rocket-arena/shared';
 import { createCarMesh, getCarVisualRig, type CarVisualRig } from '../renderer/car.js';
-import { createBallMesh } from '../renderer/ball.js';
+import { createBallMesh, getBallVisualRig } from '../renderer/ball.js';
 import {
   SnapshotBuffer,
   type EntitySnapshot,
@@ -169,6 +169,20 @@ function disposeCarEffects(car: THREE.Group): void {
   }
 }
 
+/**
+ * Release the ball's presentation resources exactly once. A rig-backed root
+ * frees its per-rig effect materials and drops one shared-resource reference;
+ * anything else is a plain test root that owns its own buffers outright.
+ */
+function disposeBallResources(ball: THREE.Group): void {
+  const rig = getBallVisualRig(ball);
+  if (rig) {
+    rig.dispose();
+    return;
+  }
+  disposeObjectResources(ball);
+}
+
 function disposeObjectResources(root: THREE.Object3D): void {
   root.traverse((object) => {
     const renderable = object as THREE.Mesh | THREE.LineSegments | THREE.Points;
@@ -199,7 +213,7 @@ function cleanupEntityMeshes(): void {
 
   if (ballMesh) {
     ballMesh.removeFromParent();
-    disposeObjectResources(ballMesh);
+    disposeBallResources(ballMesh);
     ballMesh = null;
   }
 
@@ -314,7 +328,7 @@ function disposePreparedReconciliation(prepared: PreparedReconciliation): void {
   }
   if (prepared.preparedBall) {
     prepared.preparedBall.removeFromParent();
-    disposeObjectResources(prepared.preparedBall);
+    disposeBallResources(prepared.preparedBall);
   }
 }
 
@@ -378,7 +392,7 @@ function prepareReconciliation(
     });
   } catch (error) {
     for (const addition of additions) disposeCarEffects(addition.mesh);
-    if (preparedBall) disposeObjectResources(preparedBall);
+    if (preparedBall) disposeBallResources(preparedBall);
     throw error;
   }
 }
@@ -693,6 +707,7 @@ export function updateInterpolatedEntities(
   if (presentedKickoffEpoch !== frame.kickoffEpoch) {
     presentedKickoffEpoch = frame.kickoffEpoch;
     for (const car of carMeshes.values()) getCarVisualRig(car)?.resetTemporalState();
+    if (ballMesh) getBallVisualRig(ballMesh)?.resetTemporalState();
   }
 
   appliedRenderFrames += 1;
