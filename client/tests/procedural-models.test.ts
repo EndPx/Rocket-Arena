@@ -349,3 +349,92 @@ test('ball effects are inert without a rig and after disposal', () => {
   updateBallVisualRig(rig.object, { vx: 20, vy: 0, vz: 0 }, 2, 1 / 60);
   assert.equal(rig.motion.speed, 0, 'a disposed rig must not keep animating');
 });
+
+// Validates: Requirements 11.1, 16.6-16.7, 18.24 (ball ground marker)
+
+test('the ball ground marker stays flat on the floor under the ball', () => {
+  const ball = createBallMesh();
+  const rig = getBallVisualRig(ball);
+  assert.ok(rig);
+  const marker = rig.groundMarker;
+  const worldPosition = new THREE.Vector3();
+  const worldNormal = new THREE.Vector3();
+  const flatUp = new THREE.Vector3(0, 1, 0);
+
+  try {
+    assert.equal(marker.visible, false, 'a fresh rig shows no marker');
+    assert.ok(marker.getObjectByName('ball-ground-marker-ring'));
+    assert.ok(marker.getObjectByName('ball-ground-marker-core'));
+
+    const heights = [rig.radius, 4, 9, 18, 30];
+    let previousOpacity = Number.POSITIVE_INFINITY;
+    let previousScale = 0;
+
+    for (const height of heights) {
+      ball.position.set(7.25, height, -13.5);
+      // A rolling ball also spins; the marker must not inherit that rotation.
+      ball.quaternion.setFromEuler(new THREE.Euler(1.1, -0.7, 2.4));
+      updateBallVisualRig(ball, { vx: 6, vy: -3, vz: 2 }, null, 1 / 60);
+      ball.updateMatrixWorld(true);
+
+      assert.equal(marker.visible, true, `marker must show at height ${height}`);
+      marker.getWorldPosition(worldPosition);
+      assert.ok(
+        Math.abs(worldPosition.x - ball.position.x) <= 1e-6
+        && Math.abs(worldPosition.z - ball.position.z) <= 1e-6,
+        `marker must sit directly under the ball at height ${height},`
+        + ` received ${worldPosition.toArray().join(', ')}`,
+      );
+      assert.ok(
+        Math.abs(worldPosition.y) <= 0.05,
+        `marker must rest on the floor plane at height ${height}, received ${worldPosition.y}`,
+      );
+
+      // Counter-rotation must leave the marker's own up axis pointing at world up.
+      worldNormal.copy(flatUp).applyQuaternion(marker.getWorldQuaternion(new THREE.Quaternion()));
+      assert.ok(
+        worldNormal.dot(flatUp) >= 1 - 1e-6,
+        `marker must stay flat at height ${height}, received ${worldNormal.toArray().join(', ')}`,
+      );
+
+      const ring = marker.getObjectByName('ball-ground-marker-ring');
+      assert.ok(ring instanceof THREE.Mesh);
+      const material = ring.material as THREE.MeshBasicMaterial;
+      assert.ok(material.opacity > 0 && material.opacity <= 0.5);
+      assert.ok(
+        material.opacity <= previousOpacity + 1e-9,
+        `marker must not become more opaque as the ball rises (height ${height})`,
+      );
+      assert.ok(
+        marker.scale.x >= previousScale - 1e-9,
+        `marker must not shrink as the ball rises (height ${height})`,
+      );
+      previousOpacity = material.opacity;
+      previousScale = marker.scale.x;
+      assert.ok(rig.motion.altitudeBlend >= 0 && rig.motion.altitudeBlend <= 1);
+    }
+
+    // Far above the field the marker is at its faintest and widest.
+    assert.ok(previousScale > 1, 'a high ball must widen its marker');
+
+    ball.position.set(0, -12, 0);
+    updateBallVisualRig(ball, { vx: 0, vy: 0, vz: 0 }, null, 1 / 60);
+    assert.equal(marker.visible, false, 'below the floor there is nothing to project');
+    assert.equal(rig.motion.altitudeBlend, 0);
+
+    ball.position.set(0, Number.NaN, 0);
+    updateBallVisualRig(ball, { vx: 0, vy: 0, vz: 0 }, null, 1 / 60);
+    assert.equal(marker.visible, false, 'a non-finite height must hide the marker');
+
+    ball.position.set(0, rig.radius, 0);
+    ball.quaternion.identity();
+    updateBallVisualRig(ball, { vx: 0, vy: 0, vz: 0 }, null, 1 / 60);
+    assert.equal(marker.visible, true);
+    rig.resetTemporalState();
+    assert.equal(marker.visible, false, 'a kickoff rebase clears the marker');
+    assert.equal(marker.scale.x, 1);
+    assert.deepEqual(marker.position.toArray(), [0, 0, 0]);
+  } finally {
+    rig.dispose();
+  }
+});

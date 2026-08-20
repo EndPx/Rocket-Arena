@@ -26,6 +26,11 @@ const trailDirection = new THREE.Vector3();
 const trailRotation = new THREE.Quaternion();
 const trailLocalRotation = new THREE.Quaternion();
 const coneAxis = new THREE.Vector3(0, 1, 0);
+const markerOffset = new THREE.Vector3();
+const ballInverseRotation = new THREE.Quaternion();
+
+/** The resolved arena floor surface sits exactly on the world origin plane. */
+const ARENA_FLOOR_Y = 0;
 
 function dampingAlpha(response: number, deltaSeconds: number): number {
   return 1 - Math.exp(-Math.max(0, response) * Math.max(0, deltaSeconds));
@@ -269,6 +274,65 @@ export function updateBallVisualRig(
   if (glowMaterial instanceof THREE.MeshBasicMaterial) {
     glowMaterial.opacity = tuning.PROXIMITY_MAX_OPACITY * motion.proximityBlend;
   }
+
+  updateBallGroundMarker(rig, ball, tuning);
+}
+
+/**
+ * Project the ground marker onto the floor beneath the ball.
+ *
+ * The marker belongs to the ball rig for ownership, but the rig root carries the
+ * authoritative ball rotation and altitude, so the marker is placed by undoing
+ * both: it is offset straight down in world space and counter-rotated back to
+ * flat. It grows and fades with altitude so the ball's height reads at a glance.
+ */
+function updateBallGroundMarker(
+  rig: BallVisualRig,
+  ball: THREE.Group,
+  tuning: typeof VISUAL.BALL_MOTION,
+): void {
+  const marker = rig.groundMarker;
+  const height = ball.position.y - ARENA_FLOOR_Y;
+  if (!Number.isFinite(height)) {
+    marker.visible = false;
+    return;
+  }
+
+  // Below the floor there is nothing meaningful to project onto.
+  if (height < -rig.radius) {
+    marker.visible = false;
+    rig.motion.altitudeBlend = 0;
+    return;
+  }
+
+  const altitude = Math.max(0, height - rig.radius);
+  const altitudeBlend = THREE.MathUtils.clamp(
+    altitude / Math.max(tuning.MARKER_FULL_FADE_HEIGHT, 1e-3),
+    0,
+    1,
+  );
+  rig.motion.altitudeBlend = altitudeBlend;
+
+  const dropDistance = Math.max(0, height - tuning.MARKER_FLOOR_CLEARANCE);
+  markerOffset.set(0, -dropDistance, 0);
+  ballInverseRotation.copy(ball.quaternion).invert();
+  marker.position.copy(markerOffset).applyQuaternion(ballInverseRotation);
+  marker.quaternion.copy(ballInverseRotation);
+
+  const scale = THREE.MathUtils.lerp(1, tuning.MARKER_LIFTED_SCALE, altitudeBlend);
+  marker.scale.setScalar(scale);
+
+  const opacity = THREE.MathUtils.lerp(
+    tuning.MARKER_GROUNDED_OPACITY,
+    tuning.MARKER_LIFTED_OPACITY,
+    altitudeBlend,
+  );
+  for (const child of marker.children) {
+    if (!(child instanceof THREE.Mesh)) continue;
+    const material = child.material;
+    if (material instanceof THREE.MeshBasicMaterial) material.opacity = opacity;
+  }
+  marker.visible = opacity > 0.01;
 }
 
 /** Advance all car and ball effects from the latest accepted snapshot projection. */

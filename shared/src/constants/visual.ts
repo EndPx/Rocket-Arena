@@ -148,6 +148,15 @@ export const VISUAL = {
     PROXIMITY_RADIUS: 7,
     PROXIMITY_RESPONSE: 10,
     PROXIMITY_MAX_OPACITY: 0.3,
+    /**
+     * Ground marker that reads the ball's position on the floor. It grows and
+     * fades as the ball climbs so its height is readable at a glance.
+     */
+    MARKER_FULL_FADE_HEIGHT: 16,
+    MARKER_GROUNDED_OPACITY: 0.46,
+    MARKER_LIFTED_OPACITY: 0.14,
+    MARKER_LIFTED_SCALE: 1.5,
+    MARKER_FLOOR_CLEARANCE: 0.03,
   },
 
   /** Stadium geometry remains outside or coincident with authoritative colliders. */
