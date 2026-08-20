@@ -11,8 +11,12 @@ const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const LOCAL_UP = new THREE.Vector3(0, 1, 0);
 const LOCAL_FORWARD = new THREE.Vector3(0, 0, 1);
 const LOCAL_RIGHT = new THREE.Vector3(1, 0, 0);
-const HEADING_LOCK_ENTER_UP_DOT = 0.35;
-const HEADING_LOCK_EXIT_UP_DOT = 0.75;
+/**
+ * A chassis axis is only usable as a heading source when its ground projection
+ * keeps this much squared length, which corresponds to roughly 26 degrees away
+ * from vertical. Below that the projection direction is dominated by noise.
+ */
+const HEADING_PROJECTION_MINIMUM_LENGTH_SQUARED = 0.2;
 const FLIP_CAMERA_PULLBACK_DISTANCE = 3;
 const FLIP_CAMERA_PULLBACK_RESPONSE = 8;
 const MAX_DELTA_SECONDS = 0.1;
@@ -493,45 +497,36 @@ export class CameraController {
 
     this.temporaryQuaternion.normalize();
 
-    const chassisUpDot = this.temporaryVector
-      .copy(LOCAL_UP)
-      .applyQuaternion(this.temporaryQuaternion)
-      .dot(WORLD_UP);
-    if (!Number.isFinite(chassisUpDot)) {
-      this.forward.copy(this.lastForward);
-      return;
-    }
-    if (chassisUpDot < HEADING_LOCK_ENTER_UP_DOT) {
-      this.headingLockedForTilt = true;
-    } else if (chassisUpDot > HEADING_LOCK_EXIT_UP_DOT) {
-      this.headingLockedForTilt = false;
-    }
-    if (this.headingLockedForTilt) {
-      this.forward.copy(this.lastForward);
-      return;
-    }
-
-    // A raw forward projection changes hemisphere when pitch crosses vertical.
-    // Build headings from both chassis axes instead: forward is reliable during
-    // rolls, while right-derived forward is reliable during front/back flips.
-    // Selecting the candidate nearest the previous world heading keeps the
-    // chase side continuous through any combination of pitch and roll.
+    // The chase heading must come from whichever chassis axis is currently the
+    // most horizontal, because that is the axis whose ground projection is
+    // numerically stable.
+    //
+    // An air roll spins the chassis about its own forward axis: forward stays
+    // horizontal while right sweeps through vertical twice per revolution.
+    // Choosing between the two candidates by nearest-previous-heading therefore
+    // oscillated during every roll, and the chassis-up heading lock switched on
+    // and off as the roll passed through inverted, so the view swung back and
+    // forth. Selecting by verticality is monotonic through a roll and still
+    // hands over to the right-derived heading during a front or back flip,
+    // where it is forward that crosses vertical.
     this.forwardCandidate
       .copy(LOCAL_FORWARD)
       .applyQuaternion(this.temporaryQuaternion);
+    const chassisForwardVerticality = Math.abs(this.forwardCandidate.y);
     this.forwardCandidate.y = 0;
     const forwardLengthSquared = this.forwardCandidate.lengthSq();
     const forwardValid = Number.isFinite(forwardLengthSquared)
-      && forwardLengthSquared > VECTOR_EPSILON_SQUARED;
+      && forwardLengthSquared > HEADING_PROJECTION_MINIMUM_LENGTH_SQUARED;
     if (forwardValid) this.forwardCandidate.normalize();
 
     this.rightDerivedForwardCandidate
       .copy(LOCAL_RIGHT)
       .applyQuaternion(this.temporaryQuaternion);
+    const chassisRightVerticality = Math.abs(this.rightDerivedForwardCandidate.y);
     this.rightDerivedForwardCandidate.y = 0;
     const rightLengthSquared = this.rightDerivedForwardCandidate.lengthSq();
     const rightValid = Number.isFinite(rightLengthSquared)
-      && rightLengthSquared > VECTOR_EPSILON_SQUARED;
+      && rightLengthSquared > HEADING_PROJECTION_MINIMUM_LENGTH_SQUARED;
     if (rightValid) {
       this.rightDerivedForwardCandidate
         .normalize()
@@ -539,21 +534,26 @@ export class CameraController {
         .normalize();
     }
 
-    if (forwardValid && rightValid) {
-      const forwardContinuity = this.forwardCandidate.dot(this.lastForward);
-      const rightContinuity = this.rightDerivedForwardCandidate.dot(this.lastForward);
-      this.forward.copy(
-        rightContinuity > forwardContinuity
-          ? this.rightDerivedForwardCandidate
-          : this.forwardCandidate,
-      );
-    } else if (forwardValid) {
-      this.forward.copy(this.forwardCandidate);
-    } else if (rightValid) {
-      this.forward.copy(this.rightDerivedForwardCandidate);
-    } else {
+    // Only freeze the heading when neither axis can be projected, which is the
+    // genuinely ambiguous nose-straight-up-and-rolled case.
+    if (!forwardValid && !rightValid) {
+      this.headingLockedForTilt = true;
       this.forward.copy(this.lastForward);
+      return;
     }
+    this.headingLockedForTilt = false;
+
+    const preferForward = forwardValid
+      && (!rightValid || chassisForwardVerticality <= chassisRightVerticality);
+    if (preferForward) {
+      this.forward.copy(this.forwardCandidate);
+      return;
+    }
+
+    // The right-derived heading is only defined up to a half turn, so align it
+    // with the previous heading instead of letting it jump sides mid-flip.
+    this.forward.copy(this.rightDerivedForwardCandidate);
+    if (this.forward.dot(this.lastForward) < 0) this.forward.negate();
   }
 
   private updateBallCamera(

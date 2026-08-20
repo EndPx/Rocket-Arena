@@ -289,3 +289,112 @@ test('presented kickoff epoch rebases post-teleport targets without changing mod
   assertVectorClose(fixture.camera.position, expectedPostTeleportOrigin);
   assertLooksAt(fixture.camera, expectedPostTeleportLook);
 });
+
+// Validates: Requirements 15.1-15.11 (air-roll heading stability)
+
+test('a full air roll never swings the chase heading or the horizon', () => {
+  for (const mode of ['car', 'ball'] as const) {
+    const fixture = createFixture();
+    const controller = new CameraController();
+    controller.beginGameplaySession(0);
+    // The first Active Play frame forces Ball Camera, so one toggle selects Car.
+    const toggleSequence = mode === 'car' ? 1 : 0;
+
+    // The very first frame baselines the toggle sequence, so only later frames
+    // can carry the edge that selects Car Camera. Settle afterwards so the
+    // spring history is established before rolling.
+    update(controller, fixture, { cameraToggleSequence: 0, elapsedSeconds: 0 });
+    for (let frame = 1; frame < 60; frame++) {
+      update(controller, fixture, {
+        cameraToggleSequence: toggleSequence,
+        elapsedSeconds: frame / 60,
+      });
+    }
+    assert.equal(controller.mode, mode);
+
+    const headings: THREE.Vector3[] = [];
+    const rollAxis = new THREE.Vector3(0, 0, 1);
+    const steps = 180;
+    for (let step = 0; step <= steps; step++) {
+      // One complete roll about the chassis forward axis.
+      const angle = (step / steps) * Math.PI * 2;
+      fixture.car.quaternion.setFromAxisAngle(rollAxis, angle);
+      update(controller, fixture, {
+        cameraToggleSequence: toggleSequence,
+        elapsedSeconds: 1 + step / 60,
+      });
+
+      assert.ok(
+        fixture.camera.position.toArray().every(Number.isFinite),
+        `${mode} camera position must stay finite through a roll`,
+      );
+      assert.deepEqual(
+        fixture.camera.up.toArray(),
+        [0, 1, 0],
+        `${mode} camera must keep a world-up horizon through a roll`,
+      );
+
+      const heading = fixture.camera.getWorldDirection(new THREE.Vector3());
+      heading.y = 0;
+      if (heading.lengthSq() > 1e-8) headings.push(heading.normalize());
+    }
+
+    assert.ok(headings.length > steps / 2, `${mode} roll must produce headings`);
+    let worstSwing = 0;
+    for (let index = 1; index < headings.length; index++) {
+      const previous = headings[index - 1]!;
+      const current = headings[index]!;
+      const swing = Math.acos(
+        Math.min(1, Math.max(-1, previous.dot(current))),
+      ) * 180 / Math.PI;
+      worstSwing = Math.max(worstSwing, swing);
+    }
+    assert.ok(
+      worstSwing <= 5,
+      `${mode} chase heading swung ${worstSwing.toFixed(2)} degrees in one frame during a roll`,
+    );
+  }
+});
+
+test('a front flip hands the heading over without reversing the chase side', () => {
+  const fixture = createFixture();
+  const controller = new CameraController();
+  controller.beginGameplaySession(0);
+  update(controller, fixture, { cameraToggleSequence: 0, elapsedSeconds: 0 });
+  for (let frame = 1; frame < 60; frame++) {
+    update(controller, fixture, { cameraToggleSequence: 1, elapsedSeconds: frame / 60 });
+  }
+  assert.equal(controller.mode, 'car');
+
+  const pitchAxis = new THREE.Vector3(1, 0, 0);
+  const headings: THREE.Vector3[] = [];
+  const steps = 180;
+  for (let step = 0; step <= steps; step++) {
+    const angle = (step / steps) * Math.PI * 2;
+    fixture.car.quaternion.setFromAxisAngle(pitchAxis, angle);
+    update(controller, fixture, { cameraToggleSequence: 1, elapsedSeconds: 1 + step / 60 });
+    assert.ok(fixture.camera.position.toArray().every(Number.isFinite));
+    assert.deepEqual(fixture.camera.up.toArray(), [0, 1, 0]);
+    const heading = fixture.camera.getWorldDirection(new THREE.Vector3());
+    heading.y = 0;
+    if (heading.lengthSq() > 1e-8) headings.push(heading.normalize());
+  }
+
+  let worstSwing = 0;
+  for (let index = 1; index < headings.length; index++) {
+    const swing = Math.acos(
+      Math.min(1, Math.max(-1, headings[index - 1]!.dot(headings[index]!))),
+    ) * 180 / Math.PI;
+    worstSwing = Math.max(worstSwing, swing);
+  }
+  assert.ok(
+    worstSwing <= 12,
+    `chase heading swung ${worstSwing.toFixed(2)} degrees in one frame during a flip`,
+  );
+  const first = headings[0]!;
+  const last = headings[headings.length - 1]!;
+  assert.ok(
+    first.dot(last) > 0.9,
+    'a completed flip must return to the same chase side',
+  );
+});
