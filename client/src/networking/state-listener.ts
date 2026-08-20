@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { Room } from 'colyseus.js';
-import type { RoomMode } from '@rocket-arena/shared';
+import type { CountdownKind, MatchPhase, RoomMode, Team } from '@rocket-arena/shared';
 import { createCarMesh, type CarVisualRig } from '../renderer/car.js';
 import { createBallMesh } from '../renderer/ball.js';
 import {
@@ -61,8 +61,13 @@ export interface StateSync {
   readonly ball: Readonly<StateEntity>;
   readonly blueScore: number;
   readonly orangeScore: number;
+  /** Compatibility clock retained for existing presentation consumers. */
   readonly timeRemaining: number;
-  readonly phase: string;
+  readonly regulationSecondsRemaining: number;
+  readonly phaseSecondsRemaining: number;
+  readonly phase: MatchPhase;
+  readonly countdownKind: CountdownKind | null;
+  readonly winner: Team | null;
 }
 
 export interface StateListenerOptions {
@@ -260,7 +265,11 @@ function toLocalState(snapshot: Readonly<DomainSnapshot>): Readonly<StateSync> {
     timeRemaining: usesPhaseClock
       ? snapshot.phaseSecondsRemaining
       : snapshot.regulationSecondsRemaining,
+    regulationSecondsRemaining: snapshot.regulationSecondsRemaining,
+    phaseSecondsRemaining: snapshot.phaseSecondsRemaining,
     phase: snapshot.phase,
+    countdownKind: snapshot.countdownKind,
+    winner: snapshot.winner,
   });
 }
 

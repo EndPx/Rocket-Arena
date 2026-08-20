@@ -4,6 +4,7 @@ import {
   ARENA_COLLISION_GEOMETRY,
   DEFAULT_TUNING_REGISTRY_SNAPSHOT,
   TUNING_IDS,
+  getScalarTuningValue,
   type ArenaSurfaceDescriptor,
   type TuningEntry,
   type TuningRegistrySnapshot,
@@ -21,7 +22,37 @@ import {
 import { initPhysics } from './world.js';
 
 const EPSILON = 1e-8;
-const CAR_HALF_HEIGHT = 0.18;
+
+/**
+ * Probe geometry is derived from the registry so this harness keeps testing a
+ * car that actually rests on the surface when the collider or the support
+ * contact points are retuned. A hard-coded half height silently lifts every
+ * local-down ray off the thin test plates and turns real assertions into
+ * vacuous ones.
+ */
+const CAR_HALF_HEIGHT = getScalarTuningValue(
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  TUNING_IDS.car.collider.height,
+) / 2;
+
+const SUPPORT_CONTACT_POINTS: readonly number[] = (() => {
+  const entry = DEFAULT_TUNING_REGISTRY_SNAPSHOT.get(TUNING_IDS.support.contactPoints);
+  if (entry?.kind !== 'vector') throw new Error('Support contact points must be a vector entry.');
+  return entry.value;
+})();
+
+function supportFootprintHalfExtent(component: 0 | 2): number {
+  let maximum = 0;
+  for (let index = component; index < SUPPORT_CONTACT_POINTS.length; index += 3) {
+    maximum = Math.max(maximum, Math.abs(SUPPORT_CONTACT_POINTS[index]!));
+  }
+  return maximum;
+}
+
+/** Test plates must cover every support point, otherwise all rays simply miss. */
+const SUPPORT_PLATE_HALF_DEPTH = supportFootprintHalfExtent(2) + 0.2;
+const SUPPORT_PLATE_HALF_WIDTH = supportFootprintHalfExtent(0) + 0.2;
+
 const disposalTracker = { created: 0, freed: 0 };
 const SURFACES = new Map(
   ARENA_COLLISION_GEOMETRY.surfaces.map((surface) => [surface.id, surface]),
@@ -231,11 +262,17 @@ function runAdjacentAndConfiguredCases(): void {
   const adjacentWorld = createTrackedWorld();
   try {
     const registry = new ArenaSurfaceRegistry(adjacentWorld);
+    // Two coplanar plates meeting at x = 0, each wide and deep enough to carry
+    // the support points on its own side of the seam.
     const first = adjacentWorld.createCollider(
-      RAPIER.ColliderDesc.cuboid(0.5, 0.05, 1).setTranslation(-0.5, -0.05, 0),
+      RAPIER.ColliderDesc
+        .cuboid(SUPPORT_PLATE_HALF_WIDTH, 0.05, SUPPORT_PLATE_HALF_DEPTH)
+        .setTranslation(-SUPPORT_PLATE_HALF_WIDTH, -0.05, 0),
     );
     const second = adjacentWorld.createCollider(
-      RAPIER.ColliderDesc.cuboid(0.5, 0.05, 1).setTranslation(0.5, -0.05, 0),
+      RAPIER.ColliderDesc
+        .cuboid(SUPPORT_PLATE_HALF_WIDTH, 0.05, SUPPORT_PLATE_HALF_DEPTH)
+        .setTranslation(SUPPORT_PLATE_HALF_WIDTH, -0.05, 0),
     );
     registry.register(first, descriptor('goal.blue.floor'));
     registry.register(second, descriptor('field.floor'));
@@ -279,10 +316,14 @@ function runAdjacentAndConfiguredCases(): void {
   try {
     const registry = new ArenaSurfaceRegistry(thresholdWorld);
     registry.register(createFloorCollider(thresholdWorld), descriptor('field.floor'));
+    // Tilt the probe 50 degrees and lift it so its rotated contact points still
+    // start just above the plate; the rejection must come from the configured
+    // normal threshold, never from rays that begin below the surface.
+    const thresholdTilt = 50 * Math.PI / 180;
     const probe = createProbe(
       thresholdWorld,
-      { x: 0, y: 0.15, z: 0 },
-      rotationAroundZ(50 * Math.PI / 180),
+      { x: 0, y: CAR_HALF_HEIGHT * Math.cos(thresholdTilt) + 0.02, z: 0 },
+      rotationAroundZ(thresholdTilt),
     );
     const contactPoints = [
       0, -CAR_HALF_HEIGHT, -0.3,

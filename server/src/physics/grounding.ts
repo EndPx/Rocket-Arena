@@ -9,6 +9,7 @@ import {
   type SurfaceSemanticKind,
   type TuningRegistrySnapshot,
 } from '@rocket-arena/shared';
+import { getConstant } from '@rocket-arena/shared/constants';
 
 export interface GroundingVector3 {
   readonly x: number;
@@ -98,6 +99,8 @@ export type GroundingTuningSnapshot = Pick<TuningRegistrySnapshot, 'get'>;
 
 export interface GroundingOptions {
   readonly tuning?: GroundingTuningSnapshot;
+  /** Live staging policy: reject support normals steeper than this world-up angle. */
+  readonly maximumDriveableSlopeDegrees?: number;
 }
 
 export interface GroundingHit {
@@ -119,10 +122,13 @@ export interface GroundingResult {
   readonly grounded: boolean;
   readonly normal: GroundingVector3 | null;
   readonly basis: SurfaceRelativeBasis | null;
+  /** Near-contact driveable surface used only for angular self-righting. */
+  readonly recoveryBasis?: SurfaceRelativeBasis | null;
   readonly acceptedHits: readonly GroundingHit[];
 }
 
 const EPSILON = 1e-10;
+const RECOVERY_SUPPORT_CLEARANCE = 0.05;
 const WORLD_UP: GroundingVector3 = Object.freeze({ x: 0, y: 1, z: 0 });
 const WORLD_FORWARD: GroundingVector3 = Object.freeze({ x: 0, y: 0, z: 1 });
 
@@ -344,6 +350,12 @@ export function detectGroundSupport(
     (value) => value >= 0 && value <= 90,
   );
   const minimumNormalDot = Math.cos(thresholdDegrees * Math.PI / 180);
+  const maximumDriveableSlopeDegrees = Number.isFinite(options.maximumDriveableSlopeDegrees)
+    ? Math.max(0, Math.min(90, options.maximumDriveableSlopeDegrees as number))
+    : 90;
+  const minimumWorldUpDot = maximumDriveableSlopeDegrees >= 90
+    ? -1
+    : Math.cos(maximumDriveableSlopeDegrees * Math.PI / 180);
   const rotation = finiteQuaternion(body.rotation());
   const translation = finiteVector(body.translation()) ?? { x: 0, y: 0, z: 0 };
   const localDown = normalize(rotateVector(rotation, { x: 0, y: -1, z: 0 }), { x: 0, y: -1, z: 0 });
@@ -377,6 +389,7 @@ export function detectGroundSupport(
     if (hit.timeOfImpact < 0 || hit.timeOfImpact > rayDistance + EPSILON) continue;
     const normal = normalizeFinite(hit.normal);
     if (normal === null) continue;
+    if (dot(normal, WORLD_UP) + EPSILON < minimumWorldUpDot) continue;
     if (dot(normal, localRoof) + EPSILON < minimumNormalDot) continue;
     const surface = surfaces.get(hit.collider);
     if (surface === null) continue;
@@ -390,19 +403,115 @@ export function detectGroundSupport(
     });
   }
 
+  const primarySupportDetected = acceptedHits.length > 0;
+
+  // A chassis resting on its side cannot cast useful Local_Down wheel rays.
+  // Use one tightly bounded world-down center probe whose length is the rounded
+  // body's projected support extent plus 5 cm. This recovers near-contact floor
+  // and ramp support without reaching genuinely airborne cars or vertical walls.
+  if (acceptedHits.length === 0) {
+    const halfWidth = resolveScalar(
+      tuning,
+      TUNING_IDS.car.collider.width,
+      (value) => value > 0,
+    ) / 2;
+    const halfHeight = resolveScalar(
+      tuning,
+      TUNING_IDS.car.collider.height,
+      (value) => value > 0,
+    ) / 2;
+    const halfLength = resolveScalar(
+      tuning,
+      TUNING_IDS.car.collider.length,
+      (value) => value > 0,
+    ) / 2;
+    const cornerRadius = Math.min(
+      getConstant('CAR.BODY.CORNER_RADIUS'),
+      halfWidth - Number.EPSILON,
+      halfHeight - Number.EPSILON,
+      halfLength - Number.EPSILON,
+    );
+    const localRight = rotateVector(rotation, { x: 1, y: 0, z: 0 });
+    const projectedHalfExtent = Math.abs(localRight.y) * (halfWidth - cornerRadius)
+      + Math.abs(localRoof.y) * (halfHeight - cornerRadius)
+      + Math.abs(localForward.y) * (halfLength - cornerRadius)
+      + cornerRadius;
+    const recoveryRayDistance = projectedHalfExtent + RECOVERY_SUPPORT_CLEARANCE;
+    const recoveryRay = new RAPIER.Ray(translation, { x: 0, y: -1, z: 0 });
+    const recoveryHit = world.castRayAndGetNormal(
+      recoveryRay,
+      recoveryRayDistance,
+      true,
+      filterFlags,
+      undefined,
+      undefined,
+      body,
+      (collider) => {
+        const surface = surfaces.get(collider);
+        return collider.isValid()
+          && collider.isEnabled()
+          && !collider.isSensor()
+          && surface?.capability === 'core'
+          && surface.groundingEnabled;
+      },
+    );
+    if (
+      recoveryHit !== null
+      && Number.isFinite(recoveryHit.timeOfImpact)
+      && recoveryHit.timeOfImpact >= 0
+      && recoveryHit.timeOfImpact <= recoveryRayDistance + EPSILON
+    ) {
+      const normal = normalizeFinite(recoveryHit.normal);
+      const surface = surfaces.get(recoveryHit.collider);
+      if (
+        normal !== null
+        && surface !== null
+        && dot(normal, WORLD_UP) + EPSILON >= minimumWorldUpDot
+      ) {
+        acceptedHits.push({
+          surfaceId: surface.surfaceId,
+          colliderHandle: recoveryHit.collider.handle,
+          contactPointIndex: contactPoints.length,
+          distance: recoveryHit.timeOfImpact,
+          point: recoveryRay.pointAt(recoveryHit.timeOfImpact),
+          normal,
+        });
+      }
+    }
+  }
+
   acceptedHits.sort(compareHits);
   if (acceptedHits.length === 0) {
-    return { grounded: false, normal: null, basis: null, acceptedHits: [] };
+    return {
+      grounded: false,
+      normal: null,
+      basis: null,
+      acceptedHits: [],
+    };
   }
 
   const normal = combineGroundingNormals(acceptedHits.map((hit) => hit.normal));
   if (normal === null) {
-    return { grounded: false, normal: null, basis: null, acceptedHits: [] };
+    return {
+      grounded: false,
+      normal: null,
+      basis: null,
+      acceptedHits: [],
+    };
   }
-  return {
-    grounded: true,
-    normal,
-    basis: createSurfaceRelativeBasis(normal, localForward),
-    acceptedHits,
-  };
+  const resolvedBasis = createSurfaceRelativeBasis(normal, localForward);
+  return primarySupportDetected
+    ? {
+      grounded: true,
+      normal,
+      basis: resolvedBasis,
+      acceptedHits,
+    }
+    : {
+      grounded: false,
+      normal: null,
+      basis: null,
+      recoveryBasis: resolvedBasis,
+      acceptedHits,
+    };
 }

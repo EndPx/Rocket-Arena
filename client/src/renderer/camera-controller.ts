@@ -8,7 +8,13 @@ import {
 } from '@rocket-arena/shared';
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
+const LOCAL_UP = new THREE.Vector3(0, 1, 0);
 const LOCAL_FORWARD = new THREE.Vector3(0, 0, 1);
+const LOCAL_RIGHT = new THREE.Vector3(1, 0, 0);
+const HEADING_LOCK_ENTER_UP_DOT = 0.35;
+const HEADING_LOCK_EXIT_UP_DOT = 0.75;
+const FLIP_CAMERA_PULLBACK_DISTANCE = 3;
+const FLIP_CAMERA_PULLBACK_RESPONSE = 8;
 const MAX_DELTA_SECONDS = 0.1;
 const MAX_SAFE_WORLD_COORDINATE = 1_000_000_000;
 const VECTOR_EPSILON_SQUARED = 1e-10;
@@ -317,10 +323,14 @@ export class CameraController {
   private lastPresentedKickoffEpochValue: number | null = null;
   private historyInitialized = false;
   private historyNeedsRebase = true;
+  private headingLockedForTilt = false;
+  private flipPullbackAlpha = 0;
 
   private readonly carPosition = new THREE.Vector3();
   private readonly ballPosition = new THREE.Vector3();
   private readonly forward = new THREE.Vector3(0, 0, 1);
+  private readonly forwardCandidate = new THREE.Vector3(0, 0, 1);
+  private readonly rightDerivedForwardCandidate = new THREE.Vector3(0, 0, 1);
   private readonly lastForward = new THREE.Vector3(0, 0, 1);
   private readonly lastCarPosition = new THREE.Vector3();
   private readonly targetPosition = new THREE.Vector3();
@@ -435,6 +445,11 @@ export class CameraController {
 
     copyFinitePosition(this.carPosition, input.localCar.position);
     this.resolveForward(input.localCar);
+    this.flipPullbackAlpha = THREE.MathUtils.lerp(
+      this.flipPullbackAlpha,
+      this.headingLockedForTilt ? 1 : 0,
+      dampingAlpha(FLIP_CAMERA_PULLBACK_RESPONSE, deltaSeconds),
+    );
     const teleported = this.historyInitialized
       && this.lastCarPosition.distanceToSquared(this.carPosition)
         > VISUAL.CAMERA.TELEPORT_DISTANCE ** 2;
@@ -442,7 +457,7 @@ export class CameraController {
 
     if (this.modeValue === 'ball' && input.ball !== null) {
       copyFinitePosition(this.ballPosition, input.ball.position);
-      this.updateBallCamera(camera, rebase);
+      this.updateBallCamera(camera, deltaSeconds, rebase);
     } else {
       this.updateCarCamera(camera, deltaSeconds, rebase);
     }
@@ -460,10 +475,13 @@ export class CameraController {
     const transitionCount = sequence - this.consumedCameraToggleSequenceValue;
     if (transitionCount % 2 === 1) {
       this.modeValue = this.modeValue === 'ball' ? 'car' : 'ball';
+      // Keep the current camera transform and spring history so switching modes
+      // converges into the new composition instead of snapping to a rebase.
+      this.positionVelocity.set(0, 0, 0);
+      this.lookVelocity.set(0, 0, 0);
     }
     this.consumedCameraToggleSequenceValue = sequence;
     this.cameraModeTransitionCountValue += transitionCount;
-    this.resetHistory();
   }
 
   private resolveForward(car: THREE.Object3D): void {
@@ -474,41 +492,122 @@ export class CameraController {
     }
 
     this.temporaryQuaternion.normalize();
-    this.forward.copy(LOCAL_FORWARD).applyQuaternion(this.temporaryQuaternion);
-    this.forward.y = 0;
-    if (
-      !Number.isFinite(this.forward.x)
-      || !Number.isFinite(this.forward.z)
-      || this.forward.lengthSq() <= VECTOR_EPSILON_SQUARED
-    ) {
+
+    const chassisUpDot = this.temporaryVector
+      .copy(LOCAL_UP)
+      .applyQuaternion(this.temporaryQuaternion)
+      .dot(WORLD_UP);
+    if (!Number.isFinite(chassisUpDot)) {
       this.forward.copy(this.lastForward);
+      return;
+    }
+    if (chassisUpDot < HEADING_LOCK_ENTER_UP_DOT) {
+      this.headingLockedForTilt = true;
+    } else if (chassisUpDot > HEADING_LOCK_EXIT_UP_DOT) {
+      this.headingLockedForTilt = false;
+    }
+    if (this.headingLockedForTilt) {
+      this.forward.copy(this.lastForward);
+      return;
+    }
+
+    // A raw forward projection changes hemisphere when pitch crosses vertical.
+    // Build headings from both chassis axes instead: forward is reliable during
+    // rolls, while right-derived forward is reliable during front/back flips.
+    // Selecting the candidate nearest the previous world heading keeps the
+    // chase side continuous through any combination of pitch and roll.
+    this.forwardCandidate
+      .copy(LOCAL_FORWARD)
+      .applyQuaternion(this.temporaryQuaternion);
+    this.forwardCandidate.y = 0;
+    const forwardLengthSquared = this.forwardCandidate.lengthSq();
+    const forwardValid = Number.isFinite(forwardLengthSquared)
+      && forwardLengthSquared > VECTOR_EPSILON_SQUARED;
+    if (forwardValid) this.forwardCandidate.normalize();
+
+    this.rightDerivedForwardCandidate
+      .copy(LOCAL_RIGHT)
+      .applyQuaternion(this.temporaryQuaternion);
+    this.rightDerivedForwardCandidate.y = 0;
+    const rightLengthSquared = this.rightDerivedForwardCandidate.lengthSq();
+    const rightValid = Number.isFinite(rightLengthSquared)
+      && rightLengthSquared > VECTOR_EPSILON_SQUARED;
+    if (rightValid) {
+      this.rightDerivedForwardCandidate
+        .normalize()
+        .cross(WORLD_UP)
+        .normalize();
+    }
+
+    if (forwardValid && rightValid) {
+      const forwardContinuity = this.forwardCandidate.dot(this.lastForward);
+      const rightContinuity = this.rightDerivedForwardCandidate.dot(this.lastForward);
+      this.forward.copy(
+        rightContinuity > forwardContinuity
+          ? this.rightDerivedForwardCandidate
+          : this.forwardCandidate,
+      );
+    } else if (forwardValid) {
+      this.forward.copy(this.forwardCandidate);
+    } else if (rightValid) {
+      this.forward.copy(this.rightDerivedForwardCandidate);
     } else {
-      this.forward.normalize();
+      this.forward.copy(this.lastForward);
     }
   }
 
-  private updateBallCamera(camera: THREE.PerspectiveCamera, rebase: boolean): void {
+  private updateBallCamera(
+    camera: THREE.PerspectiveCamera,
+    deltaSeconds: number,
+    rebase: boolean,
+  ): void {
     const config = this.configurationValue.ball;
     this.targetPosition
       .copy(this.carPosition)
-      .addScaledVector(this.forward, config.lookAhead - config.distance);
+      .addScaledVector(
+        this.forward,
+        -(config.distance + FLIP_CAMERA_PULLBACK_DISTANCE * this.flipPullbackAlpha),
+      );
     this.targetPosition.y += config.height;
+    this.targetLookAt.copy(this.ballPosition);
     clampVectorComponents(this.targetPosition);
+    clampVectorComponents(this.targetLookAt);
 
-    // Ball Camera has no spring history: its origin and exact look target are sampled entities.
-    camera.position.copy(this.targetPosition);
-    this.smoothedLookAt.copy(this.ballPosition);
-    this.positionVelocity.set(0, 0, 0);
-    this.lookVelocity.set(0, 0, 0);
+    const springConfig = this.configurationValue.car;
+    if (rebase) {
+      camera.position.copy(this.targetPosition);
+      this.smoothedLookAt.copy(this.targetLookAt);
+      this.positionVelocity.set(0, 0, 0);
+      this.lookVelocity.set(0, 0, 0);
+    } else {
+      springVector(
+        camera.position,
+        this.positionVelocity,
+        this.targetPosition,
+        springConfig.stiffness,
+        springConfig.damping,
+        deltaSeconds,
+      );
+      springVector(
+        this.smoothedLookAt,
+        this.lookVelocity,
+        this.targetLookAt,
+        springConfig.stiffness,
+        springConfig.damping,
+        deltaSeconds,
+      );
+    }
+
     this.clampPositionAroundCar(camera.position);
-    this.orientCamera(camera, this.ballPosition);
+    clampVectorComponents(this.smoothedLookAt);
+    this.orientCamera(camera, this.smoothedLookAt);
     this.updateFieldOfView(
       camera,
       config.fieldOfViewDegrees,
       CAMERA_CONFIGURATION_RANGES.ball.fieldOfViewDegrees,
       rebase,
       VISUAL.CAMERA.FOV_RESPONSE,
-      0,
+      deltaSeconds,
     );
   }
 
@@ -520,7 +619,10 @@ export class CameraController {
     const config = this.configurationValue.car;
     this.targetPosition
       .copy(this.carPosition)
-      .addScaledVector(this.forward, -config.distance);
+      .addScaledVector(
+        this.forward,
+        -(config.distance + FLIP_CAMERA_PULLBACK_DISTANCE * this.flipPullbackAlpha),
+      );
     this.targetPosition.y += config.height;
     this.targetLookAt
       .copy(this.carPosition)

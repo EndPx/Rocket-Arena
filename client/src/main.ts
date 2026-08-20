@@ -20,7 +20,7 @@ import {
   getCurrentInputCommandV2,
   sendInput,
 } from './input/keyboard-handler.js';
-import { createHUD, updateHUD } from './hud/hud.js';
+import { createHUD, destroyHUD, resetHUD, updateHUD } from './hud/hud.js';
 import { createDevPanel } from './dev-panel/dev-panel.js';
 import { createLobby } from './ui/lobby.js';
 import { showGameOver } from './ui/game-over.js';
@@ -98,6 +98,7 @@ function animate(): void {
       setTimeout(() => showGameOver(room), 2000);
     }
   } else {
+    resetHUD();
     if (getCameraMode() !== 'orbit') setOrbitMode();
     updateCamera(camera, null, time, deltaSeconds);
     updateAudio({
@@ -116,9 +117,12 @@ function animate(): void {
   renderer.render(scene, camera);
 }
 
-const disposeArena = (): void => arena.dispose();
-window.addEventListener('pagehide', disposeArena, { once: true });
-window.addEventListener('beforeunload', disposeArena, { once: true });
+const disposeClient = (): void => {
+  arena.dispose();
+  destroyHUD();
+};
+window.addEventListener('pagehide', disposeClient, { once: true });
+window.addEventListener('beforeunload', disposeClient, { once: true });
 
 animate();
 console.log('[Rocket Arena] Client initialized');

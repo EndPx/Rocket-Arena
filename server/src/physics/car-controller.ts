@@ -97,6 +97,10 @@ export interface CarControllerPlanningContext {
   readonly tuning?: CarControllerTuningSnapshot;
   readonly timestepSeconds?: number;
   readonly dragEnabled?: boolean;
+  /** Live no-wall-driving policy; pure future-surface tests leave this disabled. */
+  readonly uprightRecoveryEnabled?: boolean;
+  /** Optional near-contact basis used only for angular self-righting, never traction. */
+  readonly uprightRecoveryBasis?: ControllerSurfaceBasis | null;
   /** Optional until Wave 17 owns one immutable action state per live car. */
   readonly jumpAir?: CarJumpAirPlanningBundle;
 }
@@ -135,6 +139,8 @@ export interface CarControllerPlan {
   readonly projectedAngularVelocity: ControllerVector3;
   readonly propulsionProjectedForwardSpeed: number;
   readonly boostActuated: boolean;
+  /** Authoritative inventory cost for this fixed step; committed only after apply succeeds. */
+  readonly boostConsumed: number;
   readonly groundedControl: GroundedControlPlan | null;
   readonly jumpAirControl: JumpAirControlPlan | null;
   readonly nextJumpAirState: Readonly<CarJumpAirState> | null;
@@ -142,8 +148,12 @@ export interface CarControllerPlan {
 }
 
 const ZERO_VECTOR: ControllerVector3 = Object.freeze({ x: 0, y: 0, z: 0 });
+const WORLD_UP: ControllerVector3 = Object.freeze({ x: 0, y: 1, z: 0 });
 const IDENTITY_ROTATION: ControllerQuaternion = Object.freeze({ x: 0, y: 0, z: 0, w: 1 });
 const CURVE_EPSILON = 1e-12;
+const UPRIGHT_RECOVERY_STRENGTH = 7;
+const UPRIGHT_RECOVERY_RESPONSE = 12;
+const UPRIGHT_RECOVERY_MAX_ANGULAR_SPEED = 4.5;
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
@@ -196,6 +206,17 @@ function normalizeVector(value: ControllerVector3): ControllerVector3 | null {
   const length = Math.hypot(value.x, value.y, value.z);
   if (!Number.isFinite(length) || length <= CURVE_EPSILON) return null;
   return { x: value.x / length, y: value.y / length, z: value.z / length };
+}
+
+function clampVectorMagnitude(
+  value: ControllerVector3,
+  maximumMagnitude: number,
+): ControllerVector3 {
+  const length = Math.hypot(value.x, value.y, value.z);
+  if (!Number.isFinite(length) || length <= CURVE_EPSILON) return ZERO_VECTOR;
+  return length > maximumMagnitude
+    ? scale(value, maximumMagnitude / length)
+    : value;
 }
 
 function resolveSurfaceBasis(
@@ -860,14 +881,26 @@ export function planCarControllerCommand(
   const availableBoost = Number.isFinite(context.availableBoost)
     ? Math.max(0, context.availableBoost)
     : 0;
-  const boostActuated = input.boostHeld === true && availableBoost > 0;
+  const boostConsumptionPerSecond = resolveScalar(
+    tuning,
+    TUNING_IDS.car.boost.consumptionPerSecond,
+    (value) => value > 0,
+  );
+  const fullStepBoostCost = boostConsumptionPerSecond * timestepSeconds;
+  const boostConsumed = input.boostHeld === true
+    ? Math.min(availableBoost, fullStepBoostCost)
+    : 0;
+  const boostActuated = boostConsumed > 0;
+  const boostActuationFraction = fullStepBoostCost > 0
+    ? boostConsumed / fullStepBoostCost
+    : 0;
   const boostAccelerationMagnitude = resolveScalar(
     tuning,
     TUNING_IDS.car.boost.acceleration,
     (value) => value > 0,
   );
   const boostAcceleration = boostActuated
-    ? scale(localForward, boostAccelerationMagnitude)
+    ? scale(localForward, boostAccelerationMagnitude * boostActuationFraction)
     : ZERO_VECTOR;
   const requestedPropulsionAcceleration = add(throttleAcceleration, boostAcceleration);
   const requestedPropulsionDeltaVelocity = scale(
@@ -925,10 +958,12 @@ export function planCarControllerCommand(
       -maximumAngularSpeed,
       maximumAngularSpeed,
     );
-    angularDeltaVelocity = scale(
+    const yawDeltaVelocity = scale(
       surfaceBasis.normal,
       targetYawRate - currentYawRate,
     );
+
+    angularDeltaVelocity = yawDeltaVelocity;
     groundedControl = {
       basis: surfaceBasis,
       surfaceForwardSpeed,
@@ -978,9 +1013,76 @@ export function planCarControllerCommand(
     projectedVelocity = add(baseProjectedVelocity, jumpLinearDelta);
     deltaVelocity = add(baseDeltaVelocity, jumpLinearDelta);
     if (context.observation.grounded !== true) {
-      projectedAngularVelocity = jumpAirControl.airAngularTarget;
+      const hasExplicitAirAngularCommand = jumpAirControl.flipActive
+        || Math.abs(jumpAirControl.normalizedPitch) > CURVE_EPSILON
+        || Math.abs(jumpAirControl.normalizedYaw) > CURVE_EPSILON
+        || Math.abs(jumpAirControl.normalizedRoll) > CURVE_EPSILON;
+      projectedAngularVelocity = hasExplicitAirAngularCommand
+        ? jumpAirControl.airAngularTarget
+        : angularVelocity;
       finalAngularDeltaVelocity = subtract(projectedAngularVelocity, angularVelocity);
     }
+  }
+
+  const recoveryBasis = context.uprightRecoveryBasis === undefined
+    ? surfaceBasis
+    : resolveSurfaceBasis(context.uprightRecoveryBasis, localForward);
+  const explicitAirAngularCommand = context.observation.grounded !== true
+    && jumpAirControl !== null
+    && (
+      jumpAirControl.flipActive
+      || Math.abs(jumpAirControl.normalizedPitch) > CURVE_EPSILON
+      || Math.abs(jumpAirControl.normalizedYaw) > CURVE_EPSILON
+      || Math.abs(jumpAirControl.normalizedRoll) > CURVE_EPSILON
+    );
+  if (
+    context.uprightRecoveryEnabled === true
+    && recoveryBasis !== null
+    && !explicitAirAngularCommand
+  ) {
+    const localRoof = rotateVector(rotation, WORLD_UP);
+    let recoveryAxis = cross(localRoof, recoveryBasis.normal);
+    if (
+      Math.hypot(recoveryAxis.x, recoveryAxis.y, recoveryAxis.z) <= CURVE_EPSILON
+      && dot(localRoof, recoveryBasis.normal) < 0
+    ) {
+      recoveryAxis = recoveryBasis.forward;
+    }
+    let uprightTarget = scale(recoveryAxis, UPRIGHT_RECOVERY_STRENGTH);
+    const targetMagnitude = Math.hypot(
+      uprightTarget.x,
+      uprightTarget.y,
+      uprightTarget.z,
+    );
+    if (targetMagnitude > UPRIGHT_RECOVERY_MAX_ANGULAR_SPEED) {
+      uprightTarget = scale(
+        uprightTarget,
+        UPRIGHT_RECOVERY_MAX_ANGULAR_SPEED / targetMagnitude,
+      );
+    }
+    const currentNormalRate = dot(projectedAngularVelocity, recoveryBasis.normal);
+    const currentTangent = subtract(
+      projectedAngularVelocity,
+      scale(recoveryBasis.normal, currentNormalRate),
+    );
+    const targetTangent = subtract(
+      uprightTarget,
+      scale(recoveryBasis.normal, dot(uprightTarget, recoveryBasis.normal)),
+    );
+    const recoveryAlpha = clamp(
+      -Math.expm1(-UPRIGHT_RECOVERY_RESPONSE * timestepSeconds),
+      0,
+      1,
+    );
+    projectedAngularVelocity = add(
+      projectedAngularVelocity,
+      scale(subtract(targetTangent, currentTangent), recoveryAlpha),
+    );
+    projectedAngularVelocity = clampVectorMagnitude(
+      projectedAngularVelocity,
+      maximumAngularSpeed,
+    );
+    finalAngularDeltaVelocity = subtract(projectedAngularVelocity, angularVelocity);
   }
 
   return {
@@ -1003,6 +1105,7 @@ export function planCarControllerCommand(
     projectedAngularVelocity,
     propulsionProjectedForwardSpeed,
     boostActuated,
+    boostConsumed,
     groundedControl,
     jumpAirControl,
     nextJumpAirState,

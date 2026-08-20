@@ -39,7 +39,18 @@ const CAR_MASS = getScalarTuningValue(
   DEFAULT_TUNING_REGISTRY_SNAPSHOT,
   TUNING_IDS.car.mass,
 );
-const CAR_HALF_HEIGHT = 0.18;
+const CAR_HALF_LENGTH = getScalarTuningValue(
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  TUNING_IDS.car.collider.length,
+) / 2;
+const CAR_HALF_WIDTH = getScalarTuningValue(
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  TUNING_IDS.car.collider.width,
+) / 2;
+const CAR_HALF_HEIGHT = getScalarTuningValue(
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  TUNING_IDS.car.collider.height,
+) / 2;
 const MAX_ANGULAR_SPEED = getScalarTuningValue(
   DEFAULT_TUNING_REGISTRY_SNAPSHOT,
   TUNING_IDS.car.maxAngularSpeed,
@@ -498,7 +509,11 @@ function runRealGroundingLifecycle(): { residualSupportSteps: number; airborneSt
       RAPIER.RigidBodyDesc.dynamic().setTranslation(0, CAR_HALF_HEIGHT, 0),
     );
     world.createCollider(
-      RAPIER.ColliderDesc.cuboid(0.42, CAR_HALF_HEIGHT, 0.59).setMass(CAR_MASS),
+      RAPIER.ColliderDesc.cuboid(
+        CAR_HALF_WIDTH,
+        CAR_HALF_HEIGHT,
+        CAR_HALF_LENGTH,
+      ).setMass(CAR_MASS),
       body,
     );
 
@@ -620,7 +635,14 @@ function runRapierSmoke(): { peakHeight: number; peakAngularSpeed: number } {
   try {
     world.timestep = TIMESTEP;
     const body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic());
-    world.createCollider(RAPIER.ColliderDesc.cuboid(0.42, 0.18, 0.59).setMass(CAR_MASS), body);
+    world.createCollider(
+      RAPIER.ColliderDesc.cuboid(
+        CAR_HALF_WIDTH,
+        CAR_HALF_HEIGHT,
+        CAR_HALF_LENGTH,
+      ).setMass(CAR_MASS),
+      body,
+    );
     let state = createCarJumpAirState();
     let peakHeight = 0;
     let peakAngularSpeed = 0;

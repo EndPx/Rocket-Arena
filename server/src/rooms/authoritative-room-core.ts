@@ -25,8 +25,11 @@ import {
   type KickoffAssignmentSet,
 } from '../systems/kickoff-slots.js';
 import {
+  beginGoalReset,
   beginInitialCountdown,
+  beginOvertimeCountdown,
   cancelInitialCountdown,
+  createEndedMatchFlowState,
   createMatchFlowConfig,
   createWaitingMatchFlowState,
   getMatchFlowStepGates,
@@ -35,6 +38,7 @@ import {
   type MatchFlowState,
   type MatchFlowStepGates,
   type MatchFlowStepInput,
+  type MatchOutcomeHook,
 } from '../systems/match-flow.js';
 import {
   RoomMutationCommitError,
@@ -103,6 +107,8 @@ export interface AuthoritativeFixedStepContext<TWorld, TCar, TBall> {
   readonly policy: RoomPolicy;
   readonly tuning: RoomPinnedTuningSnapshot;
   readonly gates: Readonly<MatchFlowStepGates>;
+  readonly kickoffEpoch: number;
+  readonly activePlay: boolean;
   readonly state: Readonly<
     RoomMutationState<TCar, InputCommandV2, TBall, Readonly<KickoffAssignment>>
   >;
@@ -123,6 +129,7 @@ export interface AuthoritativeSurfaceBasis {
 export interface AuthoritativeGroundingResult {
   readonly grounded: boolean;
   readonly basis: AuthoritativeSurfaceBasis | null;
+  readonly recoveryBasis?: AuthoritativeSurfaceBasis | null;
 }
 
 export interface AuthoritativeCarStepContext<TWorld, TCar, TBall>
@@ -1118,6 +1125,8 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
       policy: this.policy,
       tuning: this.tuningSnapshot,
       gates,
+      kickoffEpoch: flow.kickoffEpoch,
+      activePlay: flow.phase === 'playing' || flow.phase === 'overtime',
       state,
     } satisfies AuthoritativeFixedStepContext<TWorld, TCar, TBall>);
     const carContexts = visibleRosterEntries(state).map((entry) => {
@@ -1688,6 +1697,92 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
     }
   }
 
+  private resolveMatchOutcome(
+    state: Readonly<MatchFlowState>,
+    outcome: MatchOutcomeHook,
+  ): Readonly<MatchFlowState> {
+    let blueScore = state.blueScore;
+    let orangeScore = state.orangeScore;
+    const applyGoal = (team: 'blue' | 'orange'): void => {
+      if (team === 'blue') blueScore += 1;
+      else orangeScore += 1;
+      if (!Number.isSafeInteger(blueScore) || !Number.isSafeInteger(orangeScore)) {
+        throw new RangeError('Authoritative score cannot exceed the safe integer range.');
+      }
+    };
+    const goalInput = (team: 'blue' | 'orange') => Object.freeze({
+      team,
+      kickoffEpoch: state.kickoffEpoch,
+      blueScore,
+      orangeScore,
+    });
+
+    if (outcome.kind === 'evaluate-above-zero-regulation-goal') {
+      applyGoal(outcome.scoringTeam);
+      const scoringScore = outcome.scoringTeam === 'blue' ? blueScore : orangeScore;
+      const concedingScore = outcome.scoringTeam === 'blue' ? orangeScore : blueScore;
+      const won = scoringScore >= this.matchFlowConfig.rules.Regulation_Goal_Target
+        && scoringScore - concedingScore >= this.matchFlowConfig.rules.Regulation_Win_Margin;
+      const committed = this.snapshotBuilder.commitTransition({
+        kind: won ? 'regulation-terminal-goal' : 'regulation-goal-reset',
+        goal: goalInput(outcome.scoringTeam),
+      });
+      if (committed.goal === null) throw new Error('Goal transition must contain a goal result.');
+      if (won) {
+        if (committed.terminal === null) {
+          throw new Error('Winning regulation goal must contain a terminal result.');
+        }
+        return createEndedMatchFlowState(state, this.matchFlowConfig, committed.terminal);
+      }
+      return beginGoalReset(state, this.matchFlowConfig, {
+        blueScore,
+        orangeScore,
+        latestGoal: committed.goal,
+      });
+    }
+
+    if (outcome.kind === 'resolve-overtime-sudden-death-goal') {
+      applyGoal(outcome.scoringTeam);
+      const committed = this.snapshotBuilder.commitTransition({
+        kind: 'overtime-terminal-goal',
+        goal: goalInput(outcome.scoringTeam),
+      });
+      if (committed.terminal === null) {
+        throw new Error('Overtime goal must contain a terminal result.');
+      }
+      return createEndedMatchFlowState(state, this.matchFlowConfig, committed.terminal);
+    }
+
+    const sameStepTeam = outcome.sameStepScoringTeam;
+    if (sameStepTeam !== null) applyGoal(sameStepTeam);
+    const sameStepGoal = sameStepTeam === null ? null : goalInput(sameStepTeam);
+    if (blueScore === orangeScore) {
+      const committed = this.snapshotBuilder.commitTransition({
+        kind: 'overtime-entry',
+        goal: sameStepGoal,
+      });
+      return beginOvertimeCountdown(state, this.matchFlowConfig, {
+        blueScore,
+        orangeScore,
+        latestGoal: committed.goal,
+        transitionSequence: committed.eventId,
+      });
+    }
+
+    const winner = blueScore > orangeScore ? 'blue' : 'orange';
+    const committed = this.snapshotBuilder.commitTransition({
+      kind: 'hard-cutoff',
+      winner,
+      blueScore,
+      orangeScore,
+      goal: sameStepGoal,
+    });
+    if (committed.terminal === null) {
+      throw new Error('Hard regulation cutoff must contain a terminal result.');
+    }
+    return createEndedMatchFlowState(state, this.matchFlowConfig, committed.terminal);
+  }
+
   /** Advance one reducer step after the world callback has completed. */
   private advanceMatchFlowStep(input: Readonly<MatchFlowStepInput>): void {
     const flow = this.matchFlowStateValue;
@@ -1704,13 +1799,17 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
         });
       }
     }
-    if (reduced.transition !== null) {
+
+    let nextFlow = reduced.state;
+    if (reduced.outcomeHook !== null) {
+      nextFlow = this.resolveMatchOutcome(reduced.state, reduced.outcomeHook);
+    } else if (reduced.transition !== null) {
       const committed = this.snapshotBuilder.commitTransition({ kind: 'countdown' });
       if (committed.eventId !== reduced.transition.sequence) {
         throw new Error('Reducer and snapshot transition sequences diverged.');
       }
     }
-    this.commitMatchFlowState(reduced.state);
+    this.commitMatchFlowState(nextFlow);
   }
 
   /** Keep transactional roster state and the pure reducer projection coherent. */

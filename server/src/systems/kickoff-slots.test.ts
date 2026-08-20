@@ -64,9 +64,13 @@ function teamLocalOrder(roster: readonly RosterEntry[], team: Team): readonly Ro
 }
 
 function overlappingMirroredTable(): KickoffSlotTable {
+  // Keep the resting height derived from the canonical table so this fixture
+  // stays inside the arena when the car collider height changes; only the
+  // near-center placement is meant to trigger the OBB overlap rejection.
+  const restingHeight = BLUE_KICKOFF_SLOTS[0]!.position[1];
   const blueZero: KickoffSlot = Object.freeze({
     ...BLUE_KICKOFF_SLOTS[0]!,
-    position: Object.freeze([0, 0.26, -0.1] as const),
+    position: Object.freeze([0, restingHeight, -0.1] as const),
     rotation: Object.freeze([0, 0, 0, 1] as const),
   });
   const blue = Object.freeze([

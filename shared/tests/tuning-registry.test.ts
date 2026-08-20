@@ -167,7 +167,7 @@ test('accepted proposals create immutable versions, room pins, and traceable bef
     expectedVersion: 1,
     changes: [{
       id: TUNING_IDS.ball.linearDamping,
-      value: 0.12,
+      value: 0.14,
       evidenceId: 'evidence-ball-damping',
       approvalId: 'approval-ball-damping',
       verificationStatus: 'verified',
@@ -177,7 +177,7 @@ test('accepted proposals create immutable versions, room pins, and traceable bef
   assert.equal(result.accepted, true);
   if (!result.accepted) return;
   assert.equal(result.snapshot.version, 2);
-  assert.equal(getScalarTuningValue(result.snapshot, TUNING_IDS.ball.linearDamping), 0.12);
+  assert.equal(getScalarTuningValue(result.snapshot, TUNING_IDS.ball.linearDamping), 0.14);
   assert.equal(result.snapshot.get(TUNING_IDS.ball.linearDamping)?.registryVersion, 2);
   assert.equal(result.snapshot.unverifiedTuningIds.includes(TUNING_IDS.ball.linearDamping), false);
   assert.equal(result.historyRecord.changes.length, 1);

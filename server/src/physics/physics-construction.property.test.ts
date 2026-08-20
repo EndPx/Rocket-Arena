@@ -9,6 +9,7 @@ import {
   type TuningEntry,
   type TuningRegistrySnapshot,
 } from '@rocket-arena/shared';
+import { getConstant } from '@rocket-arena/shared/constants';
 import {
   BALL_LINEAR_SPEED_TOLERANCE,
   createBall,
@@ -391,12 +392,27 @@ function assertConstruction(
 
   const carCollider = car.collider(0);
   const ballCollider = ball.collider(0);
-  assert.equal(carCollider.shape.type, RAPIER.ShapeType.Cuboid);
+  assert.equal(carCollider.shape.type, RAPIER.ShapeType.RoundCuboid);
   assert.equal(ballCollider.shape.type, RAPIER.ShapeType.Ball);
-  const carHalfExtents = (carCollider.shape as RAPIER.Cuboid).halfExtents;
-  assertApproximately(carHalfExtents.x, generated.carWidth / 2, 'independent car half-width');
-  assertApproximately(carHalfExtents.y, generated.carHeight / 2, 'independent car half-height');
-  assertApproximately(carHalfExtents.z, generated.carLength / 2, 'independent car half-length');
+  const carShape = carCollider.shape as RAPIER.RoundCuboid;
+  const expectedCornerRadius = getConstant('CAR.BODY.CORNER_RADIUS');
+  assertApproximately(carShape.borderRadius, expectedCornerRadius, 'car corner radius');
+  assertApproximately(
+    carShape.halfExtents.x + carShape.borderRadius,
+    generated.carWidth / 2,
+    'rounded car outer half-width',
+  );
+  assertApproximately(
+    carShape.halfExtents.y + carShape.borderRadius,
+    generated.carHeight / 2,
+    'rounded car outer half-height',
+  );
+  assertApproximately(
+    carShape.halfExtents.z + carShape.borderRadius,
+    generated.carLength / 2,
+    'rounded car outer half-length',
+  );
+  assertApproximately(carCollider.contactSkin(), 0, 'car contact skin');
 
   const expectedCarMass = scalarValue(TUNING_IDS.car.mass);
   const expectedBallMass = scalarValue(TUNING_IDS.ball.mass);

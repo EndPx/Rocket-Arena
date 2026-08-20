@@ -125,20 +125,31 @@ function runConstructionAndRecovery(): { linearSpeed: number; angularSpeed: numb
     const collider = car.collider(0);
     assert.ok(collider, 'car must own exactly one collider');
     assert.equal(car.numColliders(), 1, 'car must own exactly one collider');
-    assert.equal(collider.shape.type, RAPIER.ShapeType.Cuboid, 'car collider must be a plain box');
-    const halfExtents = (collider.shape as RAPIER.Cuboid).halfExtents;
+    // The chassis is a rounded box so it cannot catch on collider seams, and its
+    // rounded envelope must still measure exactly the tuned outer dimensions.
+    assert.equal(
+      collider.shape.type,
+      RAPIER.ShapeType.RoundCuboid,
+      'car collider must be a rounded box',
+    );
+    const roundedShape = collider.shape as RAPIER.RoundCuboid;
+    const borderRadius = roundedShape.borderRadius;
+    const cornerRadius = getConstant('CAR.BODY.CORNER_RADIUS');
+    assertApproximately(borderRadius, cornerRadius, 'car corner radius');
+    assert.ok(borderRadius > 0, 'car corner radius must be positive');
+    const halfExtents = roundedShape.halfExtents;
     assertApproximately(
-      halfExtents.x,
+      halfExtents.x + borderRadius,
       tuning(TUNING_IDS.car.collider.width) / 2,
       'car half-width',
     );
     assertApproximately(
-      halfExtents.y,
+      halfExtents.y + borderRadius,
       tuning(TUNING_IDS.car.collider.height) / 2,
       'car half-height',
     );
     assertApproximately(
-      halfExtents.z,
+      halfExtents.z + borderRadius,
       tuning(TUNING_IDS.car.collider.length) / 2,
       'car half-length',
     );

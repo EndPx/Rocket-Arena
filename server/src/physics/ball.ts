@@ -23,6 +23,9 @@ interface ManagedBallBody {
   readonly tracker: FiniteRigidBodyStateTracker;
   readonly maximumLinearSpeed: number;
   readonly maximumAngularSpeed: number;
+  readonly fixedStepSeconds: number;
+  readonly softCcdTravelRatio: number;
+  readonly maximumSoftCcdPrediction: number;
 }
 
 const MANAGED_BALL_BODIES = new WeakMap<RAPIER.RigidBody, ManagedBallBody>();
@@ -46,6 +49,9 @@ function makeManagedBall(
   fallbackTranslation: FiniteVector3,
   tuning: BallTuningSnapshot,
 ): ManagedBallBody {
+  const maximumLinearSpeed = positiveTuningValue(tuning, TUNING_IDS.ball.maxLinearSpeed);
+  const fixedStepSeconds = positiveTuningValue(tuning, TUNING_IDS.physics.fixedStepSeconds);
+  const softCcdTravelRatio = getConstant('BALL.SOFT_CCD_TRAVEL_RATIO');
   return {
     tracker: createFiniteRigidBodyStateTracker(body, {
       translation: fallbackTranslation,
@@ -53,10 +59,32 @@ function makeManagedBall(
       linearVelocity: { x: 0, y: 0, z: 0 },
       angularVelocity: { x: 0, y: 0, z: 0 },
     }),
-    maximumLinearSpeed: positiveTuningValue(tuning, TUNING_IDS.ball.maxLinearSpeed)
-      + BALL_LINEAR_SPEED_TOLERANCE,
+    maximumLinearSpeed: maximumLinearSpeed + BALL_LINEAR_SPEED_TOLERANCE,
     maximumAngularSpeed: positiveTuningValue(tuning, TUNING_IDS.ball.maxAngularSpeed),
+    fixedStepSeconds,
+    softCcdTravelRatio,
+    maximumSoftCcdPrediction: maximumLinearSpeed * fixedStepSeconds * softCcdTravelRatio,
   };
+}
+
+/**
+ * Scale the soft-CCD prediction to the distance this ball covers in the coming
+ * fixed step. Keeping the prediction strictly below that travel preserves the
+ * genuine impact the restitution coefficient acts on, while keeping it a large
+ * enough fraction of the travel prevents a visible transient sink at speed.
+ */
+function applyAdaptiveSoftCcdPrediction(
+  body: RAPIER.RigidBody,
+  managed: ManagedBallBody,
+  linearVelocity: FiniteVector3,
+): void {
+  const speed = Math.hypot(linearVelocity.x, linearVelocity.y, linearVelocity.z);
+  const travel = speed * managed.fixedStepSeconds;
+  const prediction = Math.min(
+    travel * managed.softCcdTravelRatio,
+    managed.maximumSoftCcdPrediction,
+  );
+  body.setSoftCcdPrediction(Number.isFinite(prediction) && prediction > 0 ? prediction : 0);
 }
 
 function managedBall(body: RAPIER.RigidBody): ManagedBallBody {
@@ -106,10 +134,9 @@ export function createBall(
         .setLinearDamping(linearDamping)
         .setAngularDamping(getConstant('BALL.ANGULAR_DAMPING'))
         .setCcdEnabled(true)
-        .setSoftCcdPrediction(
-          positiveTuningValue(tuning, TUNING_IDS.ball.maxLinearSpeed)
-            * positiveTuningValue(tuning, TUNING_IDS.physics.fixedStepSeconds),
-        )
+        // The resting prediction is zero; every step then scales it to the
+        // ball's own speed through applyAdaptiveSoftCcdPrediction.
+        .setSoftCcdPrediction(getConstant('BALL.SOFT_CCD_PREDICTION'))
         .setAdditionalSolverIterations(Math.round(
           getConstant('BALL.ADDITIONAL_SOLVER_ITERATIONS'),
         )),
@@ -137,7 +164,9 @@ export function createBall(
 /** Repair each invalid ball field before a simulation step or projection. */
 export function recoverBallBeforeStep(body: RAPIER.RigidBody): FiniteRigidBodyState {
   const managed = managedBall(body);
-  return recoverFiniteRigidBodyState(body, managed.tracker);
+  const recovered = recoverFiniteRigidBodyState(body, managed.tracker);
+  applyAdaptiveSoftCcdPrediction(body, managed, recovered.linearVelocity);
+  return recovered;
 }
 
 /** Repair and enforce the post-step 60.05 m/s and 6 rad/s default bounds. */

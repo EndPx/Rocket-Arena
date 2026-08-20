@@ -27,6 +27,10 @@ import {
 } from '../physics/car-controller.js';
 import { detectGroundSupport } from '../physics/grounding.js';
 import { createWorld, initPhysics } from '../physics/world.js';
+import {
+  advanceGoalCrossing,
+  createGoalCrossingState,
+} from '../systems/goal-crossing.js';
 import { prepareResetToKickoff } from '../systems/scoring.js';
 import type {
   AuthoritativeGroundingResult,
@@ -37,12 +41,21 @@ export interface AuthoritativeRapierCar {
   readonly body: RAPIER.RigidBody;
   jumpAirState: Readonly<CarJumpAirState>;
   boostAmount: number;
+  boostRechargeDelaySeconds: number;
+  boostRechargeArmed: boolean;
+  dodgeIntentSteps: number;
 }
 
 interface RapierCarKickoffState {
   readonly jumpAirState: Readonly<CarJumpAirState>;
   readonly boostAmount: number;
+  readonly boostRechargeDelaySeconds: number;
+  readonly boostRechargeArmed: boolean;
+  readonly dodgeIntentSteps: number;
 }
+
+const DODGE_INTENT_MIN_STEPS = 3;
+const DODGE_DIRECTIONAL_THRESHOLD = 0.7;
 
 export interface AuthoritativeRapierWorldOptions {
   /** Exact room-pinned geometry instance used for every boundary collider. */
@@ -62,10 +75,13 @@ export interface AuthoritativeRapierRoomWorldBundle extends AuthoritativeRoomWor
   readonly carsBySessionId: ReadonlyMap<string, AuthoritativeRapierCar>;
 }
 
-function initialBoostAmount(): number {
+function initialBoostAmount(tuning: RoomPinnedTuningSnapshot): number {
   return Math.max(
     0,
-    Math.min(getConstant('CAR.BOOST.START_AMOUNT'), getConstant('CAR.BOOST.MAX_AMOUNT')),
+    Math.min(
+      getScalarTuningValue(tuning, TUNING_IDS.car.boost.initialInventory),
+      getConstant('CAR.BOOST.MAX_AMOUNT'),
+    ),
   );
 }
 
@@ -73,6 +89,9 @@ function captureKickoffState(car: AuthoritativeRapierCar): RapierCarKickoffState
   return Object.freeze({
     jumpAirState: car.jumpAirState,
     boostAmount: car.boostAmount,
+    boostRechargeDelaySeconds: car.boostRechargeDelaySeconds,
+    boostRechargeArmed: car.boostRechargeArmed,
+    dodgeIntentSteps: car.dodgeIntentSteps,
   });
 }
 
@@ -82,11 +101,20 @@ function restoreKickoffState(
 ): void {
   car.jumpAirState = snapshot.jumpAirState;
   car.boostAmount = snapshot.boostAmount;
+  car.boostRechargeDelaySeconds = snapshot.boostRechargeDelaySeconds;
+  car.boostRechargeArmed = snapshot.boostRechargeArmed;
+  car.dodgeIntentSteps = snapshot.dodgeIntentSteps;
 }
 
-function resetKickoffState(car: AuthoritativeRapierCar): void {
+function resetKickoffState(
+  car: AuthoritativeRapierCar,
+  tuning: RoomPinnedTuningSnapshot,
+): void {
   car.jumpAirState = createCarJumpAirState(car.jumpAirState.lastConsumedJumpSequence);
-  car.boostAmount = initialBoostAmount();
+  car.boostAmount = initialBoostAmount(tuning);
+  car.boostRechargeDelaySeconds = 0;
+  car.boostRechargeArmed = false;
+  car.dodgeIntentSteps = 0;
 }
 
 /**
@@ -110,6 +138,8 @@ export async function initializeAuthoritativeRapierWorld(
     arenaOwnership = arena;
     const surfaces = arena.registry;
     const ball = createBall(initializedWorld, undefined, tuning);
+    let goalCrossingState = createGoalCrossingState(options.resolvedGeometry.goals);
+    let ballCenterBeforeStep = Object.freeze({ ...ball.translation() });
     const carsBySessionId = new Map<string, AuthoritativeRapierCar>();
     let disposed = false;
 
@@ -124,11 +154,14 @@ export async function initializeAuthoritativeRapierWorld(
           const rotation = entry.team === 'orange'
             ? { x: 0, y: 1, z: 0, w: 0 }
             : { x: 0, y: 0, z: 0, w: 1 };
-          let lastFiniteBoostAmount = initialBoostAmount();
+          let lastFiniteBoostAmount = initialBoostAmount(tuning);
           const car = scope.track<AuthoritativeRapierCar>(
             {
               body: createCarBody(initializedWorld, position, rotation, tuning),
               jumpAirState: createCarJumpAirState(),
+              boostRechargeDelaySeconds: 0,
+              boostRechargeArmed: false,
+              dodgeIntentSteps: 0,
               get boostAmount(): number {
                 return lastFiniteBoostAmount;
               },
@@ -176,7 +209,7 @@ export async function initializeAuthoritativeRapierWorld(
           new Map([...cars].map(([sessionId, car]) => [sessionId, {
             body: car.body,
             captureState: () => captureKickoffState(car),
-            resetState: () => { resetKickoffState(car); },
+            resetState: () => { resetKickoffState(car, tuning); },
             restoreState: (snapshot: RapierCarKickoffState) => {
               restoreKickoffState(car, snapshot);
             },
@@ -190,6 +223,8 @@ export async function initializeAuthoritativeRapierWorld(
       },
       recoverBallBeforeStep: ({ ball: authoritativeBall }) => {
         recoverBallBeforeStep(authoritativeBall);
+        const center = authoritativeBall.translation();
+        ballCenterBeforeStep = Object.freeze({ x: center.x, y: center.y, z: center.z });
       },
       recoverCarBeforeStep: ({ car }) => {
         recoverCarBodyBeforeStep(car.body);
@@ -202,11 +237,15 @@ export async function initializeAuthoritativeRapierWorld(
           authoritativeWorld,
           car.body,
           surfaces,
-          { tuning: roomTuning },
+          {
+            tuning: roomTuning,
+            maximumDriveableSlopeDegrees: 60,
+          },
         );
         return Object.freeze({
           grounded: result.grounded,
           basis: result.basis,
+          recoveryBasis: result.recoveryBasis,
         } satisfies AuthoritativeGroundingResult);
       },
       prepareCarCommand: ({
@@ -220,7 +259,17 @@ export async function initializeAuthoritativeRapierWorld(
         const rotation = car.body.rotation();
         const linearVelocity = car.body.linvel();
         const angularVelocity = car.body.angvel();
-        const plan = planCarControllerCommand(input, {
+        const directionalMagnitude = Math.hypot(input.pitch, input.roll);
+        const nextDodgeIntentSteps = directionalMagnitude >= DODGE_DIRECTIONAL_THRESHOLD
+          ? Math.min(car.dodgeIntentSteps + 1, DODGE_INTENT_MIN_STEPS)
+          : 0;
+        const pendingJumpEdge = Number.isSafeInteger(input.jumpSequence)
+          && input.jumpSequence > car.jumpAirState.lastConsumedJumpSequence;
+        const controllerInput = pendingJumpEdge
+          && nextDodgeIntentSteps < DODGE_INTENT_MIN_STEPS
+          ? Object.freeze({ ...input, pitch: 0, roll: 0 })
+          : input;
+        const plan = planCarControllerCommand(controllerInput, {
           observation: {
             rotation,
             linearVelocity,
@@ -232,6 +281,8 @@ export async function initializeAuthoritativeRapierWorld(
           availableBoost: car.boostAmount,
           tuning: roomTuning,
           timestepSeconds: fixedStepSeconds,
+          uprightRecoveryEnabled: true,
+          uprightRecoveryBasis: grounding.recoveryBasis ?? grounding.basis,
           jumpAir: {
             state: car.jumpAirState,
             fixedStepIndex,
@@ -253,6 +304,23 @@ export async function initializeAuthoritativeRapierWorld(
               throw new Error('A prepared car command must be applied once before one commit.');
             }
             car.jumpAirState = nextJumpAirState;
+            car.dodgeIntentSteps = nextDodgeIntentSteps;
+            if (input.boostHeld) {
+              car.boostAmount -= plan.boostConsumed;
+              car.boostRechargeDelaySeconds = getConstant('CAR.BOOST.RECHARGE_DELAY');
+              car.boostRechargeArmed = true;
+            } else if (car.boostRechargeArmed) {
+              car.boostRechargeDelaySeconds = Math.max(
+                0,
+                car.boostRechargeDelaySeconds - fixedStepSeconds,
+              );
+              if (car.boostRechargeDelaySeconds === 0) {
+                car.boostAmount += getConstant('CAR.BOOST.RECHARGE_RATE') * fixedStepSeconds;
+                if (car.boostAmount >= getConstant('CAR.BOOST.MAX_AMOUNT')) {
+                  car.boostRechargeArmed = false;
+                }
+              }
+            }
             committed = true;
           },
         });
@@ -266,9 +334,28 @@ export async function initializeAuthoritativeRapierWorld(
       recoverBallAfterStep: ({ ball: authoritativeBall }) => {
         recoverBallAfterStep(authoritativeBall);
       },
-      extractMatchFlowInput: () => Object.freeze({
-        // Swept goal extraction and outcome resolution are installed in Wave 18.
-      }),
+      extractMatchFlowInput: ({
+        ball: authoritativeBall,
+        activePlay,
+        kickoffEpoch,
+      }) => {
+        const center = authoritativeBall.translation();
+        const result = advanceGoalCrossing(goalCrossingState, {
+          activePlay,
+          kickoffEpoch,
+          previousBallCenter: ballCenterBeforeStep,
+          currentBallCenter: { x: center.x, y: center.y, z: center.z },
+        });
+        if (!result.accepted) {
+          return Object.freeze({ validGoal: null });
+        }
+        goalCrossingState = result.state;
+        return Object.freeze({
+          validGoal: result.crossing === null
+            ? null
+            : Object.freeze({ scoringTeam: result.crossing.scoringTeam }),
+        });
+      },
       projectCar: ({ car }) => {
         const position = car.body.translation();
         const rotation = car.body.rotation();

@@ -80,6 +80,10 @@ export interface ResolvedGoalResetInput {
   readonly latestGoal?: GoalResult | null;
 }
 
+export interface ResolvedOvertimeEntryInput extends ResolvedGoalResetInput {
+  readonly transitionSequence: number;
+}
+
 export interface MatchFlowStepInput {
   /** A swept, already-validated goal candidate; this skeleton does not score it. */
   readonly validGoal?: Readonly<{ readonly scoringTeam: Team }> | null;
@@ -454,6 +458,7 @@ export function beginGoalReset(
     blueScore: resolved.blueScore,
     orangeScore: resolved.orangeScore,
     latestGoal,
+    transitionSequence: latestGoal?.eventId ?? state.transitionSequence,
     pendingOutcome: null,
   }, config);
 }
@@ -464,13 +469,30 @@ export const startGoalReset = beginGoalReset;
 export function beginOvertimeCountdown(
   state: MatchFlowState,
   config: MatchFlowConfig,
+  resolved: ResolvedOvertimeEntryInput = {
+    blueScore: state.blueScore,
+    orangeScore: state.orangeScore,
+    latestGoal: state.latestGoal,
+    transitionSequence: state.transitionSequence,
+  },
 ): Readonly<MatchFlowState> {
   assertMatchFlowState(state, config);
-  if (state.blueScore !== state.orangeScore) {
+  assertScore(resolved.blueScore, 'resolved.blueScore');
+  assertScore(resolved.orangeScore, 'resolved.orangeScore');
+  assertNonNegativeSafeInteger(resolved.transitionSequence, 'resolved.transitionSequence');
+  if (resolved.blueScore !== resolved.orangeScore) {
     throw new Error('Golden-goal overtime countdown requires a tied score.');
   }
   if (state.phase === 'ended') {
     throw new Error('Ended_State cannot enter overtime.');
+  }
+  const latestGoal = resolved.latestGoal ?? null;
+  if (
+    latestGoal !== null
+    && (latestGoal.blueScore !== resolved.blueScore
+      || latestGoal.orangeScore !== resolved.orangeScore)
+  ) {
+    throw new TypeError('Resolved overtime-entry scores must match the latest goal.');
   }
 
   return freezeState({
@@ -483,8 +505,12 @@ export function beginOvertimeCountdown(
     regulationActivePlayStepsCompleted: config.rules.regulationActivePlaySteps,
     regulationStarted: true,
     regulationCutoffResolved: true,
+    blueScore: resolved.blueScore,
+    orangeScore: resolved.orangeScore,
     winner: null,
+    latestGoal,
     terminalResult: null,
+    transitionSequence: resolved.transitionSequence,
     pendingOutcome: null,
   }, config);
 }

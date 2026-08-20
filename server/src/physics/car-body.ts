@@ -81,7 +81,7 @@ function managedCarBody(body: RAPIER.RigidBody): ManagedCarBody {
   return managed;
 }
 
-/** Create the registry-scaled plain-box authoritative car body. */
+/** Create the registry-scaled rounded-box authoritative car body. */
 export function createCarBody(
   world: RAPIER.World,
   position: CarBodyPosition,
@@ -112,12 +112,23 @@ export function createCarBody(
         )),
     );
 
+    const cornerRadius = Math.min(
+      getConstant('CAR.BODY.CORNER_RADIUS'),
+      width / 2 - Number.EPSILON,
+      height / 2 - Number.EPSILON,
+      length / 2 - Number.EPSILON,
+    );
     world.createCollider(
-      RAPIER.ColliderDesc.cuboid(width / 2, height / 2, length / 2)
+      RAPIER.ColliderDesc.roundCuboid(
+        width / 2 - cornerRadius,
+        height / 2 - cornerRadius,
+        length / 2 - cornerRadius,
+        cornerRadius,
+      )
         .setMass(mass)
         .setFriction(getConstant('CAR.BODY.FRICTION'))
         .setRestitution(getConstant('CAR.BODY.RESTITUTION'))
-        .setContactSkin(getConstant('CAR.BODY.CONTACT_SKIN'))
+        .setContactSkin(0)
         .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min)
         .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Max),
       body,

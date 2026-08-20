@@ -104,7 +104,7 @@ test('first Active Play frame forces Ball Camera from interpolated car and ball 
 
   const config = controller.configuration.ball;
   const expectedOrigin = fixture.car.position.clone()
-    .add(new THREE.Vector3(0, 0, config.lookAhead - config.distance));
+    .add(new THREE.Vector3(0, 0, -config.distance));
   expectedOrigin.y += config.height;
   assert.equal(controller.mode, 'ball');
   assert.equal(controller.cameraModeTransitionCount, 0);
