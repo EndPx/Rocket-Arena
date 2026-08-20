@@ -111,7 +111,9 @@ function createGeometrySet(): BallGeometrySet {
     glow: new THREE.SphereGeometry(BALL.RADIUS * GLOW_RADIUS_RATIO, 24, 16),
     trail: new THREE.ConeGeometry(BALL.RADIUS * 0.82, BALL.RADIUS * TRAIL_LENGTH_RATIO, 14, 1, true),
     // Outer radius stays at the ball radius so the resting rig keeps its
-    // spherical silhouette allowance.
+    // spherical silhouette allowance. VISUAL.BALL_MOTION.MARKER_*_SCALE widens
+    // it past the ball at runtime, which is what makes it visible from a low
+    // chase camera.
     groundMarker: new THREE.RingGeometry(BALL.RADIUS * 0.74, BALL.RADIUS, 40, 1),
     groundMarkerCore: new THREE.CircleGeometry(BALL.RADIUS * 0.16, 20),
   };
@@ -319,11 +321,15 @@ export function createBallVisualRig(): BallVisualRig {
   trail.scale.setScalar(TRAIL_REST_SCALE);
   group.add(trail);
 
+  // Fog is disabled because this is a readability aid, not scenery: the ball is
+  // most often chased from the far end of a 102 m field, exactly where fog would
+  // wash the marker into the night sky colour.
   const markerMaterial = new THREE.MeshBasicMaterial({
     color: VISUAL.PALETTE.WHITE_LIGHT,
     transparent: true,
     opacity: 0,
     depthWrite: false,
+    fog: false,
     side: THREE.DoubleSide,
   });
   const groundMarker = new THREE.Group();

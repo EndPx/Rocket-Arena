@@ -153,10 +153,18 @@ export const VISUAL = {
      * fades as the ball climbs so its height is readable at a glance.
      */
     MARKER_FULL_FADE_HEIGHT: 16,
-    MARKER_GROUNDED_OPACITY: 0.46,
-    MARKER_LIFTED_OPACITY: 0.14,
-    MARKER_LIFTED_SCALE: 1.5,
-    MARKER_FLOOR_CLEARANCE: 0.03,
+    MARKER_GROUNDED_OPACITY: 0.58,
+    MARKER_LIFTED_OPACITY: 0.34,
+    /**
+     * The ring geometry is authored at the ball radius so a freshly built rig
+     * keeps its spherical silhouette allowance, then scaled at runtime. Both
+     * scales must exceed one: a ring the width of the ball sits entirely inside
+     * the ball's own silhouette, so whether it is visible depends on the camera
+     * angle rather than on the ball's position.
+     */
+    MARKER_GROUNDED_SCALE: 1.6,
+    MARKER_LIFTED_SCALE: 2.2,
+    MARKER_FLOOR_CLEARANCE: 0.05,
   },
 
   /** Stadium geometry remains outside or coincident with authoritative colliders. */

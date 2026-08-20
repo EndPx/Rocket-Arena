@@ -319,7 +319,14 @@ function updateBallGroundMarker(
   marker.position.copy(markerOffset).applyQuaternion(ballInverseRotation);
   marker.quaternion.copy(ballInverseRotation);
 
-  const scale = THREE.MathUtils.lerp(1, tuning.MARKER_LIFTED_SCALE, altitudeBlend);
+  // The ring is authored at the ball radius, so it must always be scaled past
+  // one. At exactly one it hides inside the ball's own silhouette and only
+  // peeks out at steep camera angles.
+  const scale = THREE.MathUtils.lerp(
+    tuning.MARKER_GROUNDED_SCALE,
+    tuning.MARKER_LIFTED_SCALE,
+    altitudeBlend,
+  );
   marker.scale.setScalar(scale);
 
   const opacity = THREE.MathUtils.lerp(

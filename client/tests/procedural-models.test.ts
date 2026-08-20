@@ -386,7 +386,7 @@ test('the ball ground marker stays flat on the floor under the ball', () => {
         + ` received ${worldPosition.toArray().join(', ')}`,
       );
       assert.ok(
-        Math.abs(worldPosition.y) <= 0.05,
+        Math.abs(worldPosition.y - VISUAL.BALL_MOTION.MARKER_FLOOR_CLEARANCE) <= 1e-6,
         `marker must rest on the floor plane at height ${height}, received ${worldPosition.y}`,
       );
 
@@ -400,7 +400,12 @@ test('the ball ground marker stays flat on the floor under the ball', () => {
       const ring = marker.getObjectByName('ball-ground-marker-ring');
       assert.ok(ring instanceof THREE.Mesh);
       const material = ring.material as THREE.MeshBasicMaterial;
-      assert.ok(material.opacity > 0 && material.opacity <= 0.5);
+      assert.ok(
+        material.opacity >= VISUAL.BALL_MOTION.MARKER_LIFTED_OPACITY - 1e-9
+        && material.opacity <= VISUAL.BALL_MOTION.MARKER_GROUNDED_OPACITY + 1e-9,
+        `marker opacity must stay inside its tuned band (height ${height}),`
+        + ` received ${material.opacity}`,
+      );
       assert.ok(
         material.opacity <= previousOpacity + 1e-9,
         `marker must not become more opaque as the ball rises (height ${height})`,
@@ -409,13 +414,24 @@ test('the ball ground marker stays flat on the floor under the ball', () => {
         marker.scale.x >= previousScale - 1e-9,
         `marker must not shrink as the ball rises (height ${height})`,
       );
+      // The ring geometry is authored at exactly the ball radius, so any scale
+      // of one or less puts it inside the ball's silhouette and makes its
+      // visibility a function of the camera angle instead of the ball.
+      assert.ok(
+        marker.scale.x * rig.radius >= rig.radius * 1.35,
+        `marker must read wider than the ball at height ${height},`
+        + ` received scale ${marker.scale.x}`,
+      );
       previousOpacity = material.opacity;
       previousScale = marker.scale.x;
       assert.ok(rig.motion.altitudeBlend >= 0 && rig.motion.altitudeBlend <= 1);
     }
 
     // Far above the field the marker is at its faintest and widest.
-    assert.ok(previousScale > 1, 'a high ball must widen its marker');
+    assert.ok(
+      previousScale > VISUAL.BALL_MOTION.MARKER_GROUNDED_SCALE,
+      'a high ball must widen its marker past the grounded width',
+    );
 
     ball.position.set(0, -12, 0);
     updateBallVisualRig(ball, { vx: 0, vy: 0, vz: 0 }, null, 1 / 60);
