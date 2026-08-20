@@ -327,6 +327,115 @@ export function projectSurfaceCommand(
   return magnitude > 1 ? scale(command, 1 / magnitude) : command;
 }
 
+/** One signed ride-height reading averaged over the support footprint. */
+export interface RideHeightProbe {
+  /**
+   * Signed distance from the support footprint to the surface along Local_Down.
+   * Zero is the intended resting height, positive hovers, negative penetrates.
+   */
+  readonly gap: number;
+  readonly normal: GroundingVector3;
+  readonly samples: number;
+}
+
+/**
+ * Measure signed ride height at every support point.
+ *
+ * `detectGroundSupport` casts from the support point itself, so a chassis that
+ * has sunk into a surface reports a zero-distance hit and the depth is lost.
+ * These probes start one lift above each support point and cast further, which
+ * keeps the reading signed on both sides of the resting height. That matters
+ * because Rapier's box-against-convex-polyhedron manifold degenerates to a
+ * single contact at many floor positions and lets the chassis settle roughly
+ * 0.1 m low; a signed gap lets the controller hold the intended height itself
+ * instead of trusting that manifold.
+ */
+export function probeRideHeight(
+  world: RAPIER.World,
+  body: RAPIER.RigidBody,
+  surfaces: ArenaSurfaceRegistry,
+  options: Readonly<GroundingOptions> = {},
+): RideHeightProbe | null {
+  if (!surfaces.belongsTo(world)) {
+    throw new TypeError('Arena surface registry belongs to a different Rapier world.');
+  }
+  const tuning = options.tuning ?? DEFAULT_TUNING_REGISTRY_SNAPSHOT;
+  const contactPoints = resolveContactPoints(tuning);
+  const rayDistance = resolveScalar(
+    tuning,
+    TUNING_IDS.support.rayDistance,
+    (value) => value > 0,
+  );
+  const thresholdDegrees = resolveScalar(
+    tuning,
+    TUNING_IDS.support.normalAngleThresholdDegrees,
+    (value) => value >= 0 && value <= 90,
+  );
+  const minimumNormalDot = Math.cos(thresholdDegrees * Math.PI / 180);
+  const maximumDriveableSlopeDegrees = Number.isFinite(options.maximumDriveableSlopeDegrees)
+    ? Math.max(0, Math.min(90, options.maximumDriveableSlopeDegrees as number))
+    : 90;
+  const minimumWorldUpDot = maximumDriveableSlopeDegrees >= 90
+    ? -1
+    : Math.cos(maximumDriveableSlopeDegrees * Math.PI / 180);
+
+  const rotation = finiteQuaternion(body.rotation());
+  const translation = finiteVector(body.translation()) ?? { x: 0, y: 0, z: 0 };
+  const localDown = normalize(rotateVector(rotation, { x: 0, y: -1, z: 0 }), { x: 0, y: -1, z: 0 });
+  const localRoof = scale(localDown, -1);
+  const filterFlags = RAPIER.QueryFilterFlags.ONLY_FIXED | RAPIER.QueryFilterFlags.EXCLUDE_SENSORS;
+  const lift = rayDistance;
+  const probeLength = lift + rayDistance;
+
+  let gapTotal = 0;
+  let normalX = 0;
+  let normalY = 0;
+  let normalZ = 0;
+  let samples = 0;
+
+  for (const localPoint of contactPoints) {
+    const supportPoint = add(translation, rotateVector(rotation, localPoint));
+    const origin = add(supportPoint, scale(localRoof, lift));
+    const ray = new RAPIER.Ray(origin, localDown);
+    const hit = world.castRayAndGetNormal(
+      ray,
+      probeLength,
+      true,
+      filterFlags,
+      undefined,
+      undefined,
+      body,
+      (collider) => {
+        const surface = surfaces.get(collider);
+        return collider.isValid()
+          && collider.isEnabled()
+          && !collider.isSensor()
+          && surface?.capability === 'core'
+          && surface.groundingEnabled;
+      },
+    );
+    if (hit === null || !Number.isFinite(hit.timeOfImpact)) continue;
+    if (hit.timeOfImpact < 0 || hit.timeOfImpact > probeLength + EPSILON) continue;
+    const normal = normalizeFinite(hit.normal);
+    if (normal === null) continue;
+    if (dot(normal, WORLD_UP) + EPSILON < minimumWorldUpDot) continue;
+    if (dot(normal, localRoof) + EPSILON < minimumNormalDot) continue;
+
+    gapTotal += hit.timeOfImpact - lift;
+    normalX += normal.x;
+    normalY += normal.y;
+    normalZ += normal.z;
+    samples += 1;
+  }
+
+  if (samples === 0) return null;
+  const averaged = normalizeFinite({ x: normalX, y: normalY, z: normalZ });
+  if (averaged === null) return null;
+  const gap = gapTotal / samples;
+  if (!Number.isFinite(gap)) return null;
+  return { gap, normal: averaged, samples };
+}
+
 /** Cast every registry support point along the car's rotated Local_Down axis. */
 export function detectGroundSupport(
   world: RAPIER.World,

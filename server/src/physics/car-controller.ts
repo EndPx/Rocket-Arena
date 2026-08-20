@@ -103,6 +103,18 @@ export interface CarControllerPlanningContext {
   readonly uprightRecoveryBasis?: ControllerSurfaceBasis | null;
   /** Optional until Wave 17 owns one immutable action state per live car. */
   readonly jumpAir?: CarJumpAirPlanningBundle;
+  /**
+   * Optional signed ride-height reading along the support normal. Zero is the
+   * intended resting height and a negative gap means the chassis has sunk into
+   * the surface. Supplying it lets the planner hold the resting height instead
+   * of depending on Rapier's contact manifold quality.
+   */
+  readonly rideHeight?: CarRideHeightObservation | null;
+}
+
+export interface CarRideHeightObservation {
+  readonly gap: number;
+  readonly normal: ControllerVector3;
 }
 
 export interface GroundedControlPlan {
@@ -132,6 +144,8 @@ export interface CarControllerPlan {
   readonly appliedPropulsionDeltaVelocity: ControllerVector3;
   readonly dragDeltaVelocity: ControllerVector3;
   readonly lateralGripDeltaVelocity: ControllerVector3;
+  /** Bounded corrective push that restores the intended ride height. */
+  readonly rideHeightDeltaVelocity: ControllerVector3;
   readonly deltaVelocity: ControllerVector3;
   readonly angularDeltaVelocity: ControllerVector3;
   readonly propulsionProjectedVelocity: ControllerVector3;
@@ -152,6 +166,12 @@ const WORLD_UP: ControllerVector3 = Object.freeze({ x: 0, y: 1, z: 0 });
 const IDENTITY_ROTATION: ControllerQuaternion = Object.freeze({ x: 0, y: 0, z: 0, w: 1 });
 const CURVE_EPSILON = 1e-12;
 const UPRIGHT_RECOVERY_STRENGTH = 7;
+/** Reciprocal seconds; how quickly a sunk chassis is returned to ride height. */
+const RIDE_HEIGHT_RESPONSE = 14;
+/** Never correct more than this depth in one step, in metres. */
+const RIDE_HEIGHT_MAX_CORRECTION = 0.35;
+/** Cap the corrective speed so the chassis is lifted, never launched, in m/s. */
+const RIDE_HEIGHT_MAX_SPEED = 2.5;
 const UPRIGHT_RECOVERY_RESPONSE = 12;
 const UPRIGHT_RECOVERY_MAX_ANGULAR_SPEED = 4.5;
 
@@ -1085,6 +1105,43 @@ export function planCarControllerCommand(
     finalAngularDeltaVelocity = subtract(projectedAngularVelocity, angularVelocity);
   }
 
+  // Hold the intended ride height ourselves while grounded.
+  //
+  // Rapier's box-against-convex-polyhedron manifold degenerates to a single
+  // contact at many arena floor positions, which lets the chassis settle about
+  // 0.1 m into the surface and balance on one point. A bounded, purely
+  // corrective push along the support normal restores the resting height and
+  // removes that wobble. It only ever lifts a sunk chassis, so it cannot add
+  // energy to a jump, a landing, or an airborne car.
+  let rideHeightDeltaVelocity: ControllerVector3 = ZERO_VECTOR;
+  const rideHeight = context.rideHeight;
+  if (
+    rideHeight !== undefined
+    && rideHeight !== null
+    && context.observation.grounded === true
+    && Number.isFinite(rideHeight.gap)
+    && rideHeight.gap < 0
+  ) {
+    const normal = finiteVector(rideHeight.normal);
+    if (normal !== null) {
+      const unitNormal = normalizeVector(normal);
+      if (unitNormal !== null) {
+        const penetration = Math.min(-rideHeight.gap, RIDE_HEIGHT_MAX_CORRECTION);
+        const closingSpeed = dot(projectedVelocity, unitNormal);
+        const targetSpeed = Math.min(
+          penetration * RIDE_HEIGHT_RESPONSE,
+          RIDE_HEIGHT_MAX_SPEED,
+        );
+        const requiredSpeed = targetSpeed - closingSpeed;
+        if (requiredSpeed > 0) {
+          rideHeightDeltaVelocity = scale(unitNormal, requiredSpeed);
+          projectedVelocity = add(projectedVelocity, rideHeightDeltaVelocity);
+          deltaVelocity = add(deltaVelocity, rideHeightDeltaVelocity);
+        }
+      }
+    }
+  }
+
   return {
     localForward,
     forwardSpeed,
@@ -1098,6 +1155,7 @@ export function planCarControllerCommand(
     appliedPropulsionDeltaVelocity,
     dragDeltaVelocity,
     lateralGripDeltaVelocity,
+    rideHeightDeltaVelocity,
     deltaVelocity,
     angularDeltaVelocity: finalAngularDeltaVelocity,
     propulsionProjectedVelocity,

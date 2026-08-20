@@ -130,6 +130,13 @@ export interface AuthoritativeGroundingResult {
   readonly grounded: boolean;
   readonly basis: AuthoritativeSurfaceBasis | null;
   readonly recoveryBasis?: AuthoritativeSurfaceBasis | null;
+  /** Optional signed ride-height reading along the support normal. */
+  readonly rideHeight?: AuthoritativeRideHeight | null;
+}
+
+export interface AuthoritativeRideHeight {
+  readonly gap: number;
+  readonly normal: AuthoritativeVector3;
 }
 
 export interface AuthoritativeCarStepContext<TWorld, TCar, TBall>

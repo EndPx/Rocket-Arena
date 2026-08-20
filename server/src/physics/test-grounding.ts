@@ -15,6 +15,7 @@ import {
   ArenaSurfaceRegistry,
   createSurfaceRelativeBasis,
   detectGroundSupport,
+  probeRideHeight,
   projectSurfaceCommand,
   type GroundingQuaternion,
   type GroundingTuningSnapshot,
@@ -258,6 +259,106 @@ function runArenaSupportCases(): void {
   }
 }
 
+/**
+ * The ride-height probe must stay signed on both sides of the resting height.
+ * The support rays alone cannot do this: they start at the support points, so a
+ * chassis that has sunk into a surface reports a zero-distance hit and the depth
+ * is lost. Signed readings are what let the controller hold the resting height
+ * instead of trusting Rapier's contact manifold.
+ */
+function runRideHeightProbeCases(): void {
+  const world = createTrackedWorld();
+  let arena: ReturnType<typeof createArenaColliders> | null = null;
+  try {
+    arena = createArenaColliders(world, ARENA_COLLISION_GEOMETRY);
+    const registry = arena.registry;
+
+    const restingProbe = createProbe(world, { x: 0, y: CAR_HALF_HEIGHT, z: 0 });
+    world.updateSceneQueries();
+    const resting = probeRideHeight(world, restingProbe, registry);
+    assert.ok(resting, 'a resting chassis must produce a ride-height reading');
+    assert.ok(
+      Math.abs(resting.gap) <= 1e-3,
+      `resting gap must be about zero, received ${resting.gap}`,
+    );
+    assertApproximately(resting.normal.y, 1, 'resting ride-height normal');
+    assert.equal(resting.samples, 4, 'every support point must contribute');
+
+    const hoverHeight = 0.12;
+    restingProbe.setTranslation({ x: 0, y: CAR_HALF_HEIGHT + hoverHeight, z: 0 }, true);
+    world.updateSceneQueries();
+    const hovering = probeRideHeight(world, restingProbe, registry);
+    assert.ok(hovering, 'a hovering chassis within probe range must still read');
+    assert.ok(
+      Math.abs(hovering.gap - hoverHeight) <= 1e-3,
+      `hovering gap must be positive and equal the clearance, received ${hovering.gap}`,
+    );
+
+    const sinkDepth = 0.1;
+    restingProbe.setTranslation({ x: 0, y: CAR_HALF_HEIGHT - sinkDepth, z: 0 }, true);
+    world.updateSceneQueries();
+    const sunk = probeRideHeight(world, restingProbe, registry);
+    assert.ok(sunk, 'a sunk chassis must still produce a reading');
+    assert.ok(
+      Math.abs(sunk.gap + sinkDepth) <= 1e-3,
+      `sunk gap must be negative and equal the depth, received ${sunk.gap}`,
+    );
+
+    restingProbe.setTranslation({ x: 0, y: 12, z: 0 }, true);
+    world.updateSceneQueries();
+    assert.equal(
+      probeRideHeight(world, restingProbe, registry),
+      null,
+      'an airborne chassis must produce no ride-height reading',
+    );
+
+    // A rotated chassis on the lower ramp must read along its own local down.
+    const rampProfile = ARENA_COLLISION_GEOMETRY.profiles.floorWall;
+    const segmentIndex = 3;
+    const currentSample = rampProfile.samples[segmentIndex]!;
+    const nextSample = rampProfile.samples[segmentIndex + 1]!;
+    const rampPitch = Math.atan2(
+      nextSample.up - currentSample.up,
+      nextSample.outward - currentSample.outward,
+    );
+    const rampNormal = { x: -Math.sin(rampPitch), y: Math.cos(rampPitch), z: 0 };
+    const rampPoint = {
+      x: ARENA_COLLISION_GEOMETRY.bounds.max[0] - rampProfile.run
+        + (currentSample.outward + nextSample.outward) / 2,
+      y: (currentSample.up + nextSample.up) / 2,
+      z: 0,
+    };
+    const rampProbe = createProbe(world, {
+      x: rampPoint.x + rampNormal.x * CAR_HALF_HEIGHT,
+      y: rampPoint.y + rampNormal.y * CAR_HALF_HEIGHT,
+      z: 0,
+    }, rotationAroundZ(rampPitch));
+    world.updateSceneQueries();
+    const ramp = probeRideHeight(world, rampProbe, registry);
+    assert.ok(ramp, 'a chassis aligned to the ramp must produce a reading');
+    // The ramp is a chord-approximated curve and the chassis is longer than one
+    // segment, so only bounded finiteness is meaningful here. Exact signed
+    // behaviour is pinned by the flat-floor cases above.
+    assert.ok(
+      Number.isFinite(ramp.gap) && Math.abs(ramp.gap) <= 0.5,
+      `ramp gap must stay finite and bounded, received ${ramp.gap}`,
+    );
+    assert.ok(
+      [ramp.normal.x, ramp.normal.y, ramp.normal.z].every(Number.isFinite),
+      'ramp ride-height normal must be finite',
+    );
+    assertApproximately(
+      Math.hypot(ramp.normal.x, ramp.normal.y, ramp.normal.z),
+      1,
+      'ramp ride-height normal magnitude',
+    );
+    assert.ok(ramp.samples >= 1, 'at least one support point must contribute on the ramp');
+  } finally {
+    arena?.dispose();
+    freeTrackedWorld(world);
+  }
+}
+
 function runAdjacentAndConfiguredCases(): void {
   const adjacentWorld = createTrackedWorld();
   try {
@@ -450,6 +551,7 @@ function assertSetupFailureCleanup(): void {
 async function main(): Promise<void> {
   await initPhysics();
   runArenaSupportCases();
+  runRideHeightProbeCases();
   runAdjacentAndConfiguredCases();
   runFilteringCases();
   assertStandaloneBasisFallback();

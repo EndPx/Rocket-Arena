@@ -25,7 +25,7 @@ import {
   synchronizeCarJumpAirState,
   type CarJumpAirState,
 } from '../physics/car-controller.js';
-import { detectGroundSupport } from '../physics/grounding.js';
+import { detectGroundSupport, probeRideHeight } from '../physics/grounding.js';
 import { createWorld, initPhysics } from '../physics/world.js';
 import {
   advanceGoalCrossing,
@@ -242,10 +242,21 @@ export async function initializeAuthoritativeRapierWorld(
             maximumDriveableSlopeDegrees: 60,
           },
         );
+        // Measured separately from the support rays because those start at the
+        // support points and cannot report how deep a sunk chassis has gone.
+        const rideHeight = result.grounded
+          ? probeRideHeight(authoritativeWorld, car.body, surfaces, {
+            tuning: roomTuning,
+            maximumDriveableSlopeDegrees: 60,
+          })
+          : null;
         return Object.freeze({
           grounded: result.grounded,
           basis: result.basis,
           recoveryBasis: result.recoveryBasis,
+          rideHeight: rideHeight === null
+            ? null
+            : Object.freeze({ gap: rideHeight.gap, normal: rideHeight.normal }),
         } satisfies AuthoritativeGroundingResult);
       },
       prepareCarCommand: ({
@@ -283,6 +294,7 @@ export async function initializeAuthoritativeRapierWorld(
           timestepSeconds: fixedStepSeconds,
           uprightRecoveryEnabled: true,
           uprightRecoveryBasis: grounding.recoveryBasis ?? grounding.basis,
+          rideHeight: grounding.rideHeight ?? null,
           jumpAir: {
             state: car.jumpAirState,
             fixedStepIndex,
