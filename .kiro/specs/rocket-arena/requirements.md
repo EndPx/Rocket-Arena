@@ -308,7 +308,9 @@ The current source uses one shared four-player/two-per-team limit for both room 
 5. WHILE the accepted first-jump control remains continuously held and elapsed authoritative simulation time since acceptance is less than the configured Jump_Hold duration, THE Car_Controller SHALL apply the configured finite Jump_Hold force along the Local_Roof_Axis during each Fixed_Step.
 6. IF the accepted first-jump control is released or elapsed authoritative simulation time reaches the configured Jump_Hold duration, THEN THE Car_Controller SHALL apply zero further Jump_Hold force for the accepted first-jump edge.
 7. WHILE a car is airborne and second-jump availability is unconsumed, WHEN an unconsumed jump Input_Edge_Sequence is accepted at an elapsed time no greater than Second_Jump_Window and directional-input magnitude is below the configured deadzone, THE Car_Controller SHALL apply exactly one bounded second jump without Directional_Flip actuation and consume second-jump availability.
-8. WHILE a car is airborne and second-jump availability is unconsumed, WHEN an unconsumed jump Input_Edge_Sequence is accepted at an elapsed time no greater than Second_Jump_Window and directional-input magnitude reaches the configured deadzone, THE Car_Controller SHALL begin exactly one Directional_Flip in the requested local direction and consume second-jump availability.
+8. WHILE a car is airborne and second-jump availability is unconsumed, WHEN an unconsumed jump Input_Edge_Sequence is accepted at an elapsed time no greater than Second_Jump_Window and directional-input magnitude reaches the configured deadzone and Directional_Flip_Intent is satisfied, THE Car_Controller SHALL begin exactly one Directional_Flip in the requested local direction and consume second-jump availability.
+   - THE Car_Controller SHALL treat Directional_Flip_Intent as satisfied only when directional-input magnitude has continuously reached the configured Directional_Flip_Intent threshold for at least the configured Directional_Flip_Intent step count immediately preceding the accepted jump Input_Edge_Sequence.
+   - IF Directional_Flip_Intent is not satisfied at an accepted second-jump edge, THEN THE Car_Controller SHALL apply exactly one bounded second jump without Directional_Flip actuation and consume second-jump availability, so a brief directional tap cannot flip.
 9. IF a new jump Input_Edge_Sequence occurs after Second_Jump_Window or after second-jump availability is consumed without an intervening Valid_Ground_Surface contact, THEN THE Car_Controller SHALL consume the Input_Edge_Sequence without applying an additional second jump or Directional_Flip and preserve the current jump-window start times.
 10. WHILE a Directional_Flip is active, THE Car_Controller SHALL limit flip actuation to Flip_Actuation_Window.
 11. WHEN elapsed authoritative simulation time since a Directional_Flip began reaches Flip_Actuation_Window, THE Car_Controller SHALL stop flip actuation and keep second-jump availability consumed until Valid_Ground_Surface contact.
@@ -344,7 +346,7 @@ The current source uses one shared four-player/two-per-team limit for both room 
 
 #### Acceptance Criteria
 
-1. THE Ball_System SHALL use a ball radius of exactly `0.9125 m`.
+1. THE Ball_System SHALL use a ball radius of exactly `1.8 m`.
 2. THE Ball_System SHALL use a ball mass of exactly `25 kg`.
 3. THE Ball_System SHALL use a restitution coefficient of exactly `0.60`.
 4. WHEN a Fixed_Step completes, THE Ball_System SHALL leave ball angular-speed magnitude at or below `6 rad/s`.
@@ -421,7 +423,9 @@ The current source uses one shared four-player/two-per-team limit for both room 
 2. WHEN a car is placed for a Kickoff_Epoch, THE Boost_System SHALL initialize the car's Boost_Inventory to exactly 33.
 3. WHILE valid boost input is held during Active_Play and Boost_Inventory is greater than zero, THE Boost_System SHALL consume boost at `33.3` units per second using Fixed_Step elapsed time.
 4. WHEN remaining Boost_Inventory is less than one Fixed_Step consumption amount, THE Boost_System SHALL consume only the remaining amount and clamp Boost_Inventory to zero.
-5. WHILE no pickup or kickoff initialization occurs, THE Boost_System SHALL preserve Boost_Inventory without passive recharge.
+5. WHILE boost has been consumed since the current Kickoff_Epoch and no valid boost input is held, THE Boost_System SHALL wait `1.25` seconds of authoritative simulation time and then regenerate Boost_Inventory at `12` units per second using Fixed_Step elapsed time, clamped to 100.
+   - WHILE no boost has been consumed since the current Kickoff_Epoch, THE Boost_System SHALL preserve Boost_Inventory without passive regeneration.
+   - WHILE valid boost input is held and Boost_Inventory is zero, THE Boost_System SHALL apply no regeneration for that Fixed_Step.
 6. THE Arena_System SHALL provide exactly 6 Large_Boost_Pad values for the completed boost-pad target.
 7. THE Arena_System SHALL provide exactly 28 Small_Boost_Pad values for the completed boost-pad target.
 8. WHEN a car collects an active Large_Boost_Pad, THE Boost_System SHALL add 100 units, clamp Boost_Inventory to 100, and deactivate the collected pad exactly once.

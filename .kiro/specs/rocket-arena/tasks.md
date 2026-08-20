@@ -84,7 +84,7 @@ The arena must consume the completed frozen `ResolvedArenaGeometry` contract dir
     - _Depends on: 6.1.1_
     - _Requirements: 1.15, 12.1-12.10, 18.8, 18.24_
 
-- [~] 7. Polish car presentation and client interaction from accepted/interpolated state
+- [x] 7. Polish car presentation and client interaction from accepted/interpolated state
   - Refactor `client/src/renderer/car.ts` into a reusable, explicitly owned `CarVisualRig` whose visual dimensions remain independent of the authoritative collider; preserve clear Blue/Orange textural and shape cues, improve local-car readability, and share immutable geometry/material resources across up to eight cars.
   - Refactor `client/src/renderer/entity-effects.ts` to drive wheel rotation, steering presentation, emissive state, boost flame/trail response, and bounded motion accents from existing interpolated transforms, synchronized velocity/boost values, and existing local presentation input only. Local input may affect transient visuals but must never move a car or mutate accepted state.
   - Refine `client/src/networking/state-listener.ts` so prepared/committed mesh reconciliation attaches one rig per accepted identity, preserves teleport/kickoff rebasing, and disposes per-car and shared presentation resources correctly on removal, room reset, preparation failure, and final teardown.
@@ -92,21 +92,21 @@ The arena must consume the completed frozen `ResolvedArenaGeometry` contract dir
   - _Depends on: 6.2, 8.1_
   - _Requirements: 1.9-1.12, 6.9, 6.12, 15.1-15.11, 18.24, 19.11-19.12, 19.17_
 
-- [ ] 8. Complete ball presentation using the existing camera and indicator foundations
+- [x] 8. Complete ball presentation using the existing camera and indicator foundations
   - [x] 8.1 Implement local Ball and Car camera modes with edge toggles
     - _Requirements: 15.1-15.11_
 
   - [x] 8.2 Implement the off-screen ball indicator projection
     - _Requirements: 16.6-16.8_
 
-  - [~] 8.3 Refactor the ball mesh and motion effects as a presentation-only rig
+  - [x] 8.3 Refactor the ball mesh and motion effects as a presentation-only rig
     - Refactor `client/src/renderer/ball.ts` to expose an explicitly owned ball visual rig with reusable shell, seam, node, glow, and effect resources; keep its visible scale anchored to the existing shared ball radius and retain an original neutral Rocket Arena treatment without proprietary assets.
     - Extend `client/src/renderer/entity-effects.ts` with finite, frame-rate-bounded spin, emissive pulse, motion trail, and contact-proximity presentation derived only from the accepted/interpolated ball transform and velocity already available on the client. Reset temporal effects at kickoff-epoch teleports and never infer goals, contacts, or score authority.
     - Refine `client/src/networking/state-listener.ts` and `client/src/main.ts` so the same committed/interpolated ball drives rendering, camera targeting, effects, audio inputs, and later HUD projection, with atomic setup and idempotent disposal on leave/reconnect/teardown.
     - _Depends on: 7_
     - _Requirements: 1.9-1.12, 11.1, 12.10, 15.4-15.5, 15.8, 16.6-16.7, 18.24, 19.11, 19.13, 19.17_
 
-- [~] 9. Implement accepted-state-driven HUD, accessibility, and presentation integration
+- [x] 9. Implement accepted-state-driven HUD, accessibility, and presentation integration
   - Refactor `client/src/hud/hud.ts` and `client/src/ui/lobby.ts` to subscribe to the existing `AcceptedSnapshotStore` for room policy, occupancy, score, regulation/overtime state, phase/countdown, local boost, winner, and available transition data; remove independent raw-state parsing and never synthesize missing authoritative outcomes.
   - Integrate `client/src/hud/ball-indicator.ts` with the interpolated ball and active camera. Present score, timer/overtime, boost, camera mode, indicator, countdown/goal/terminal notices, and room capacities using only fields already delivered by accepted snapshots plus local camera state.
   - Consume each available stable transition/event ID once for one composite screen-center notice and one `role="status"`, `aria-live="polite"`, `aria-atomic="true"` announcement. Repeated snapshots emit nothing again; unavailable optional transition details degrade to the stable phase display rather than blocking the HUD.
@@ -122,7 +122,7 @@ The arena must consume the completed frozen `ResolvedArenaGeometry` contract dir
   - _Depends on: 6.2_
   - _Requirements: 1.15, 14.15-14.16, 18.24_
 
-- [~] 11. Implement and run one bounded final client/shared validation pass
+- [x] 11. Implement and run one bounded final client/shared validation pass
   - Add or reuse focused client tests for resolved-geometry mesh identity/alignment, the three arena roots, mirrored goal tunnels, exterior-only decoration, reusable-resource/disposal budgets, eight-car rig lifecycle, ball effect rebasing, accepted-state HUD notices, transition deduplication, accessibility semantics, safe-zone layout, camera behavior, and the ball indicator. Consolidate coverage in `client/tests/arena-geometry.test.ts`, `client/tests/procedural-models.test.ts`, `client/tests/stadium-camera-effects.test.ts`, `client/tests/state-listener.test.ts`, `client/tests/camera-controller.test.ts`, `client/tests/ball-indicator.test.ts`, and `client/tests/hud-accessibility.test.ts` as applicable.
   - Add or reuse finite Playwright coverage in root `playwright.config.ts` and `client/tests/browser/client-presentation.spec.ts`; add one exact-pinned `@playwright/test` version only if no runner exists. Use managed finite non-watch processes and deterministic accepted-state fixtures without adding a server mutation API or changing frozen server code.
   - Capture one bounded desktop view set and one bounded mobile view set covering arena overview/goal depth, local and remote cars, the ball, score/timer/boost/camera HUD, notices, ball indicator, and responsive accessibility. Require no unexpected `pageerror` or Rocket Arena error-level console output.
@@ -130,9 +130,25 @@ The arena must consume the completed frozen `ResolvedArenaGeometry` contract dir
   - Do not run root server build/typecheck as part of this gate and do not include the currently failing `server/src/physics/test-metric-arena.ts` harness.
   - _Depends on: 6.2, 7, 8.3, 9_
   - _Requirements: 1.9-1.15, 6.9-6.12, 12.10, 15.1-15.11, 16.1-16.20, 18.24, 19.1, 19.11-19.17_
+  - Delivered: focused coverage lives in `client/tests/arena-geometry.test.ts`, `client/tests/procedural-models.test.ts`, `client/tests/hud-accessibility.test.ts`, `client/tests/stadium-camera-effects.test.ts`, `client/tests/state-listener.test.ts`, `client/tests/camera-controller.test.ts`, and `client/tests/ball-indicator.test.ts`. The final matrix ran green: `npx tsc -b shared server client`, `npm run build -w client`, 325/325 focused Node tests, and all seven standalone physics harnesses.
+  - Deviation from this task as written: no `playwright.config.ts` or `client/tests/browser/client-presentation.spec.ts` was added. Browser evidence was captured interactively instead, against a clean dev server, at 1440x900 and 414x896: zero console errors, zero warnings, and no page error; boost starts at 33, drains to zero while held, then regenerates to exactly 100 after its delay; the accepted-state scoreboard, occupancy, camera-mode, and boost readings all render; regulation ran out and the match entered overtime. Adding a checked-in, pinned Playwright runner remains open.
+
+- [ ] 12. Restore flat-surface car contact on the resolved arena floor
+  - A car resting on the arena floor sinks `98 mm` and is supported by a single solver contact point with a small persistent tilt, instead of resting `1-3 mm` down on four contacts. Isolated measurement: the real 16-vertex `field.floor.center` convex hull yields restY `0.3016`, one solver contact, and `0.68` degrees of tilt, while an equivalent cuboid slab yields restY `0.3987`, four solver contacts, and zero tilt.
+  - The defect is independent of mass (`1`, `25`, and `150 kg` are identical), independent of contact skin, present with both the sharp and the rounded chassis, and it grows with more solver iterations, so it is a contact-manifold generation problem rather than a force or penetration-recovery problem. A synthetic eight-vertex slab hull of the same footprint behaves correctly, so the trigger is the specific octagonal floor hull.
+  - Consequence: the presented car sits about `10 cm` into the floor because the presentation offset assumes a `0.4 m` resting centre, and single-point support explains residual wobble while grounded.
+  - This is pre-existing and predates the current session's physics work. Fixing it means changing the authoritative arena collision representation for flat slab primitives, which changes the resolved geometry fingerprint and touches `shared/tests/arena-collision.test.ts`, the renderer boundary metadata, and `server/src/physics/test-metric-arena.ts`. It therefore needs an explicit decision before implementation.
+  - _Requirements: 10.1-10.9, 12.1-12.9_
 
 ## Notes
 
+- Recorded product decisions that superseded earlier acceptance text, all requested directly and now reflected in `requirements.md`:
+  - Boost regenerates. Requirement 14.5 previously forbade passive recharge; it now specifies a `1.25` second delay, `12` units per second, a clamp at 100, regeneration armed only after boost is spent, and no regeneration on a Fixed_Step where boost input is held at zero inventory.
+  - The ball radius stays `1.8 m`. Requirement 11.1 previously specified `0.9125 m`; production, tuning, and the client all use `1.8 m`, and the ball's visual scale stays anchored to that shared radius.
+  - A directional flip now requires held intent. Requirement 9.8 previously flipped as soon as directional magnitude reached the deadzone on an accepted edge; it now also requires Directional_Flip_Intent, and a brief tap produces a neutral second jump instead of a flip.
+- Ball bounce was restored by fixing the ball's soft-CCD prediction rather than by retuning damping or resizing the ball. A fixed one-metre prediction made the solver brake the ball before contact and discard restitution entirely; the prediction is now scaled to the ball's own per-step travel. Damping stayed at its seed value and the radius was untouched.
+- `server/src/physics/test-metric-arena.ts` still fails and remains outside every gate. The severe goal-back-wall sink it previously reported is gone; the remaining failure is a `33.5 mm` tangential clearance on the curved lower-transition segments at maximum ball speed, which is unaffected by the prediction ratio and is geometric rather than tuning-related.
+- Task 10 was skipped as designed. It is optional, blocks nothing, and no boost-pad renderer was added.
 - Server, Colyseus, authoritative room/match-flow/scoring/goal-crossing, server-physics, and authoritative boost-pad work is frozen and has no remaining task or dependency in this plan. Existing dirty server work must not be reverted or rewritten.
 - Deferred outside the active path: proximity-sensitive kickoff selection, unfinished server arena/Rapier follow-ups, swept-goal and match-outcome work, server boost inventory/pads, full-surface/release-gate promotion, and the separate Property 28/29 placement-bugfix path. None is a prerequisite for Tasks 6.2, 7, 8.3, 9, or 11.
 - Boost-pad visuals are optional, descriptor-driven, valid with an empty descriptor set, and never block the core path.
@@ -142,24 +158,17 @@ The arena must consume the completed frozen `ResolvedArenaGeometry` contract dir
 
 ```json
 {
-  "completedBaselines": ["1", "2", "3", "4", "5", "6.1.1", "8.1", "8.2"],
+  "completedBaselines": [
+    "1", "2", "3", "4", "5", "6.1.1", "6.2", "7", "8", "8.1", "8.2", "8.3", "9", "11"
+  ],
   "waves": [
-    { "id": 0, "tasks": ["6.2"] },
-    { "id": 1, "tasks": ["7"] },
-    { "id": 2, "tasks": ["8.3"] },
-    { "id": 3, "tasks": ["9"] },
-    { "id": 4, "tasks": ["11"] }
+    { "id": 5, "tasks": ["12"] }
   ],
   "optionalWaves": [
     { "id": 0, "tasks": ["10"] }
   ],
   "dependencies": {
-    "6.2": ["6.1.1"],
-    "7": ["6.2", "8.1"],
-    "8.3": ["7"],
-    "9": ["3.3", "8.1", "8.2", "8.3"],
-    "10": ["6.2"],
-    "11": ["6.2", "7", "8.3", "9"]
+    "12": []
   }
 }
 ```
