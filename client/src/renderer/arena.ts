@@ -7,6 +7,11 @@ import {
   type ResolvedArenaGeometry,
   type ResolvedArenaGoalRegion,
 } from '@rocket-arena/shared';
+import {
+  createDaylightExteriorPresentation,
+  createDaylightGameplayPresentation,
+  type ArenaPresentationResources,
+} from './arena-presentation.js';
 
 export interface ArenaPadDescriptor {
   readonly id: string;
@@ -41,12 +46,7 @@ export interface ArenaOwnership {
   dispose(): void;
 }
 
-interface ResourceOwnership {
-  readonly geometries: Set<THREE.BufferGeometry>;
-  readonly materials: Set<THREE.Material>;
-  ownGeometry<T extends THREE.BufferGeometry>(geometry: T): T;
-  ownMaterial<T extends THREE.Material>(material: T): T;
-}
+interface ResourceOwnership extends ArenaPresentationResources {}
 
 interface StadiumAnchors {
   readonly centerX: number;
@@ -80,9 +80,11 @@ const INSTANCE_MATRIX = new THREE.Matrix4();
 function createResourceOwnership(): ResourceOwnership {
   const geometries = new Set<THREE.BufferGeometry>();
   const materials = new Set<THREE.Material>();
+  const textures = new Set<THREE.Texture>();
   return {
     geometries,
     materials,
+    textures,
     ownGeometry<T extends THREE.BufferGeometry>(geometry: T): T {
       geometries.add(geometry);
       return geometry;
@@ -90,6 +92,10 @@ function createResourceOwnership(): ResourceOwnership {
     ownMaterial<T extends THREE.Material>(material: T): T {
       materials.add(material);
       return material;
+    },
+    ownTexture<T extends THREE.Texture>(texture: T): T {
+      textures.add(texture);
+      return texture;
     },
   };
 }
@@ -164,51 +170,49 @@ function createBoundaryMaterials(
 ): Readonly<Record<ArenaBoundaryMaterialRole, THREE.Material>> {
   return Object.freeze({
     'field-floor': resources.ownMaterial(new THREE.MeshStandardMaterial({
-      color: VISUAL.PALETTE.FIELD_BASE,
-      roughness: 0.8,
-      metalness: 0.08,
+      color: 0x155c35,
+      roughness: 0.88,
+      metalness: 0,
       polygonOffset: true,
       polygonOffsetFactor: 1,
       polygonOffsetUnits: 1,
     })),
     'field-lower-transition': resources.ownMaterial(new THREE.MeshStandardMaterial({
-      color: 0x172633,
-      roughness: 0.7,
-      metalness: 0.2,
+      color: 0x25333a,
+      roughness: 0.64,
+      metalness: 0.34,
       side: THREE.FrontSide,
     })),
     'field-containment': resources.ownMaterial(new THREE.MeshPhysicalMaterial({
-      color: 0x74a7b8,
-      roughness: 0.08,
-      metalness: 0.12,
+      color: 0xb8e7f2,
+      roughness: 0.05,
+      metalness: 0.04,
+      transmission: 0.12,
       transparent: true,
-      opacity: VISUAL.STADIUM.PERIMETER.UPPER_GLASS_OPACITY,
+      opacity: 0.2,
       depthWrite: false,
       side: THREE.FrontSide,
     })),
     'field-ceiling': resources.ownMaterial(new THREE.MeshPhysicalMaterial({
-      color: 0x608590,
-      roughness: 0.1,
-      metalness: 0.1,
+      color: 0xc8edf5,
+      roughness: 0.06,
+      metalness: 0.03,
+      transmission: 0.16,
       transparent: true,
-      opacity: VISUAL.STADIUM.PERIMETER.UPPER_GLASS_OPACITY * 0.72,
+      opacity: 0.13,
       depthWrite: false,
       side: THREE.FrontSide,
     })),
     'blue-goal': resources.ownMaterial(new THREE.MeshStandardMaterial({
-      color: 0x183b61,
-      emissive: VISUAL.PALETTE.BLUE,
-      emissiveIntensity: 0.28,
-      roughness: 0.46,
-      metalness: 0.42,
+      color: 0x17252e,
+      roughness: 0.56,
+      metalness: 0.48,
       side: THREE.FrontSide,
     })),
     'orange-goal': resources.ownMaterial(new THREE.MeshStandardMaterial({
-      color: 0x63301b,
-      emissive: VISUAL.PALETTE.ORANGE,
-      emissiveIntensity: 0.28,
-      roughness: 0.46,
-      metalness: 0.42,
+      color: 0x2b2420,
+      roughness: 0.56,
+      metalness: 0.48,
       side: THREE.FrontSide,
     })),
   });
@@ -1067,7 +1071,7 @@ export function createArena(
     materials,
   );
   const anchors = createStadiumAnchors(resolvedGeometry);
-  const animatedGoalMaterials = createGameplayOverlays(
+  const animatedGoalMaterials = createDaylightGameplayPresentation(
     gameplayOverlays,
     resolvedGeometry,
     boundaryGeometries,
@@ -1078,7 +1082,7 @@ export function createArena(
   // Pad rendering is deliberately outside Task 6.2. Empty and non-empty immutable
   // descriptor lists create no placeholder or implied collectable geometry here.
   const retainedPadDescriptors = Object.freeze([...padDescriptors]);
-  const exteriorAnimation = createExteriorPresentation(
+  const exteriorAnimation = createDaylightExteriorPresentation(
     exteriorPresentation,
     resolvedGeometry,
     resources,
@@ -1109,7 +1113,11 @@ export function createArena(
       const finiteDelta = Number.isFinite(deltaSeconds) ? THREE.MathUtils.clamp(deltaSeconds, 0, 0.1) : 0;
       exteriorAnimation.atmosphere.rotation.y = Math.sin(finiteElapsed * 0.025) * 0.012;
       exteriorAnimation.flags.rotation.z = Math.sin(finiteElapsed * 0.7) * 0.006;
-      const pulse = 0.82 + Math.sin(finiteElapsed * 2.2) * 0.12 + finiteDelta * 0;
+      const pulse = THREE.MathUtils.clamp(
+        2.72 + Math.sin(finiteElapsed * 2.05) * 0.22 + finiteDelta * 0.08,
+        2.45,
+        3.05,
+      );
       for (const material of animatedGoalMaterials) material.emissiveIntensity = pulse;
     },
     dispose(): void {
@@ -1123,8 +1131,10 @@ export function createArena(
       exteriorPresentation.clear();
       for (const geometry of resources.geometries) geometry.dispose();
       for (const material of resources.materials) material.dispose();
+      for (const texture of resources.textures) texture.dispose();
       resources.geometries.clear();
       resources.materials.clear();
+      resources.textures.clear();
     },
   };
   return ownership;

@@ -1,4 +1,9 @@
+import { ARENA } from '../constants/arena.js';
 import { TUNING_IDS } from '../tuning/model.js';
+import {
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  getScalarTuningValue,
+} from '../tuning/registry.js';
 import type { Team } from '../types/room.js';
 import { ARENA_GEOMETRY_SPEC } from './arena-spec.js';
 
@@ -99,6 +104,13 @@ export class InvalidKickoffSlotTableError extends Error {
 const ORIGIN = Object.freeze([0, 0, 0] as const);
 const QUATERNION_UNIT_TOLERANCE = 1e-9;
 const CONTAINMENT_TOLERANCE_METERS = 1e-9;
+const DEFAULT_KICKOFF_CENTER_Y = (
+  getScalarTuningValue(
+    DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+    TUNING_IDS.car.collider.height,
+  ) / 2
+  + ARENA.KICKOFF.SPAWN_CLEARANCE
+);
 
 function fail(code: KickoffSlotValidationCode, message: string): never {
   throw new InvalidKickoffSlotTableError(code, message);
@@ -160,10 +172,10 @@ function rotationFacingCenter(position: Vector3Tuple): QuaternionTuple {
  * unique-spawn positions, not as a claim of exact Rocket League proximity.
  */
 const CANONICAL_BLUE_POSITIONS = Object.freeze([
-  freezeVector3([-16, 0.26, -34]),
-  freezeVector3([16, 0.26, -34]),
-  freezeVector3([-6, 0.26, -42]),
-  freezeVector3([6, 0.26, -42]),
+  freezeVector3([-16, DEFAULT_KICKOFF_CENTER_Y, -34]),
+  freezeVector3([16, DEFAULT_KICKOFF_CENTER_Y, -34]),
+  freezeVector3([-6, DEFAULT_KICKOFF_CENTER_Y, -42]),
+  freezeVector3([6, DEFAULT_KICKOFF_CENTER_Y, -42]),
 ] as const);
 
 export const BLUE_KICKOFF_SLOTS: readonly KickoffSlot[] = Object.freeze(

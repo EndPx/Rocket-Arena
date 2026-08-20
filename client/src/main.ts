@@ -37,7 +37,7 @@ import type { Room } from 'colyseus.js';
 const app = document.getElementById('app')!;
 const { renderer, scene, camera } = initScene(app);
 const resolvedArenaGeometry = RESOLVED_ARENA_GEOMETRY;
-createLighting(scene);
+createLighting(scene, resolvedArenaGeometry);
 const arena = createArena(scene, resolvedArenaGeometry);
 createHUD();
 initializeAudio();

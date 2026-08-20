@@ -3,6 +3,7 @@ import test from 'node:test';
 import * as THREE from 'three';
 import { RESOLVED_ARENA_GEOMETRY, VISUAL } from '@rocket-arena/shared';
 import { createArena, type ArenaBoundaryMeshMetadata } from '../src/renderer/arena.js';
+import { DAYLIGHT_SCENE_STYLE } from '../src/renderer/arena-style.js';
 import { createLighting } from '../src/renderer/lighting.js';
 import { createCarMesh, type CarVisualRig } from '../src/renderer/car.js';
 import {
@@ -16,12 +17,16 @@ import {
   updateCarVisualRig,
 } from '../src/renderer/entity-effects.js';
 
-test('stadium maps resolved primitives into three explicitly owned presentation roots', () => {
+test('stadium preserves authoritative geometry while batching the daylight presentation', () => {
   const scene = new THREE.Scene();
   const arena = createArena(scene, RESOLVED_ARENA_GEOMETRY);
   const floorPrimitive = RESOLVED_ARENA_GEOMETRY.primitives.find(({ id }) => id === 'field.floor.center');
   assert.ok(floorPrimitive);
   const field = arena.getObjectByName(`arena-boundary:${floorPrimitive.id}`) as THREE.Mesh;
+  const turf = arena.getObjectByName(`procedural-pbr-turf:${floorPrimitive.id}`) as THREE.Mesh;
+  const cageFacets = arena.getObjectByName('batched-cage-faceted-overlay');
+  const cageMullions = arena.getObjectByName('batched-cage-major-mullions');
+  const serviceDeckHexes = arena.getObjectByName('batched-service-deck-hex-lines');
   const seats = arena.getObjectByName('instanced-spectator-seats');
   const arches = arena.getObjectByName('instanced-stadium-arches');
   const lamps = arena.getObjectByName('instanced-floodlight-lamps');
@@ -57,45 +62,95 @@ test('stadium maps resolved primitives into three explicitly owned presentation 
   assert.ok(Object.isFrozen(metadata.seamIds));
   assert.ok(Object.isFrozen(metadata.geometryIdentity));
 
+  assert.ok(turf instanceof THREE.Mesh);
+  assert.ok(turf.material instanceof THREE.MeshStandardMaterial);
+  assert.equal(turf.material.name, 'procedural-pbr-turf-material');
+  assert.ok(turf.material.map instanceof THREE.DataTexture);
+  assert.ok(turf.material.roughnessMap instanceof THREE.DataTexture);
+  assert.notEqual(turf.material.map, turf.material.roughnessMap);
+  assert.equal(turf.material.map.colorSpace, THREE.SRGBColorSpace);
+  assert.ok(cageFacets instanceof THREE.LineSegments);
+  assert.ok(cageMullions instanceof THREE.LineSegments);
+  assert.ok(serviceDeckHexes instanceof THREE.LineSegments);
+  assert.equal(cageFacets.userData.arenaBoundary, undefined);
+  assert.equal(cageMullions.userData.arenaBoundary, undefined);
+  arena.gameplayOverlays.traverse((object) => assert.equal(object.userData.arenaBoundary, undefined));
+
   assert.ok(seats instanceof THREE.InstancedMesh);
   assert.equal(seats.count, expectedSeats);
   assert.ok(arches instanceof THREE.InstancedMesh);
   assert.equal(arches.count, VISUAL.STADIUM.STRUCTURE.ARCH_COUNT);
   assert.ok(lamps instanceof THREE.InstancedMesh);
-  assert.equal(
-    lamps.count,
-    2 * VISUAL.STADIUM.LIGHTS.BANKS_PER_SIDE * VISUAL.STADIUM.LIGHTS.LAMPS_PER_BANK,
-  );
+  assert.equal(lamps.count, 2 * VISUAL.STADIUM.LIGHTS.BANKS_PER_SIDE * VISUAL.STADIUM.LIGHTS.LAMPS_PER_BANK);
+  assert.ok(arena.getObjectByName('instanced-tier-fascia') instanceof THREE.InstancedMesh);
+  assert.ok(arena.getObjectByName('instanced-compression-ring') instanceof THREE.InstancedMesh);
+  assert.ok(arena.getObjectByName('instanced-roof-cross-bracing') instanceof THREE.InstancedMesh);
+  assert.ok(arena.getObjectByName('instanced-ribbon-floodlights') instanceof THREE.InstancedMesh);
+  assert.ok(arena.getObjectByName('instanced-skyline-window-bands') instanceof THREE.InstancedMesh);
   assert.ok(arena.getObjectByName('blue-goal-grid'));
   assert.ok(arena.getObjectByName('orange-goal-grid'));
+  assert.ok(arena.getObjectByName('blue-goal-dark-tunnel-floor'));
+  assert.ok(arena.getObjectByName('orange-goal-tunnel-ceiling-light-strips') instanceof THREE.InstancedMesh);
   assert.ok(arena.getObjectByName('blue-rocket-arena-scoreboard'));
   assert.ok(arena.getObjectByName('orange-rocket-arena-scoreboard'));
   assert.ok(arena.getObjectByName('instanced-rocket-arena-flags'));
   assert.ok(arena.getObjectByName('instanced-city-skyline'));
+  assert.ok(arena.getObjectByName('procedural-daylight-gradient-sky'));
   assert.equal(arena.exteriorPresentation.userData.presentationOnly, true);
   assert.equal(arena.getObjectByName('instanced-spectator-seats')?.userData.arenaBoundary, undefined);
 
+  const albedo = turf.material.map;
+  const roughness = turf.material.roughnessMap;
+  let albedoDisposals = 0;
+  let roughnessDisposals = 0;
+  albedo.dispose = () => { albedoDisposals += 1; };
+  roughness.dispose = () => { roughnessDisposals += 1; };
+
   arena.update(1 / 60, 1);
+  arena.update(Number.POSITIVE_INFINITY, Number.NaN);
+  const animatedGoalLight = (arena.getObjectByName('blue-goal-tunnel-ceiling-light-strips') as THREE.InstancedMesh).material;
+  assert.ok(animatedGoalLight instanceof THREE.MeshStandardMaterial);
+  assert.ok(Number.isFinite(animatedGoalLight.emissiveIntensity));
+  assert.ok(animatedGoalLight.emissiveIntensity >= 2.45 && animatedGoalLight.emissiveIntensity <= 3.05);
+
   arena.dispose();
   arena.dispose();
+  assert.equal(albedoDisposals, 1);
+  assert.equal(roughnessDisposals, 1);
   assert.equal(arena.disposed, true);
   assert.equal(arena.authoritativeBoundaries.parent, null);
   assert.equal(arena.gameplayOverlays.parent, null);
   assert.equal(arena.exteriorPresentation.parent, null);
 });
 
-test('lighting budget has one shadow caster and two team goal accents', () => {
+test('daylight rig derives goal accents from resolved goal records within the light budget', () => {
   const scene = new THREE.Scene();
-  const rig = createLighting(scene);
+  const rig = createLighting(scene, RESOLVED_ARENA_GEOMETRY);
   const lights: THREE.Light[] = [];
   rig.traverse((object) => {
     if (object instanceof THREE.Light) lights.push(object);
   });
 
   assert.equal(lights.filter((light) => light.castShadow).length, 1);
-  assert.ok(rig.getObjectByName('blue-goal-ambience') instanceof THREE.PointLight);
-  assert.ok(rig.getObjectByName('orange-goal-ambience') instanceof THREE.PointLight);
+  assert.equal(lights.length, 5);
+  for (const goal of RESOLVED_ARENA_GEOMETRY.goals) {
+    const light = rig.getObjectByName(`${goal.defendingTeam}-goal-ambience`);
+    assert.ok(light instanceof THREE.PointLight);
+    assert.equal(light.position.x, goal.opening.centerX);
+    assert.equal(light.position.y, goal.opening.bottomY + goal.opening.height * 0.55);
+    assert.equal(light.position.z, THREE.MathUtils.lerp(goal.goalLineZ, goal.backWallZ, 0.32));
+    assert.equal(light.castShadow, false);
+  }
   assert.ok(lights.length <= 5, `lighting budget unexpectedly grew to ${lights.length} lights`);
+});
+
+test('daylight scene configuration keeps the skyline bright and ahead of haze', () => {
+  const sky = new THREE.Color(DAYLIGHT_SCENE_STYLE.sky);
+  assert.ok(sky.getHSL({ h: 0, s: 0, l: 0 }).l > 0.45);
+  assert.ok(DAYLIGHT_SCENE_STYLE.exposure >= 1);
+  assert.ok(DAYLIGHT_SCENE_STYLE.fogNear >= 80);
+  assert.ok(DAYLIGHT_SCENE_STYLE.fogFar > DAYLIGHT_SCENE_STYLE.fogNear * 2);
+  assert.ok(DAYLIGHT_SCENE_STYLE.cameraFar > DAYLIGHT_SCENE_STYLE.fogFar);
 });
 
 test('camera damping is frame-rate independent and follow framing stays bounded', () => {

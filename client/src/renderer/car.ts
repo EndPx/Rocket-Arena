@@ -1,5 +1,22 @@
 import * as THREE from 'three';
-import { CAR, VISUAL } from '@rocket-arena/shared';
+import {
+  CAR,
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  getScalarTuningValue,
+  TUNING_IDS,
+  VISUAL,
+} from '@rocket-arena/shared';
+
+const DEFAULT_CAR_COLLIDER_HEIGHT = getScalarTuningValue(
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  TUNING_IDS.car.collider.height,
+);
+const CAR_VISUAL_WHEEL_RADIUS = CAR.BODY.HEIGHT * VISUAL.CAR.WHEEL.RADIUS_HEIGHT_RATIO;
+const CAR_VISUAL_WHEEL_CENTER_Y = -CAR.BODY.HEIGHT * 0.17;
+const CAR_PRESENTATION_Y_OFFSET = (
+  -DEFAULT_CAR_COLLIDER_HEIGHT / 2
+  - (CAR_VISUAL_WHEEL_CENTER_Y - CAR_VISUAL_WHEEL_RADIUS)
+);
 
 export interface ShellSection {
   z: number;
@@ -477,6 +494,12 @@ export function createCarMesh(team: string): THREE.Group {
     boostFlames.push(flame);
     boostTrails.push(trail);
   }
+
+  const presentationRoot = new THREE.Group();
+  presentationRoot.name = 'car-presentation-root';
+  presentationRoot.position.y = CAR_PRESENTATION_Y_OFFSET;
+  presentationRoot.add(...group.children);
+  group.add(presentationRoot);
 
   const rig: CarVisualRig = {
     wheelSpins,

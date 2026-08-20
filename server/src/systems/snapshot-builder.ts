@@ -3,14 +3,17 @@ import {
   ARENA_HALF_LENGTH_METERS,
   ARENA_HALF_WIDTH_METERS,
   COUNTDOWN_KINDS,
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
   GOAL_DEPTH_METERS,
   MATCH_PHASES,
   MATCH_RULES,
   SNAPSHOT_PROTOCOL_VERSION,
   TEAMS,
+  TUNING_IDS,
   createGoalResult,
   createSnapshotEnvelopeV2,
   createTerminalResult,
+  getScalarTuningValue,
   validateRoomPolicy,
   type BallSnapshot,
   type CarSnapshot,
@@ -31,7 +34,10 @@ const MAX_SAFE_SEQUENCE = Number.MAX_SAFE_INTEGER;
 const CAR_LINEAR_SPEED_LIMIT = 23.05;
 const BALL_LINEAR_SPEED_LIMIT = 60.05;
 const MAX_GOAL_RESET_SECONDS = 5;
-const BALL_FALLBACK_HEIGHT = 0.9125;
+const BALL_FALLBACK_HEIGHT = getScalarTuningValue(
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  TUNING_IDS.ball.radius,
+);
 
 export const SNAPSHOT_FIELD_BOUNDS = Object.freeze({
   position: Object.freeze({

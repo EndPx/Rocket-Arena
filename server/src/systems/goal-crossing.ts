@@ -85,8 +85,14 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
+function isArenaVector3TupleInput(
+  value: AuthoritativeBallCenterInput,
+): value is ArenaVector3Tuple {
+  return Array.isArray(value);
+}
+
 function copyCenter(value: AuthoritativeBallCenterInput): FrozenCenter | null {
-  if (Array.isArray(value)) {
+  if (isArenaVector3TupleInput(value)) {
     if (value.length !== 3
         || !isFiniteNumber(value[0])
         || !isFiniteNumber(value[1])

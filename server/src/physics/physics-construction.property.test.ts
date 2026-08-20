@@ -404,14 +404,14 @@ function assertConstruction(
   const expectedRestitution = scalarValue(TUNING_IDS.ball.restitution);
   assert.equal(expectedCarMass, 150);
   assert.equal(expectedBallMass, 25);
-  assert.equal(expectedRadius, 0.9125);
+  assert.equal(expectedRadius, 1.8);
   assert.equal(expectedRestitution, 0.6);
   assertApproximately(car.mass(), 150, 'car body mass');
   assertApproximately(carCollider.mass(), 150, 'car collider mass');
   assertApproximately(ball.mass(), 25, 'ball body mass');
   assertApproximately(ballCollider.mass(), 25, 'ball collider mass');
   assertApproximately(car.mass() / ball.mass(), 6, 'car-to-ball mass ratio');
-  assertApproximately((ballCollider.shape as RAPIER.Ball).radius, 0.9125, 'ball radius');
+  assertApproximately((ballCollider.shape as RAPIER.Ball).radius, 1.8, 'ball radius');
   assertApproximately(ballCollider.restitution(), 0.6, 'ball restitution');
   assertApproximately(ball.linearDamping(), generated.ballLinearDamping, 'ball damping');
   assert.ok(ball.linearDamping() >= -EPSILON && ball.linearDamping() <= 0.2 + EPSILON);
