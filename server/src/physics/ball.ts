@@ -106,7 +106,10 @@ export function createBall(
         .setLinearDamping(linearDamping)
         .setAngularDamping(getConstant('BALL.ANGULAR_DAMPING'))
         .setCcdEnabled(true)
-        .setSoftCcdPrediction(getConstant('BALL.SOFT_CCD_PREDICTION'))
+        .setSoftCcdPrediction(
+          positiveTuningValue(tuning, TUNING_IDS.ball.maxLinearSpeed)
+            * positiveTuningValue(tuning, TUNING_IDS.physics.fixedStepSeconds),
+        )
         .setAdditionalSolverIterations(Math.round(
           getConstant('BALL.ADDITIONAL_SOLVER_ITERATIONS'),
         )),

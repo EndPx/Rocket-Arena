@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import RAPIER from '@dimforge/rapier3d-compat';
 import {
+  ARENA_COLLISION_GEOMETRY,
   INPUT_PROTOCOL_VERSION,
   MATCH_RULES,
   PHYSICS,
@@ -77,8 +78,14 @@ async function createHarness(
     policy: ROOM_POLICIES.custom,
     initializeWorld: async (context) => {
       const initialized = await initializeAuthoritativeRapierWorld(context, {
+        resolvedGeometry: ARENA_COLLISION_GEOMETRY,
         initialCarPosition,
       });
+      assert.strictEqual(
+        initialized.resolvedGeometry,
+        ARENA_COLLISION_GEOMETRY,
+        'authoritative room must retain the exact pinned geometry object',
+      );
       bundle = wrapper(initialized);
       return bundle;
     },

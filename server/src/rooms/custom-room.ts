@@ -1,6 +1,7 @@
 import colyseus from 'colyseus';
 import RAPIER from '@dimforge/rapier3d-compat';
 import {
+  ARENA_COLLISION_GEOMETRY,
   INPUT_PROTOCOL_VERSION,
   ROOM_POLICIES,
   TUNING_IDS,
@@ -133,6 +134,7 @@ async function initializeCustomWorld(
   context: { readonly tuning: RoomPinnedTuningSnapshot },
 ): Promise<AuthoritativeRoomWorldBundle<RAPIER.World, CustomCar, RAPIER.RigidBody>> {
   return initializeAuthoritativeRapierWorld(context, {
+    resolvedGeometry: ARENA_COLLISION_GEOMETRY,
     initialCarPosition: legacyKickoffPosition,
   });
 }

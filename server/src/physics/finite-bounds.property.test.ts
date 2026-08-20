@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import RAPIER from '@dimforge/rapier3d-compat';
 import {
+  ARENA_COLLISION_GEOMETRY,
   DEFAULT_TUNING_REGISTRY_SNAPSHOT,
   INPUT_PROTOCOL_VERSION,
   MATCH_RULES,
@@ -917,7 +918,10 @@ async function verifyReachableProductionExposure(): Promise<Readonly<{
     mode: 'custom',
     policy: ROOM_POLICIES.custom,
     initializeWorld: async (context) => {
-      const base = await initializeAuthoritativeRapierWorld(context, { initialCarPosition });
+      const base = await initializeAuthoritativeRapierWorld(context, {
+        resolvedGeometry: ARENA_COLLISION_GEOMETRY,
+        initialCarPosition,
+      });
       capturedBundle = {
         ...base,
         dispose: () => {

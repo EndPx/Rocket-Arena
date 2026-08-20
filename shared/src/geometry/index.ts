@@ -1,4 +1,5 @@
 export * from './arena-spec.js';
+export * from './arena-collision.js';
 export {
   BLUE_KICKOFF_SLOTS,
   CAR_COLLIDER_TUNING_IDS,

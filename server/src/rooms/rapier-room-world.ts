@@ -3,6 +3,7 @@ import {
   INPUT_PROTOCOL_VERSION,
   TUNING_IDS,
   getScalarTuningValue,
+  type ResolvedArenaGeometry,
   type RoomPinnedTuningSnapshot,
   type RosterEntry,
 } from '@rocket-arena/shared';
@@ -44,6 +45,8 @@ interface RapierCarKickoffState {
 }
 
 export interface AuthoritativeRapierWorldOptions {
+  /** Exact room-pinned geometry instance used for every boundary collider. */
+  readonly resolvedGeometry: ResolvedArenaGeometry;
   readonly initialCarPosition: (
     entry: Pick<RosterEntry, 'acceptedJoinOrdinal' | 'team'>,
     tuning: RoomPinnedTuningSnapshot,
@@ -55,6 +58,7 @@ export interface AuthoritativeRapierRoomWorldBundle extends AuthoritativeRoomWor
   AuthoritativeRapierCar,
   RAPIER.RigidBody
 > {
+  readonly resolvedGeometry: ResolvedArenaGeometry;
   readonly carsBySessionId: ReadonlyMap<string, AuthoritativeRapierCar>;
 }
 
@@ -96,12 +100,15 @@ export async function initializeAuthoritativeRapierWorld(
 ): Promise<AuthoritativeRapierRoomWorldBundle> {
   await initPhysics();
   let world: RAPIER.World | null = null;
+  let arenaOwnership: ReturnType<typeof createArenaColliders> | null = null;
   let ownershipTransferred = false;
 
   try {
     const initializedWorld = createWorld(tuning);
     world = initializedWorld;
-    const surfaces = createArenaColliders(initializedWorld);
+    const arena = createArenaColliders(initializedWorld, options.resolvedGeometry);
+    arenaOwnership = arena;
+    const surfaces = arena.registry;
     const ball = createBall(initializedWorld, undefined, tuning);
     const carsBySessionId = new Map<string, AuthoritativeRapierCar>();
     let disposed = false;
@@ -109,6 +116,7 @@ export async function initializeAuthoritativeRapierWorld(
     const bundle: AuthoritativeRapierRoomWorldBundle = {
       world: initializedWorld,
       ball,
+      resolvedGeometry: options.resolvedGeometry,
       carsBySessionId,
       mutationResources: {
         prepareJoin: ({ entry }, scope) => {
@@ -290,13 +298,23 @@ export async function initializeAuthoritativeRapierWorld(
         if (disposed) return;
         disposed = true;
         carsBySessionId.clear();
-        initializedWorld.free();
+        try {
+          arena.dispose();
+        } finally {
+          initializedWorld.free();
+        }
       },
     };
 
     ownershipTransferred = true;
     return bundle;
   } finally {
-    if (!ownershipTransferred) world?.free();
+    if (!ownershipTransferred) {
+      try {
+        arenaOwnership?.dispose();
+      } finally {
+        world?.free();
+      }
+    }
   }
 }

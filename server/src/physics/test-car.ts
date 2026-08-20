@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import RAPIER from '@dimforge/rapier3d-compat';
 import {
+  ARENA_COLLISION_GEOMETRY,
   DEFAULT_TUNING_REGISTRY_SNAPSHOT,
   TUNING_IDS,
   getScalarTuningValue,
@@ -84,7 +85,7 @@ function createScenario(position: { x: number; z: number } = { x: 0, z: -22 }): 
   const world = createTrackedWorld();
   let ownershipTransferred = false;
   try {
-    createArenaColliders(world);
+    createArenaColliders(world, ARENA_COLLISION_GEOMETRY);
     const car = createCar(world, {
       x: position.x,
       y: tuning(TUNING_IDS.car.collider.height) / 2

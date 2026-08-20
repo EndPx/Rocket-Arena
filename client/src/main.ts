@@ -4,6 +4,7 @@
  * Bootstraps renderer, connects to server, and presents synchronized entities.
  */
 
+import { RESOLVED_ARENA_GEOMETRY } from '@rocket-arena/shared';
 import { initScene } from './renderer/scene.js';
 import { createLighting } from './renderer/lighting.js';
 import { createArena } from './renderer/arena.js';
@@ -35,8 +36,9 @@ import type { Room } from 'colyseus.js';
 
 const app = document.getElementById('app')!;
 const { renderer, scene, camera } = initScene(app);
+const resolvedArenaGeometry = RESOLVED_ARENA_GEOMETRY;
 createLighting(scene);
-createArena(scene);
+const arena = createArena(scene, resolvedArenaGeometry);
 createHUD();
 initializeAudio();
 
@@ -59,6 +61,7 @@ function animate(): void {
   const time = frameNowMs / 1000;
   const deltaSeconds = Math.min(Math.max(time - previousFrameTime, 0), 0.1);
   previousFrameTime = time;
+  arena.update(deltaSeconds, time);
   const room = getRoom();
   sendInput(room);
 
@@ -112,6 +115,10 @@ function animate(): void {
 
   renderer.render(scene, camera);
 }
+
+const disposeArena = (): void => arena.dispose();
+window.addEventListener('pagehide', disposeArena, { once: true });
+window.addEventListener('beforeunload', disposeArena, { once: true });
 
 animate();
 console.log('[Rocket Arena] Client initialized');

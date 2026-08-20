@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import RAPIER from '@dimforge/rapier3d-compat';
 import {
-  ARENA_GEOMETRY_SPEC,
+  ARENA_COLLISION_GEOMETRY,
   DEFAULT_TUNING_REGISTRY_SNAPSHOT,
   TUNING_IDS,
-  getConstant,
   type ArenaSurfaceDescriptor,
   type TuningEntry,
   type TuningRegistrySnapshot,
@@ -25,7 +24,7 @@ const EPSILON = 1e-8;
 const CAR_HALF_HEIGHT = 0.18;
 const disposalTracker = { created: 0, freed: 0 };
 const SURFACES = new Map(
-  ARENA_GEOMETRY_SPEC.surfaces.map((surface) => [surface.id, surface]),
+  ARENA_COLLISION_GEOMETRY.surfaces.map((surface) => [surface.id, surface]),
 );
 
 function descriptor(id: string): ArenaSurfaceDescriptor {
@@ -124,8 +123,10 @@ function assertFiniteResultGeometry(result: ReturnType<typeof detectGroundSuppor
 
 function runArenaSupportCases(): void {
   const world = createTrackedWorld();
+  let arena: ReturnType<typeof createArenaColliders> | null = null;
   try {
-    const registry = createArenaColliders(world);
+    arena = createArenaColliders(world, ARENA_COLLISION_GEOMETRY);
+    const registry = arena.registry;
     const entries = registry.entries();
     assert.ok(entries.some((entry) => entry.surfaceId === 'field.floor' && entry.groundingEnabled));
     for (const id of [
@@ -170,13 +171,20 @@ function runArenaSupportCases(): void {
       'all misses must clear support without stale normal reuse',
     );
 
-    const rampHeight = ARENA_GEOMETRY_SPEC.floorWallRamp.height;
-    const arenaHalfWidth = getConstant('ARENA.WIDTH') / 2;
-    const rampRotation = rotationAroundZ(Math.PI / 4);
-    const rampNormal = { x: -Math.SQRT1_2, y: Math.SQRT1_2, z: 0 };
+    const rampProfile = ARENA_COLLISION_GEOMETRY.profiles.floorWall;
+    const segmentIndex = 3;
+    const currentRampSample = rampProfile.samples[segmentIndex]!;
+    const nextRampSample = rampProfile.samples[segmentIndex + 1]!;
+    const rampHorizontal = nextRampSample.outward - currentRampSample.outward;
+    const rampVertical = nextRampSample.up - currentRampSample.up;
+    const rampPitch = Math.atan2(rampVertical, rampHorizontal);
+    const arenaHalfWidth = ARENA_COLLISION_GEOMETRY.bounds.max[0];
+    const rampRotation = rotationAroundZ(rampPitch);
+    const rampNormal = { x: -Math.sin(rampPitch), y: Math.cos(rampPitch), z: 0 };
     const rampPoint = {
-      x: arenaHalfWidth - rampHeight / 2,
-      y: rampHeight / 2,
+      x: arenaHalfWidth - rampProfile.run
+        + (currentRampSample.outward + nextRampSample.outward) / 2,
+      y: (currentRampSample.up + nextRampSample.up) / 2,
       z: 0,
     };
     const rampProbe = createProbe(world, {
@@ -190,8 +198,8 @@ function runArenaSupportCases(): void {
     assert.ok(ramp.acceptedHits.some((hit) => hit.surfaceId === 'field.ramp.east'));
     assertFiniteResultGeometry(ramp);
 
-    const goalCenterZ = getConstant('ARENA.LENGTH') / 2
-      + getConstant('ARENA.GOAL.DEPTH') / 2;
+    const orangeGoal = ARENA_COLLISION_GEOMETRY.goals.find(({ id }) => id === 'orange-goal')!;
+    const goalCenterZ = (orangeGoal.goalLineZ + orangeGoal.backWallZ) / 2;
     const goalFloorProbe = createProbe(world, {
       x: 0,
       y: CAR_HALF_HEIGHT + 0.02,
@@ -203,9 +211,9 @@ function runArenaSupportCases(): void {
 
     const sideNormal = { x: -1, y: 0, z: 0 };
     const sideProbe = createProbe(world, {
-      x: getConstant('ARENA.GOAL.WIDTH') / 2
+      x: orangeGoal.opening.width / 2
         + sideNormal.x * (CAR_HALF_HEIGHT + 0.02),
-      y: getConstant('ARENA.GOAL.HEIGHT') / 2,
+      y: orangeGoal.opening.height / 2,
       z: goalCenterZ,
     }, rotationAroundZ(Math.PI / 2));
     world.updateSceneQueries();
@@ -214,6 +222,7 @@ function runArenaSupportCases(): void {
     assert.ok(goalSide.acceptedHits.some((hit) => hit.surfaceId === 'goal.orange.side-east'));
     assertFiniteResultGeometry(goalSide);
   } finally {
+    arena?.dispose();
     freeTrackedWorld(world);
   }
 }

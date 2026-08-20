@@ -665,7 +665,7 @@ Core Ground Surfaces are floor, floor-to-wall ramp, and solid goal-interior surf
 
 ### Shared Metric Geometry
 
-`ArenaGeometrySpec` is the single numerical source for server collision and visible authoritative boundaries:
+`ArenaGeometrySpec` remains the semantic metric input, and one deeply immutable resolved geometry contract is the only operational source for server collision and client authoritative boundary rendering. Neither consumer may independently rebuild dimensions, sample curves, infer corner endpoints, or read legacy `ARENA.*` values for authoritative surfaces.
 
 | Dimension | Value |
 |---|---:|
@@ -673,14 +673,158 @@ Core Ground Surfaces are floor, floor-to-wall ramp, and solid goal-interior surf
 | Inside length (Z) | `102.4 m` |
 | Inside ceiling height (Y) | `20.44 m` |
 | Goal-line planes | `z = -51.2 m` and `z = +51.2 m` |
-| Horizontal corner cut | four `45 degree`, `11.52 m` transitions |
-| Floor-wall ramp height | `2.56 m` |
+| Horizontal corner cut | four `45 degree`, `11.52 m` axis-retreat transitions |
+| Floor-wall transition rise and run | `2.56 m` and `2.56 m` |
+| Wall-ceiling transition rise and run | `2.56 m` and `2.56 m` |
 | Goal opening | centered, `17.86 m` wide and `6.43 m` high |
-| Goal depth | `8.8 m` beyond each goal-line plane |
+| Goal depth | `8.8 m` beyond each goal-line plane; back planes at `z = -60 m` and `z = +60 m` |
 
-The spec exposes typed primitives and semantic surface IDs rather than allowing server and client to reconstruct dimensions independently. `server/src/physics/arena.ts` creates the floor, ramps, side/end walls, four cut corners, wall/ceiling transitions, ceiling, goal floor, side walls, roof, and back wall. The only openings in the field end walls are the two goal mouths. The goal tunnels remain closed outside the mouth.
+These values preserve the existing metric field and goal contract. The refinement changes how lower and upper transitions are resolved and presented; it does not change field extents, goal-line position, opening dimensions, corner retreat, ceiling height, or goal depth.
 
-`client/src/renderer/arena.ts` consumes the same primitives for field, containment, goal tunnel, and ramp boundary meshes, then layers the existing foundry stadium art around them. Focused tests compare resolved world-space planes and extents; every visible authoritative boundary must be within `0.05 m` of collision.
+#### Original Enclosed-Stadium Direction
+
+The visual target is interpreted as mood and spatial composition only, not as an asset source. Rocket Arena becomes an original enclosed civic sky-stadium built from procedural geometry: a symmetric chamfered/octagonal rectangular footprint, rounded vertical play profile, transparent containment, recessed goals, legible team halves, and an exterior event venue visible through the shell. It must not reproduce Rocket League logos, wordmarks, vehicle silhouettes, ball panels, stadium textures, sponsor marks, or proprietary assets.
+
+The playable enclosure has three deliberately separate layers:
+
+1. **Authoritative shell:** floor, curved lower transitions, side and end walls, exact 45-degree corner cuts, curved upper transitions, ceiling, goal openings, and closed goal interiors. These surfaces are collision-critical and come only from the resolved shared contract.
+2. **Gameplay-aligned presentation:** striped turf, Blue/Orange half tint, halfway line, center circle and kickoff mark, mirrored goal/penalty-area accents, boost-pad rings, transparent hex treatment, and goal lighting. These elements have no collision, but their anchors come from resolved shell surfaces or the room-pinned boost-pad descriptors rather than duplicated coordinates.
+3. **Exterior stadium world:** grandstands, deterministic crowd color, floodlight banks, flags, structural arches, catwalks, scoreboards, and a low-detail city skyline. Every exterior element is outside the authoritative shell, has no Rapier collider, is excluded from containment and geometry fingerprints, and cannot visually masquerade as a playable surface.
+
+Blue owns the negative-Z half and Orange owns the positive-Z half. Team tint, goal glow, crowd accents, flags, and mirrored field markings reinforce this orientation without recoloring the neutral ball or obscuring white gameplay lines. The goals read as recessed illuminated tunnels, not flat nets: the exact rectangular mouth opens into the existing `8.8 m` solid floor/side/roof/back volume, with team-color ribs and a procedural hex grid placed on the matching interior surfaces.
+
+The field uses an original procedural cut-grass treatment with a deterministic even number of alternating bands mirrored around midfield. A neutral halfway line, center circle, center spot, and restrained mirrored goal-area/penalty accents sit a few millimeters above the floor as non-colliding overlays or use polygon offset; they do not change the floor plane. Large and delivered Small boost-pad visuals use the same stable IDs and positions as their authoritative pad sensors. A deferred pad has no decorative placeholder that could imply collectability.
+
+The exterior preserves Rocket Arena's current industrial-event character while making it read as a complete stadium. Tiered stands follow the chamfered footprint outside the transparent shell. Crowd/seat colors mix neutral dark values with deterministic Blue and Orange sections. Reusable structural arches span outside the roof; floodlight banks hang from those arches and keep the existing bounded light budget. Original Rocket Arena flags and segmented `ROCKET ARENA` scoreboards use only project-owned geometric lettering and simple launch/orbit motifs. Beyond the stands, instanced low-poly towers and emissive window patterns form a city skyline; the skyline is atmosphere and never contributes collision, occlusion-critical gameplay geometry, or authoritative scale.
+
+#### One Resolved Primitive Contract
+
+`shared/src/geometry/arena-collision.ts` is evolved in place rather than supplemented by a second arena table. `resolveArenaGeometry(ARENA_GEOMETRY_SPEC)` returns `ResolvedArenaGeometry`; the current `ARENA_COLLISION_GEOMETRY` export may remain as a temporary compatibility alias to the same frozen object while consumers migrate. After resolution, both `server/src/physics/arena.ts` and `client/src/renderer/arena.ts` receive that exact contract. `ArenaGeometrySpec` is not consumed directly by either builder.
+
+```typescript
+interface ResolvedArenaGeometry {
+  readonly identity: Readonly<{
+    readonly sourceVersion: number;
+    readonly primitiveSchemaVersion: number;
+    readonly fingerprint: string;
+  }>;
+  readonly units: 'meters';
+  readonly bounds: Readonly<{
+    readonly min: readonly [number, number, number];
+    readonly max: readonly [number, number, number];
+  }>;
+  readonly profiles: Readonly<{
+    readonly floorWall: ResolvedSegmentedProfile;
+    readonly wallCeiling: ResolvedSegmentedProfile;
+  }>;
+  readonly goals: readonly ResolvedGoalRegion[];
+  readonly surfaces: readonly ResolvedArenaSurface[];
+  readonly primitives: readonly ResolvedArenaBoundaryPrimitive[];
+  readonly seams: readonly ResolvedArenaSeam[];
+}
+
+interface ResolvedArenaBoundaryPrimitive {
+  readonly id: string;
+  readonly surfaceId: string;
+  readonly mirroredPrimitiveId: string | null;
+  readonly region: 'field' | 'blue-goal' | 'orange-goal';
+  readonly semanticKind:
+    | 'floor'
+    | 'lower-transition'
+    | 'wall'
+    | 'corner-cut'
+    | 'upper-transition'
+    | 'ceiling'
+    | 'goal-interior';
+  readonly collision:
+    | Readonly<{ readonly shape: 'cuboid'; readonly halfExtents: Vec3; readonly transform: Transform }>
+    | Readonly<{ readonly shape: 'convex-hull'; readonly vertices: readonly Vec3[] }>;
+  readonly inwardSurface: Readonly<{
+    readonly positions: readonly Vec3[];
+    readonly indices: readonly number[];
+    readonly normals: readonly Vec3[];
+    readonly uvs: readonly Vec2[];
+    readonly seamIds: readonly string[];
+  }>;
+  readonly materialRole: ArenaBoundaryMaterialRole;
+}
+```
+
+The resolver creates collision shape data and the inward visible surface together from one canonical set of samples. Rapier consumes `primitive.collision`; Three.js consumes `primitive.inwardSurface` and `materialRole`. The client never reverse-engineers a Rapier collider and never creates authoritative wall, ramp, corner, ceiling, or goal coordinates from presentation constants. The geometry fingerprint covers canonical bounds, profiles, goal regions, surface IDs, primitive collision data, inward-surface positions/indices, and seam topology. It excludes colors, crowd layout, lighting, and other decoration. Canonical serialization uses stable key/ID order, finite normalized quaternions, normalized negative zero, and a documented numeric precision before hashing.
+
+All arrays and nested records are deeply frozen. Primitive and surface IDs are unique and stable. Each collision-critical semantic surface appears in at least one primitive and each primitive references one known surface. Startup fails before accepting a player when resolution, finiteness, topology, mirror, seam, or fingerprint validation fails. The room pins the resolved identity; snapshot geometry metadata and client acceptance continue to use the same version/fingerprint handshake defined by the active-geometry bugfix addendum.
+
+#### Deterministic Curved Transitions and Mirroring
+
+The horizontal footprint remains the exact symmetric octagonal rectangle required by the four straight `45 degree` corner cuts. Each corner endpoint retreats `11.52 m` from the nominal rectangular corner on both axes. The resolver may subdivide a cut co-linearly for paneling, but no subdivision may bow inside or outside the authoritative 45-degree plane.
+
+The rounded feel comes from deterministic segmented quarter-ellipse profiles on every lower and upper boundary, including the 45-degree corner strips. Both use the existing `2.56 m` run and `2.56 m` rise and exactly eight equal-angle segments. Eight segments keep the maximum circular chord deviation below `0.013 m`, safely inside the `0.05 m` visual/collision tolerance while keeping Rapier primitive count bounded.
+
+For `i = 0..8`, let `theta_i = i * PI / 16`:
+
+```text
+floorWall(i):
+  outward = 2.56 * sin(theta_i)
+  up      = 2.56 * (1 - cos(theta_i))
+
+wallCeiling(i):
+  inward = 2.56 * (1 - cos(theta_i))
+  up     = 2.56 * sin(theta_i)
+```
+
+The lower profile begins tangent to the field floor and ends tangent to the vertical wall at `y = 2.56 m`. The upper profile begins tangent to that wall at `y = 20.44 - 2.56 m` and ends tangent to the ceiling at `y = 20.44 m`. Each adjacent sample pair is extruded along its side, end, or corner boundary into one closed static convex prism, with shell thickness extruded away from playable space. Rapier therefore receives bounded convex pieces rather than a runtime-generated concave triangle mesh. Three.js uses the identical inward sample strip and indices; smooth vertex normals may visually blend facets, but visual smoothing never moves a vertex or changes collision.
+
+One canonical quadrant and the Blue goal-end description are authored; all counterparts are derived. `mirrorX([x,y,z]) = [-x,y,z]` produces west/east counterparts and `mirrorZ([x,y,z]) = [x,y,-z]` produces Blue/Orange counterparts. A reflection reverses triangle winding and normal direction exactly once. Mirrored primitive IDs, surface IDs, seam IDs, goal ownership, and material roles are validated as reciprocal pairs. The resolver never samples each side independently, preventing floating-point drift between mirrored halves.
+
+Every boundary junction receives a stable seam ID. Adjacent primitives must resolve the same world-space edge endpoints after mirroring; floor-to-lower-transition, lower-transition-to-wall, wall-to-upper-transition, upper-transition-to-ceiling, side-to-corner, end-to-corner, goal-jamb, goal-roof, and goal-back seams are all explicit. The only intentional aperture in the field shell is either exact goal mouth. No decorative frame closes that aperture in collision, and no transparent panel spans it.
+
+#### Authoritative Boundary Rendering
+
+`client/src/renderer/arena.ts` builds three named roots once: `arena-authoritative-boundaries`, `arena-gameplay-overlays`, and `arena-exterior-presentation`.
+
+- **Authoritative boundaries:** create indexed `BufferGeometry` directly from resolved inward surfaces. Opaque floor/lower-transition pieces and transparent wall/upper-transition/ceiling panels group by material role. Recessed goal floors, sides, roofs, and backs use the exact goal-region descriptors. Polygon offset or render ordering resolves coplanar artifacts; authoritative vertices are not nudged away from collision.
+- **Transparent hex shell:** side/end walls, corner cuts, upper transitions, ceiling, and goal containment use a project-owned procedural hex-line shader or one reusable indexed hex overlay parameterized by descriptor UVs. Hex density and opacity are finite bounded visual constants. Cell count never creates one `Object3D` per hex, transparent surfaces use depth-write-disabled stable ordering, and the number of transparent batches is fixed by material roles rather than arena size or frame count.
+- **Gameplay overlays:** turf bands, markings, team washes, and pad visuals are generated from immutable layout descriptors and built once. White markings retain contrast over both team tints. Pad geometry is instanced by pad kind and active state; animation changes instance attributes or uniforms, never geometry allocation.
+- **Exterior presentation:** stands, crowd units/seats, floodlight panels, flags, arches, skyline towers, and window lights use shared geometries/materials and `InstancedMesh` where repeated. Exterior objects are positioned from read-only arena anchors plus visual offsets, not included in `ResolvedArenaGeometry.primitives`, and never registered with Rapier.
+
+Materials are selected through a small `ArenaBoundaryMaterialRole` registry rather than created per primitive. Team-neutral structure, transparent containment, Blue goal, Orange goal, turf, markings, and emissive lighting each reuse one material instance where their render state matches. Static matrices are finalized at construction, frustum culling bounds are computed once, and disposal owns every geometry/material exactly once. Arena construction performs no fetch and uses no imported model or image texture.
+
+No arena subsystem allocates geometry, material, typed vertex arrays, or scene nodes per frame. Runtime changes are limited to bounded uniforms, light intensity, pad instance state, crowd/flag shader phase, and visibility. Transparent shell and skyline objects do not cast shadows; the existing one-shadow-caster lighting budget and bounded accent lights remain. This keeps the visual target compatible with six/eight-car rendering and the existing interpolation/audio frame loop.
+
+#### Collision-Critical and Decorative Ownership
+
+| Layer | Shared source | Server ownership | Client ownership |
+|---|---|---|---|
+| Floor, lower transition, walls, corner cuts, upper transition, ceiling | `ResolvedArenaGeometry.primitives` | Static Rapier colliders and surface metadata | Matching authoritative inward-surface meshes and hex/opaque material roles |
+| Goal mouth and solid goal floor/sides/roof/back | `ResolvedArenaGeometry.goals` and primitives | Closed goal-interior collision; mouth remains open | Recessed tunnel surfaces, original frame/ribs, and team treatment aligned to the same descriptors |
+| Turf, center/halfway/goal-area markings | Geometry bounds plus immutable presentation layout | None | Non-colliding procedural overlays |
+| Boost pad location and kind | Room-pinned boost-pad descriptors | Sensor and pickup state | Instanced pad ring/model at the same ID/transform |
+| Grandstands, crowd, lights, flags, arches, scoreboards, skyline | Presentation constants anchored outside resolved bounds | None | Decorative `arena-exterior-presentation` only |
+
+A client material or decorative layout change does not require a physics migration. A boundary vertex, profile, seam, opening, or goal-region change does: it changes the geometry fingerprint and requires server and client support in the same compatible build. The runtime cutover may not accept players while one consumer uses legacy `ARENA` boundaries and the other uses resolved metric primitives.
+
+#### Task 6.1 and 6.2 Implementation Contract
+
+**Task 6.1 — Rapier shell:** extend the existing `arena-collision.ts` resolver rather than adding a second geometry module. Replace the current linear lower/upper profile output with the eight-segment profile above, emit reciprocal mirrors and seam records, retain exact metric/goal values, and make `createArenaColliders(world, resolvedGeometry)` a pure primitive adapter plus semantic registration. It must create no hidden legacy wall, sensor, or fallback perimeter. The metric harness compares every actual Rapier collider with the resolved primitive table, exercises seams and goal apertures, proves solid goal interiors and closed containment at `60 m/s`, and frees the world in `finally`.
+
+**Task 6.2 — Three.js boundaries and stadium:** remove authoritative reads of legacy `ARENA.*` from `client/src/renderer/arena.ts`. Build the authoritative group solely from the same resolved primitive object used by Task 6.1, then add gameplay overlays and exterior presentation as separately named groups. Preserve the incumbent reusable/instanced stadium systems where compatible, but reshape them around the metric chamfered footprint and the original visual direction above. World-space tests compare each rendered authoritative primitive ID, seam edge, inward plane, and goal extent with its resolved collision counterpart; no corresponding point or plane may differ by more than `0.05 m`.
+
+Tasks 6.1 and 6.2 are one compatibility cutover for boundary identity even if reviewed as separate code changes. Property 24's phrase “derived from `ArenaGeometrySpec`” means derivation through this one resolver and frozen primitive contract, never separate server/client reconstruction. The broader active-geometry placement certificate and snapshot publication rules remain those in the bugfix addendum.
+
+#### Arena Validation and Visual Proof
+
+The arena increment adds or extends these checks without replacing existing mechanics regressions:
+
+1. **Descriptor parity:** shared tests verify deep immutability, stable fingerprinting, finite unique IDs, complete semantic-surface coverage, deterministic repeated resolution, material-role validity, and exact parity between canonical collision and inward visible surface data.
+2. **Mirror invariants:** every east/west and Blue/Orange primitive, profile sample, seam, goal region, field marking, and pad anchor has the required reflected counterpart with corrected winding and unchanged dimensions.
+3. **Closed containment:** Rapier harnesses launch the CCD ball at up to `Ball_Max_Speed` toward floor, every lower/upper profile segment, straight wall, chamfered corner, ceiling, end wall, goal back, goal side, and multi-surface seam. The ball remains in the field or the corresponding closed goal interior and cannot escape through segment joins.
+4. **Goal contract:** ray, sweep, and contact cases prove both exact centered openings remain unobstructed, outside-mouth end walls remain solid, and each recessed goal floor, side, roof, and back closes at the required depth.
+5. **Seam coverage:** a topology test pairs every declared seam edge, rejects gaps/overlaps above numeric epsilon, and permits unmatched edges only where the topology explicitly identifies a goal aperture. Focused ball sweeps cross floor/ramp, ramp/wall, wall/upper-transition, upper-transition/ceiling, side/corner, corner/end, and goal-jamb seams without tunnelling or snagging on duplicate inward faces.
+6. **Resolved visual/collision alignment:** a client test resolves each authoritative mesh's world-space vertices and planes after transforms and compares them by primitive/surface/seam ID with the shared contract and Rapier fingerprints. Maximum separation is `0.05 m`; expected construction should normally be coincident apart from numeric conversion.
+7. **Rendering budget:** construction tests require reusable materials/geometries, instancing for repeated exterior and pad objects, a fixed descriptor-bounded transparent batch count, no object-per-hex expansion, and no arena geometry/material creation during repeated render updates.
+8. **Browser and screenshot proof:** deterministic browser fixtures capture (a) high overview, (b) midfield at car height, (c) chamfered corner with lower ramp, (d) goal mouth looking into the recessed tunnel, and (e) wall-to-ceiling/roof view. Assertions cover one shared geometry identity, metric bounds, Blue/Orange mirroring, turf and markings, pad alignment, transparent hex containment, visible seam continuity, original Rocket Arena branding, and exterior stands/lights/flags/arches/skyline. Each view retains a screenshot and diagnostic JSON; the run requires zero unexpected page exceptions and zero Rocket Arena error-level console messages.
+
+Screenshot review is presentation evidence, not the containment oracle. Descriptor, world-space, and Rapier tests prove geometry correctness; browser views prove that the original enclosed-stadium interpretation is legible and that decorative elements remain outside the playable shell.
 
 ### Car and Ball Bodies
 
@@ -1290,6 +1434,22 @@ For all Quick Match and Custom Room overtime states and all representable scores
 
 **Validates: Requirements 13.24, 13.25, 18.35, 18.36, 18.37**
 
+### Property 28: Bug Condition - Active geometry placement containment
+
+_For any_ represented-car placement candidate in Waiting_State, an initial kickoff, or a post-goal kickoff where validation, live Rapier collision, and the authoritative visible perimeter do not have the same active geometry identity, or where the candidate's full authoritative collider is not contained by that active geometry, the fixed system SHALL reject the complete candidate before exposure, preserve the preceding valid authoritative state, and publish no snapshot containing the invalid placement. For every accepted candidate, all three consumers SHALL report one identical active geometry identity and every represented full collider SHALL be contained before the first corresponding snapshot, throughout the frozen countdown, and in the first Active_Play sample.
+
+**Validates: Requirements 2.1, 2.2, 2.3, 2.4, 2.5, 2.6**
+
+These requirement references are from `bugfix.md`.
+
+### Property 29: Preservation - Deterministic placement, authority, and match flow
+
+_For any_ capacity-valid Quick Match or Custom Room input where validation, collision, presentation, and the complete proposed collider set already agree with the active geometry, the fixed system SHALL produce the same Stable_Roster_Order identity-to-slot mapping, team-facing orientation, non-overlap result, kickoff reuse, authoritative ownership, atomic rejection behavior, snapshot ordering, and valid countdown/match-flow transitions as the original behavior, except for the required replacement of legacy boundary geometry by the approved shared active geometry.
+
+**Validates: Requirements 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7**
+
+These requirement references are from `bugfix.md`.
+
 ## Property Reflection
 
 The reflected set removes logical overlap while retaining distinct failure boundaries:
@@ -1301,4 +1461,377 @@ The reflected set removes logical overlap while retaining distinct failure bound
 - Finite recovery and all body caps are consolidated in Property 10. Throttle shape and grip/powerslide relationships stay separate because each needs different generators and mathematical oracles.
 - Jump and camera edge deduplication share monotonic-sequence semantics (Property 12), while camera transform bounds remain in Property 21.
 - Goal crossing semantics (Property 15), above-zero target-and-margin outcomes (Property 18), atomic hard cutoff (Property 26), and sudden-death overtime (Property 27) remain separate because each has a distinct input domain and oracle. This prevents the cutoff rule from accidentally inheriting target/margin logic and prevents overtime from entering reset behavior.
+- Active-geometry mismatch and placement containment are one fail-closed property (Property 28); deterministic valid-input preservation remains separate (Property 29) so the fix cannot silently change roster mapping, authority, or match flow.
 - Exact configuration declarations, logging, DOM layout/contrast, non-color visual treatment, browser text, audio output, release evidence presence, and process/resource integration remain smoke/example/integration tests where generated property cases would not add meaningful confidence. Property 22 covers only pure projection and transition deduplication; browser proof verifies presentation, while reducer/scheduler tests prove fixed-step cutoff behavior.
+
+## Bugfix Design Addendum: Active Arena Geometry Consistency
+
+This addendum is the approved design-phase response to `bugfix.md`. It narrows the immediate correction to active-geometry consistency and placement publication while preserving the broader mechanics design, Properties 1-27, completed implementation status, and all unrelated staged work. Within the bugfix workflow, global Property 28 is the Bug Condition property (bugfix-local Property 1) and global Property 29 is the Preservation property (bugfix-local Property 2); the global numbering is retained to avoid renumbering completed work.
+
+### Overview
+
+The defect is eliminated by pinning one immutable `Active_Arena_Geometry` for each authoritative room/world and deriving every authoritative boundary consumer from that object: kickoff and waiting-placement validation, the live Rapier shell, snapshot placement guards, and the client-visible authoritative perimeter. The server publishes the geometry identity with authoritative state; the client accepts room state only when its locally resolved visible geometry has the same identity. No consumer may independently reconstruct authoritative dimensions from legacy `ARENA` constants.
+
+Every join/waiting placement and every initial or post-goal kickoff is prepared as a complete transaction. The transaction resolves the exact car collider dimensions used by Rapier, proves full oriented-collider containment against the active geometry, checks completeness and overlap, captures rollback state, applies all bodies, and commits assignment/epoch/phase state only after every check succeeds. A snapshot publication guard prevents any uncommitted or uncertified placement from reaching clients.
+
+The correction completes the geometry portion of existing unfinished Tasks 6.1 and 6.2 as one compatibility cutover. It does not move the metric slots inward, introduce a second temporary arena definition, or mark either existing task complete during this design phase.
+
+### Glossary
+
+- **Active_Arena_Geometry**: The immutable, validated runtime resolution of `ARENA_GEOMETRY_SPEC` pinned when a room/world is created and supplied by reference to collision, containment, placement, snapshot, and authoritative rendering code.
+- **Geometry_Identity**: The pair `{ version, fingerprint }`, where `version` is the shared arena schema/data version and `fingerprint` is a deterministic digest of the canonical resolved authoritative descriptors. A matching version without a matching fingerprint is not considered the same geometry.
+- **Resolved_Boundary_Primitive**: A canonical world-space descriptor generated from the active spec and consumed to build either a Rapier collider or the matching authoritative visible mesh; stadium decoration is not an authoritative primitive.
+- **Containment_Region**: A named closed placement region derived from the same resolved primitives, normally `field`, with a solid goal interior allowed only when the placement context explicitly names that goal region.
+- **Full_Collider_Containment**: Proof that the complete oriented Rapier car cuboid, not only its center or render mesh, lies within one allowed active containment region at the proposed transform.
+- **Placement_Transaction**: The prepare/validate/apply/verify/commit operation covering the complete represented roster and all authoritative state affected by a room-entry or kickoff placement.
+- **Placement_Certificate**: Immutable evidence bound to a geometry identity, collider dimensions, roster signature, kickoff epoch or waiting-placement generation, and the exact committed transforms.
+- **Publication_Guard**: The server-side all-or-nothing check that refuses to build or broadcast a placement-bearing snapshot unless its placement certificate and current authoritative bodies agree.
+- **Browser_Placement_Diagnostics**: A deterministic, read-only, test-only projection of accepted authoritative placement data for Playwright; it is absent in production builds and grants no mutation capability.
+- **F / F'**: The original mismatched implementation and the corrected active-geometry implementation, respectively.
+
+### Bug Details
+
+#### Confirmed Counterexample
+
+The current source tree contains a concrete geometry split:
+
+- `ARENA_GEOMETRY_SPEC` version 1 has length `102.4 m`, so its field goal-line bounds are `z = -51.2 m` and `z = +51.2 m`.
+- Canonical Blue metric kickoff slots use `z = -34 m` and `z = -42 m`; Orange mirrors use `z = +34 m` and `z = +42 m`.
+- The currently active legacy shell and visible perimeter read `ARENA.LENGTH = 60 m`, so their end bounds are only `z = -30 m` and `z = +30 m`.
+
+A metric slot at `z = -34` or `z = -42` passes validation against `z +/-51.2` but its center is already beyond the active legacy boundary at `z = -30`, before collider half-extents are considered. The mirrored Orange slots fail identically beyond `z = +30`. This is the confirmed current counterexample, not a hypothetical edge case.
+
+#### Bug Condition
+
+Let a placement exposure candidate include its context, complete roster, proposed transforms, resolved collider dimensions, and the geometry identities used by validation, collision, and authoritative presentation.
+
+**Formal Specification:**
+
+```text
+FUNCTION isBugCondition(candidate)
+  INPUT: candidate of type PlacementExposureCandidate
+  OUTPUT: boolean
+
+  IF candidate.context NOT IN {
+       waiting-entry,
+       initial-kickoff,
+       post-goal-kickoff,
+       overtime-kickoff
+     } THEN
+    RETURN false
+  END IF
+
+  identitiesAgree :=
+    candidate.validationGeometry.identity = candidate.collisionGeometry.identity
+    AND candidate.collisionGeometry.identity = candidate.visibleGeometry.identity
+
+  allContained := FOR EVERY representedCar IN candidate.completeRoster:
+    containsFullCollider(
+      candidate.collisionGeometry,
+      representedCar.authoritativeTransform,
+      candidate.resolvedCarCollider,
+      candidate.allowedContainmentRegions
+    )
+
+  RETURN candidate.exposureRequested
+         AND (NOT identitiesAgree OR NOT allContained)
+END FUNCTION
+```
+
+Equivalently, `C(X) = ExposureRequested(X) AND (GeometryMismatch(X) OR NOT FullyContained(X))`.
+
+#### Examples
+
+- **Confirmed initial/waiting failure:** Blue slot `z = -34` is valid under metric half-length `51.2` but outside the live legacy half-length `30`; the current build can expose the car beyond the wall/perimeter.
+- **Confirmed deeper-slot failure:** Blue slot `z = -42` and its Orange mirror are farther outside the legacy shell while still valid under the metric validator.
+- **Post-goal failure:** Reusing the same deterministic metric assignment can replace previously valid dynamic body state with out-of-bounds kickoff transforms if reset validation does not use the live shell.
+- **Geometry-compatible control case:** A candidate whose full oriented collider fits the active metric field and whose validation/collision/visible identities all match is accepted without changing its deterministic identity-to-slot mapping.
+- **Edge case:** A center inside the field is still rejected when the rotated collider support crosses a side, end, ceiling, floor/ramp, or corner-cut plane. Center-only and render-mesh checks are insufficient.
+
+### Expected Behavior
+
+#### Preservation Requirements
+
+**Unchanged Behaviors:**
+
+- Stable_Roster_Order continues to map each team-local identity to the same deterministic same-team slot for identical policy, roster, slot, tuning, and geometry inputs.
+- Mirroring, center-facing orientation, complete bijection, full-collider non-overlap, unchanged-roster post-goal reuse, and zeroed kickoff velocities remain unchanged.
+- Quick Match retains exact 6/3 capacity, deterministic balancing, exact 3+3 start gating, cancellation, and fresh-countdown rules.
+- Custom Room retains 8/4 capacity, Host authority, waiting-only team switches, deterministic Host succession, and countdown preservation rules.
+- Server authority, V2 snapshot ordering, client atomic acceptance, interpolation, match timing, score, audio, HUD, camera, and stadium art behavior remain unchanged except where authoritative boundary meshes must move to the approved active geometry.
+- Invalid placement continues to be all-or-nothing; the fix strengthens the precondition but does not permit partial body movement, partial roster publication, or fallback assignment.
+
+**Scope:**
+
+All inputs for which `isBugCondition` returns false remain behaviorally equivalent between F and F'. This includes valid contained waiting/kickoff placements, normal roster mutations, non-placement snapshots, controls, active-play physics, scoring, and presentation decoration. Dynamic closed-shell containment remains owned by existing Task 6.1; this bugfix guard must not reinterpret legal wall/goal contacts or replace Rapier collision response.
+
+### Hypothesized Root Cause
+
+The primary cause is confirmed by the current implementation; the remaining items are contributing gaps:
+
+1. **Partially completed metric migration:** Shared metric geometry and metric kickoff slots are complete, while existing Tasks 6.1 and 6.2 are unfinished. `server/src/physics/arena.ts` and `client/src/renderer/arena.ts` still construct authoritative boundaries from legacy `ARENA` values.
+2. **Implicit validator geometry:** `DeterministicKickoffAssignmentService` defaults containment to `ARENA_GEOMETRY_SPEC`, so placement validation can silently select metric bounds independently of the world that owns the bodies.
+3. **No room-pinned geometry identity:** The room, snapshot, and client acceptance contracts do not currently prove that validation, collision, and visible authoritative boundaries resolved the same geometry version/data.
+4. **Structural reset validation only:** `prepareResetToKickoff` validates assignment identity and finite transforms and provides rollback, but it does not validate each full collider against the live world geometry before applying the reset.
+5. **Join exposure gap:** Join preparation can create and represent a body from an `initialCarPosition` without a shared full-collider placement certificate tied to the active shell.
+6. **Publication gap:** Snapshot construction checks structural, identity, capacity, and numeric invariants but does not fail closed when a newly placed authoritative body lacks active-geometry containment evidence.
+
+### Correctness Properties
+
+The single source of truth remains the consolidated global `## Correctness Properties` section:
+
+- **Property 28 (bugfix-local Property 1):** For every bug-condition input, F' rejects the complete invalid placement, preserves the preceding valid state, and publishes no invalid snapshot; every accepted placement uses one geometry identity and full-collider containment.
+- **Property 29 (bugfix-local Property 2):** For every non-bug-condition input, F' preserves deterministic placement, authority, atomicity, and valid match-flow behavior.
+
+The expected-result predicate used by Property 28 is:
+
+```text
+FUNCTION expectedBehavior(result)
+  INPUT: result of type PlacementExposureResult
+  OUTPUT: boolean
+
+  IF result.candidateIsValid THEN
+    RETURN result.geometryIdentitiesAgree
+           AND result.allRepresentedCollidersContained
+           AND result.transactionCommittedExactlyOnce
+           AND result.snapshotPublishedOnlyAfterCommit
+  END IF
+
+  RETURN result.transactionCommitted = false
+         AND result.previousValidAuthoritativeStatePreserved
+         AND result.assignmentCachePreserved
+         AND result.phaseAndEpochPreserved
+         AND result.invalidSnapshotPublished = false
+END FUNCTION
+```
+
+### Fix Implementation
+
+#### 1. Resolve and Pin One Active Geometry
+
+Add one pure shared resolver that validates `ARENA_GEOMETRY_SPEC` and creates an immutable runtime bundle:
+
+```typescript
+interface GeometryIdentity {
+  readonly version: number;
+  readonly fingerprint: string;
+}
+
+interface ActiveArenaGeometry {
+  readonly identity: GeometryIdentity;
+  readonly bounds: Readonly<{
+    min: readonly [number, number, number];
+    max: readonly [number, number, number];
+  }>;
+  readonly boundaryPrimitives: readonly ResolvedBoundaryPrimitive[];
+  readonly containmentRegions: readonly ContainmentRegion[];
+}
+```
+
+The fingerprint is calculated from canonical, ordered authoritative descriptors and is stable across server and client builds. A room resolves this object once before world creation and passes the same instance to:
+
+- `createArenaColliders(world, activeGeometry)`;
+- the waiting-position and kickoff assignment services;
+- `createCarBody` through the room-pinned collider descriptor;
+- `prepareResetToKickoff` / placement transactions;
+- `SnapshotBuilder` and its publication guard.
+
+The client resolves the same shared spec for `createArena(scene, activeGeometry)`. Presentation-only stands, lights, scoreboards, atmosphere, and materials may retain visual constants; field, ramps, corners, end/side containment, ceiling, goal mouth, and goal tunnel boundaries may not.
+
+`SnapshotEnvelopeV2` gains required `arenaGeometryVersion` and `arenaGeometryFingerprint` metadata. Client validation compares both fields with the visible authoritative geometry before any accepted-state or scene commit. Missing or mismatched identity rejects the candidate atomically and reports an incompatible-build error rather than rendering a split arena.
+
+#### 2. Use the Actual Rapier Collider for Containment
+
+Resolve car length, width, and height once from the room-pinned tuning snapshot and construct both the Rapier cuboid and containment OBB from that same immutable value object. Render-model dimensions never participate.
+
+For a normalized transform, full containment against an inward plane uses the OBB support radius:
+
+```text
+supportRadius(n) =
+  abs(dot(n, localRight))   * halfWidth
+  + abs(dot(n, localUp))    * halfHeight
+  + abs(dot(n, localForward)) * halfLength
+
+containedByPlane = dot(n, center) + supportRadius(n) <= planeLimit + epsilon
+```
+
+A field placement must satisfy every floor/ramp, ceiling, side/end, and corner-cut half-space in the active field region. A goal-interior placement is allowed only when its placement context explicitly names that solid goal region and the complete OBB satisfies that region. This bugfix's waiting and kickoff policies allow the field region only. Validation must not use center-only, vertex-only, render-bounds, or legacy rectangular-AABB shortcuts. `epsilon` is one finite named numerical tolerance shared by tests and runtime; it absorbs floating-point normalization only and cannot make a center beyond an authoritative plane valid.
+
+#### 3. Validate Join and Waiting-State Placement Before Representation
+
+A join mutation prepares the logical roster and deterministic team/slot result without changing authoritative maps. It then:
+
+1. derives the candidate waiting transform from the active geometry and stable roster order;
+2. validates finite normalized transforms, full-collider containment, complete roster coverage, and non-overlap for the resulting represented set;
+3. creates the candidate Rapier body with the same pinned collider dimensions;
+4. verifies the created body's transform and shape identity before commit;
+5. commits roster, body, input, occupancy, assignment generation, and placement certificate once.
+
+Any validation or resource-preparation failure disposes temporary Rapier resources and rejects the join without exposing the identity. Existing represented cars and the last valid snapshot remain unchanged.
+
+#### 4. Extend Initial and Post-Goal Kickoff Transactions
+
+The existing prepared assignment and prepared reset mechanisms are coordinated into one outer transaction:
+
+1. prepare a complete deterministic assignment without mutating the cache;
+2. validate every proposed OBB against the room's `Active_Arena_Geometry` and every pair for non-overlap;
+3. capture ball, car, controller, inventory, assignment-cache, phase, epoch, and transition state;
+4. apply all car/ball transforms and resets;
+5. re-read every resulting body and verify finite state, expected collider identity, exact assigned transform, and containment;
+6. commit assignment cache, placement certificate, kickoff epoch, phase/countdown transition, and projected state together.
+
+If steps 1-2 fail, no body moves. If application or verification fails, all captured state is restored and the prepared assignment is aborted. Initial kickoff remains in the preceding valid Waiting_State; post-goal kickoff retains the preceding valid goal-reset state and body state. A rollback failure is room-fatal: stop simulation and snapshots, notify clients, and dispose the world rather than publish uncertain state.
+
+#### 5. Guard Snapshot Publication
+
+`SnapshotBuilder` receives the active geometry and last committed placement certificate. It always validates geometry identity. For Waiting_State, all kickoff countdown kinds, and the first Active_Play snapshot of each kickoff epoch, it additionally re-reads every represented authoritative body and requires:
+
+- exact roster/certificate identity coverage;
+- the certified collider dimensions and geometry identity;
+- finite current transforms matching the committed frozen placement;
+- full-collider containment in the certified region;
+- no pair overlap and no partial placement generation.
+
+The candidate is rejected as a whole before sequence advancement or broadcast if any check fails. The server retains its last successfully published snapshot. This targeted guard covers every placement-bearing exposure without redefining dynamic Active_Play collision semantics; ongoing dynamic containment remains the closed-shell responsibility of Task 6.1.
+
+#### 6. Fail Atomically
+
+| Failure | Required result |
+|---|---|
+| Geometry version/fingerprint mismatch during room initialization | Reject initialization before accepting a roster or creating a world. |
+| Waiting/join candidate outside active geometry | Reject the complete join/mutation; dispose temporary body; retain prior roster, bodies, assignments, phase, and published state. |
+| Initial/post-goal assignment invalid | Abort before body movement; retain the preceding complete assignment and state. |
+| Apply/verification failure with successful rollback | Publish nothing from the failed generation; continue only from the restored valid state. |
+| Rollback or active-geometry invariant failure | Quarantine/fail the room, stop snapshots and physics, notify clients, and dispose safely. |
+| Snapshot placement certificate missing/stale/mismatched | Do not advance snapshot sequence and do not broadcast a partial or stale candidate. |
+| Client geometry identity mismatch | Reject before accepted-state, interpolation, meshes, HUD, camera, or audio mutate. |
+
+#### 7. Preserve Quick and Custom Determinism
+
+Both room modes use the same active geometry resolver, containment service, transaction coordinator, and publication guard. Mode policy remains an input only for capacity, team limits, and start rules. Stable roster sorting and slot indexing remain unchanged, so identical geometry, tuning, policy, roster, and slot inputs produce identical transforms in Quick and Custom. No retry may choose a different slot or reorder identities; a failed candidate preserves the preceding assignment until the same deterministic inputs can pass.
+
+#### 8. Complete Tasks 6.1 and 6.2 as One Migration Slice
+
+The bugfix must not add a legacy clamp, a second `BUGFIX_ARENA` constant, temporary inward slots, or a validator fallback to `ARENA.LENGTH`. Instead:
+
+1. extend the shared spec/resolver so one canonical resolved descriptor set supports Rapier primitives, containment regions, and visible authoritative meshes;
+2. complete existing Task 6.1 by switching the production Rapier shell to the pinned active geometry and eliminating authoritative legacy-dimension reads;
+3. complete existing Task 6.2 in the same compatible build by switching visible authoritative boundaries to that geometry while preserving surrounding stadium art;
+4. add geometry identity to the server/client acceptance handshake and reject mixed builds;
+5. switch waiting/kickoff validation and publication guards only to the same pinned object; then remove obsolete authoritative legacy paths.
+
+The runtime cutover is enabled only when collision, validation, snapshot metadata, and visible boundaries all support the same identity. Intermediate commits may compile for review, but no intermediate build may accept players with metric validation and a legacy live shell. Existing Task 6.1/6.2 checkboxes and unrelated task status remain untouched until the later task phase and actual implementation validation.
+
+#### 9. Add Read-Only Test Diagnostics
+
+When both a dedicated test build flag and server test-runtime flag are enabled, the server emits placement diagnostics keyed to a specific snapshot sequence and the client exposes a frozen getter such as `window.__ROCKET_ARENA_TEST__.readPlacement()` only after that snapshot is accepted. The returned value is a deep copy with deterministic Stable_Roster_Order:
+
+```typescript
+interface BrowserPlacementDiagnostics {
+  readonly diagnosticsVersion: 1;
+  readonly acceptedSnapshotSequence: number;
+  readonly roomMode: 'quick' | 'custom';
+  readonly phase: string;
+  readonly countdownKind: string | null;
+  readonly kickoffEpoch: number;
+  readonly geometry: {
+    readonly version: number;
+    readonly fingerprint: string;
+    readonly bounds: {
+      readonly min: readonly [number, number, number];
+      readonly max: readonly [number, number, number];
+    };
+  };
+  readonly collider: {
+    readonly length: number;
+    readonly width: number;
+    readonly height: number;
+  };
+  readonly cars: readonly {
+    readonly sessionId: string;
+    readonly team: 'blue' | 'orange';
+    readonly position: readonly [number, number, number];
+    readonly rotation: readonly [number, number, number, number];
+    readonly contained: boolean;
+  }[];
+}
+```
+
+Transforms come from the accepted authoritative snapshot, collider dimensions and geometry identity come from the matching server-pinned diagnostic record, and bounds come from the matching active geometry. The API exposes no setters, commands, body handles, mutable references, or alternate state path. Production builds omit the global and test diagnostic transport entirely; production startup rejects an attempt to enable the test runtime flag. If a minimal production-safe identity inspector is retained for support, it is read-only and exposes only protocol/geometry versions, never test controls.
+
+### Testing Strategy
+
+#### Validation Approach
+
+Validation follows the required sequence: expose the counterexample on unfixed code, observe and lock down valid baseline behavior, implement the fix, then rerun the same checks for correction and preservation. Browser evidence proves accepted state and visible alignment; pure and Rapier integration tests prove containment and atomicity.
+
+#### Exploratory Bug Condition Checking
+
+**Goal:** Demonstrate the active mismatch before changing placement behavior and preserve a reproducible counterexample artifact.
+
+**Test Plan:** First add the read-only diagnostic seam without changing geometry selection. Run deterministic Custom and Quick scenarios against the unfixed build. Wait for the first accepted local-car snapshot/render, record active geometry identities/bounds, collider dimensions, and transforms, then assert full containment against the active collision/visible boundary.
+
+**Expected Counterexample:** At least one deterministic identity receives metric slot `z = -34` or `z = -42` (or its positive mirror). Validation reports metric bounds `z +/-51.2`, while the live legacy collision/visible shell reports `z +/-30`; the containment assertion fails.
+
+**Required Failure Artifacts:** Before the expected assertion, take an explicit viewport screenshot showing the car beyond the transparent perimeter and attach a JSON counterexample containing room mode, session ID, snapshot sequence, phase, slot transform, collider dimensions, validation identity/bounds, collision identity/bounds, and visible identity/bounds. Playwright's `screenshot: 'only-on-failure'`, retained trace, and console/page-error log supplement but do not replace the explicit counterexample artifact.
+
+The exploratory test is correct only when it fails on unfixed code for the documented reason. It must not be weakened or deleted after the fix; the same assertion becomes regression proof.
+
+#### Fix Checking
+
+```text
+FOR ALL candidate WHERE isBugCondition(candidate) DO
+  result := exposePlacement_Fixed(candidate)
+  ASSERT expectedBehavior(result)
+END FOR
+```
+
+Generated candidates cover each placement context, both teams, every canonical slot, transforms near each field/ramp/ceiling/corner plane, geometry identity mismatches, collider dimension extremes within the pinned registry range, incomplete rosters, overlap, application failures, and stale certificates. Deterministic cases include the exact `-34/-42` versus `-30` counterexample.
+
+#### Preservation Checking
+
+Use observation-first methodology: run F on valid non-bug-condition inputs, record its deterministic mappings and complete state transitions, then compare F' on the same inputs.
+
+```text
+FOR ALL candidate WHERE NOT isBugCondition(candidate) DO
+  ASSERT observablePlacementBehavior_F(candidate)
+         = observablePlacementBehavior_Fixed(candidate)
+END FOR
+```
+
+The comparison excludes the intentional metric authoritative-boundary replacement itself and includes identity-to-slot mapping, orientation, non-overlap, assignment reuse, roster/host state, phase/countdown state, velocities, scores, snapshot order, and client atomic acceptance.
+
+#### Unit Tests
+
+- Validate canonical geometry fingerprinting, unsupported/mutated version rejection, and deterministic resolver output.
+- Validate OBB support-plane containment for interior, exact-boundary, just-inside, just-outside, rotated, floor/ramp, ceiling, side/end, corner-cut, and explicitly allowed goal-interior cases.
+- Validate that the same resolved collider object drives Rapier body dimensions and containment dimensions.
+- Validate placement-certificate identity, roster, epoch, transform, and generation matching.
+- Validate snapshot guard rejection before sequence advancement and client geometry mismatch rejection before accepted-state mutation.
+
+#### Property-Based Tests
+
+- **Property 28: Bug Condition - Active geometry placement containment:** Generate at least 100 deterministic seeded placement/geometry/collider cases and require reject-with-preservation for every mismatch or non-contained complete collider and accept-after-complete-commit for every valid candidate.
+- **Property 29: Preservation - Deterministic placement, authority, and match flow:** Generate capacity-valid Quick/Custom rosters and non-bug candidates, observe F first, then require F' to preserve mapping, authority, atomicity, and phase behavior.
+- Record seed, ordered case index, geometry identity, placement context, roster signature, and minimized counterexample on failure.
+
+#### Integration Tests
+
+- Build a production Rapier world from one active geometry, prove exact shell extents, and verify each canonical waiting/kickoff collider is contained by the same runtime object.
+- Inject validation, body creation, set-transform, verification, assignment-commit, and rollback failures; assert no partial body, roster, cache, phase, epoch, sequence, or snapshot mutation.
+- Verify initial, post-goal, and overtime kickoff transactions for one-through-capacity rosters in both modes, including unchanged-roster reuse.
+- Verify a malformed/mismatched placement-bearing snapshot is never broadcast and a geometry-mismatched client preserves its previous accepted scene.
+- Keep existing deterministic timing, authority, interpolation, audio, HUD, and stadium regression suites unchanged except for authoritative boundary expectations.
+
+#### Playwright Browser Proof
+
+Use the existing planned Task 8.5 Playwright integration rather than a second browser harness. Add an exact-pinned runner only when implementation begins. `playwright.config.ts` owns fresh server and client `webServer` processes, readiness URLs, test-only diagnostic flags, and teardown; it uses non-watch production-style start/preview commands, does not reuse unknown existing servers for this proof, and releases ports/processes after success or failure. Tests do not start development watchers or depend on a manually running terminal.
+
+Run deterministic scenarios with isolated room codes/state:
+
+1. **Custom room entry and initial kickoff:** Assert the first accepted local car render in Waiting_State, every accepted countdown sample, and the first playing sample all share one geometry identity and contain the full collider.
+2. **Quick Match initial kickoff:** Join the deterministic 3+3 roster, assert all six represented identities and the local car through waiting/countdown/first play, and preserve deterministic slot mapping.
+3. **Post-goal kickoff:** Use a test-only server fixture (not a browser mutation API) to reach a deterministic goal reset, then assert every post-goal countdown sample uses the retained mapping and contained colliders.
+4. **Rejection path:** Supply a server-side test fixture with a known invalid candidate and assert the browser receives no new placement generation, no partial mesh change, and no sequence advance for that candidate.
+
+For the post-fix run, attach the same JSON diagnostic record plus deterministic screenshots for Custom, Quick, and post-goal samples. Require metric geometry version/fingerprint equality, active bounds `z +/-51.2`, full-collider containment, visible perimeter alignment within the existing `0.05 m` tolerance, zero unexpected `pageerror` events, and zero Rocket Arena error-level console messages. The screenshot is presentation evidence; the diagnostic assertion and server/Rapier tests are the correctness proof.

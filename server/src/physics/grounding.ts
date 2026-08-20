@@ -71,6 +71,17 @@ export class ArenaSurfaceRegistry {
     return metadata;
   }
 
+  /** Remove one registration without assuming the Rapier collider is still valid. */
+  unregister(colliderOrHandle: RAPIER.Collider | number): RegisteredArenaSurface | null {
+    const handle = typeof colliderOrHandle === 'number'
+      ? colliderOrHandle
+      : colliderOrHandle.handle;
+    const entry = this.#entriesByHandle.get(handle);
+    if (entry === undefined) return null;
+    this.#entriesByHandle.delete(handle);
+    return entry.metadata;
+  }
+
   get(collider: RAPIER.Collider): RegisteredArenaSurface | null {
     if (!collider.isValid()) return null;
     return this.#entriesByHandle.get(collider.handle)?.metadata ?? null;

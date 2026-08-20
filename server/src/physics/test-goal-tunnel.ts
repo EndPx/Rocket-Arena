@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import type RAPIER from '@dimforge/rapier3d-compat';
 import {
+  ARENA_COLLISION_GEOMETRY,
   DEFAULT_TUNING_REGISTRY_SNAPSHOT,
   TUNING_IDS,
+  getConstant,
   getScalarTuningValue,
 } from '@rocket-arena/shared';
-import { getConstant } from '../../../shared/src/constants/index.js';
 import { createArenaColliders } from './arena.js';
 import {
   createBall,
@@ -24,20 +25,22 @@ function tuning(id: string): number {
 
 function runGoalInterior(zSign: number): void {
   let world: RAPIER.World | null = null;
+  let arena: ReturnType<typeof createArenaColliders> | null = null;
   try {
     world = createWorld();
-    createArenaColliders(world);
+    arena = createArenaColliders(world, ARENA_COLLISION_GEOMETRY);
     const timestep = tuning(TUNING_IDS.physics.fixedStepSeconds);
     const frameCount = Math.round(TEST_SECONDS / timestep);
     const radius = tuning(TUNING_IDS.ball.radius);
-    const goalWidth = getConstant('ARENA.GOAL.WIDTH');
-    const goalHeight = getConstant('ARENA.GOAL.HEIGHT');
-    const goalDepth = getConstant('ARENA.GOAL.DEPTH');
-    const length = getConstant('ARENA.LENGTH');
+    const goal = ARENA_COLLISION_GEOMETRY.goals.find(
+      ({ zDirection }) => zDirection === zSign,
+    )!;
+    const goalWidth = goal.opening.width;
+    const goalHeight = goal.opening.height;
     const ball = createBall(world, {
       x: 0,
       y: radius + getConstant('BALL.SPAWN_CLEARANCE'),
-      z: zSign * (length / 2 + goalDepth / 2),
+      z: (goal.goalLineZ + goal.backWallZ) / 2,
     });
     ball.setLinvel({ x: 18, y: 14, z: 0 }, true);
 
@@ -68,6 +71,7 @@ function runGoalInterior(zSign: number): void {
       `goal roof containment failed at sign ${zSign}: y=${maximumY.toFixed(3)}`,
     );
   } finally {
+    arena?.dispose();
     world?.free();
   }
 }

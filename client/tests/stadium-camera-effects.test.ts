@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as THREE from 'three';
-import { ARENA, VISUAL } from '@rocket-arena/shared';
-import { createArena } from '../src/renderer/arena.js';
+import { RESOLVED_ARENA_GEOMETRY, VISUAL } from '@rocket-arena/shared';
+import { createArena, type ArenaBoundaryMeshMetadata } from '../src/renderer/arena.js';
 import { createLighting } from '../src/renderer/lighting.js';
 import { createCarMesh, type CarVisualRig } from '../src/renderer/car.js';
 import {
@@ -16,19 +16,47 @@ import {
   updateCarVisualRig,
 } from '../src/renderer/entity-effects.js';
 
-test('stadium uses instancing and preserves collider-aligned field dimensions', () => {
+test('stadium maps resolved primitives into three explicitly owned presentation roots', () => {
   const scene = new THREE.Scene();
-  const stadium = createArena(scene);
-  const field = stadium.getObjectByName('authoritative-field-surface') as THREE.Mesh;
-  const seats = stadium.getObjectByName('instanced-spectator-seats');
-  const arches = stadium.getObjectByName('instanced-stadium-arches');
-  const lamps = stadium.getObjectByName('instanced-floodlight-lamps');
+  const arena = createArena(scene, RESOLVED_ARENA_GEOMETRY);
+  const floorPrimitive = RESOLVED_ARENA_GEOMETRY.primitives.find(({ id }) => id === 'field.floor.center');
+  assert.ok(floorPrimitive);
+  const field = arena.getObjectByName(`arena-boundary:${floorPrimitive.id}`) as THREE.Mesh;
+  const seats = arena.getObjectByName('instanced-spectator-seats');
+  const arches = arena.getObjectByName('instanced-stadium-arches');
+  const lamps = arena.getObjectByName('instanced-floodlight-lamps');
   const rowCount = VISUAL.STADIUM.STANDS.TIER_COUNT * VISUAL.STADIUM.STANDS.ROWS_PER_TIER;
   const expectedSeats = 2 * rowCount * VISUAL.STADIUM.STANDS.SEATS_PER_SIDE
     + 2 * rowCount * VISUAL.STADIUM.STANDS.SEATS_PER_END;
 
-  assert.equal(field.scale.x, ARENA.WIDTH);
-  assert.equal(field.scale.z, ARENA.LENGTH);
+  assert.equal(arena.authoritativeBoundaries.name, 'arena-authoritative-boundaries');
+  assert.equal(arena.gameplayOverlays.name, 'arena-gameplay-overlays');
+  assert.equal(arena.exteriorPresentation.name, 'arena-exterior-presentation');
+  assert.deepEqual(
+    scene.children.map(({ name }) => name),
+    ['arena-authoritative-boundaries', 'arena-gameplay-overlays', 'arena-exterior-presentation'],
+  );
+  assert.equal(arena.authoritativeBoundaries.children.length, RESOLVED_ARENA_GEOMETRY.primitives.length);
+  assert.equal(arena.padDescriptors.length, 0);
+  assert.equal(arena.gameplayOverlays.getObjectByName('boost-pad-placeholder'), undefined);
+
+  assert.ok(field instanceof THREE.Mesh);
+  const positions = field.geometry.getAttribute('position');
+  assert.equal(positions.count, floorPrimitive.inwardSurface.positions.length);
+  floorPrimitive.inwardSurface.positions.forEach((expected, index) => {
+    assert.ok(Math.abs(positions.getX(index) - expected[0]) <= 1e-5);
+    assert.ok(Math.abs(positions.getY(index) - expected[1]) <= 1e-5);
+    assert.ok(Math.abs(positions.getZ(index) - expected[2]) <= 1e-5);
+  });
+  const metadata = field.userData.arenaBoundary as ArenaBoundaryMeshMetadata;
+  assert.equal(metadata.primitiveId, floorPrimitive.id);
+  assert.equal(metadata.surfaceId, floorPrimitive.surfaceId);
+  assert.equal(metadata.geometryIdentity.fingerprint, RESOLVED_ARENA_GEOMETRY.identity.fingerprint);
+  assert.deepEqual(metadata.seamIds, floorPrimitive.inwardSurface.seamIds);
+  assert.ok(Object.isFrozen(metadata));
+  assert.ok(Object.isFrozen(metadata.seamIds));
+  assert.ok(Object.isFrozen(metadata.geometryIdentity));
+
   assert.ok(seats instanceof THREE.InstancedMesh);
   assert.equal(seats.count, expectedSeats);
   assert.ok(arches instanceof THREE.InstancedMesh);
@@ -38,10 +66,22 @@ test('stadium uses instancing and preserves collider-aligned field dimensions', 
     lamps.count,
     2 * VISUAL.STADIUM.LIGHTS.BANKS_PER_SIDE * VISUAL.STADIUM.LIGHTS.LAMPS_PER_BANK,
   );
-  assert.ok(stadium.getObjectByName('blue-goal-grid'));
-  assert.ok(stadium.getObjectByName('orange-goal-grid'));
-  assert.ok(stadium.getObjectByName('blue-rocket-arena-scoreboard'));
-  assert.ok(stadium.getObjectByName('orange-rocket-arena-scoreboard'));
+  assert.ok(arena.getObjectByName('blue-goal-grid'));
+  assert.ok(arena.getObjectByName('orange-goal-grid'));
+  assert.ok(arena.getObjectByName('blue-rocket-arena-scoreboard'));
+  assert.ok(arena.getObjectByName('orange-rocket-arena-scoreboard'));
+  assert.ok(arena.getObjectByName('instanced-rocket-arena-flags'));
+  assert.ok(arena.getObjectByName('instanced-city-skyline'));
+  assert.equal(arena.exteriorPresentation.userData.presentationOnly, true);
+  assert.equal(arena.getObjectByName('instanced-spectator-seats')?.userData.arenaBoundary, undefined);
+
+  arena.update(1 / 60, 1);
+  arena.dispose();
+  arena.dispose();
+  assert.equal(arena.disposed, true);
+  assert.equal(arena.authoritativeBoundaries.parent, null);
+  assert.equal(arena.gameplayOverlays.parent, null);
+  assert.equal(arena.exteriorPresentation.parent, null);
 });
 
 test('lighting budget has one shadow caster and two team goal accents', () => {

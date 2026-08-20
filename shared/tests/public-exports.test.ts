@@ -12,6 +12,9 @@ test('package root exposes every foundational shared contract', () => {
   assert.strictEqual(shared.ROOM_POLICIES, config.ROOM_POLICIES);
   assert.strictEqual(shared.MATCH_RULES, constants.MATCH_RULES);
   assert.strictEqual(shared.ARENA_GEOMETRY_SPEC, geometry.ARENA_GEOMETRY_SPEC);
+  assert.strictEqual(shared.RESOLVED_ARENA_GEOMETRY, geometry.RESOLVED_ARENA_GEOMETRY);
+  assert.strictEqual(shared.ARENA_COLLISION_GEOMETRY, geometry.RESOLVED_ARENA_GEOMETRY);
+  assert.strictEqual(shared.resolveArenaGeometry, geometry.resolveArenaGeometry);
   assert.strictEqual(shared.GameState, schema.GameState);
   assert.strictEqual(shared.GoalResultState, schema.GoalResultState);
   assert.strictEqual(shared.TerminalResultState, schema.TerminalResultState);

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import RAPIER from '@dimforge/rapier3d-compat';
 import {
+  ARENA_COLLISION_GEOMETRY,
   DEFAULT_TUNING_REGISTRY_SNAPSHOT,
   TUNING_IDS,
   getScalarTuningValue,
@@ -183,7 +184,7 @@ function runDropHarness(): {
   maximumSpeed: number;
 } {
   return withTrackedWorld((world) => {
-    createArenaColliders(world);
+    createArenaColliders(world, ARENA_COLLISION_GEOMETRY);
     const ball = createBall(world, { x: 0, y: DROP_HEIGHT, z: 0 });
     const timestep = getScalarTuningValue(
       DEFAULT_TUNING_REGISTRY_SNAPSHOT,

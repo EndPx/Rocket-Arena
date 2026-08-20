@@ -864,6 +864,68 @@
         "chatSessionId": "sess_e641f3f1-ef18-4351-abe2-4e3f0e6477a1",
         "timestamp": 1787109431022
       }
+    ],
+    "10. Correct active arena geometry placement consistency (independent bugfix path)": [],
+    "10.1 Establish the expected-failure active-geometry placement counterexample": [
+      {
+        "executionId": "393d3a1d-d9c0-4759-b34f-6ab365917ff0",
+        "chatSessionId": "sess_e641f3f1-ef18-4351-abe2-4e3f0e6477a1",
+        "timestamp": 1787170838427
+      }
+    ],
+    "10.2 Implement the atomic active-geometry compatibility cutover": [],
+    "10.3 Validate contained placement and preserved behavior after the cutover": [],
+    "6.2 Refactor the client arena and stadium around `ResolvedArenaGeometry`": [
+      {
+        "executionId": "62ac770c-ab2c-4172-ae90-e4de3e5ef006",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1787212620680
+      },
+      {
+        "executionId": "62ac770c-ab2c-4172-ae90-e4de3e5ef006",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1787212649946
+      },
+      {
+        "executionId": "62ac770c-ab2c-4172-ae90-e4de3e5ef006",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1787213189562
+      }
+    ],
+    "7. Polish car presentation and client interaction from accepted/interpolated state": [
+      {
+        "executionId": "62ac770c-ab2c-4172-ae90-e4de3e5ef006",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1787212620751
+      }
+    ],
+    "8.3 Refactor the ball mesh and motion effects as a presentation-only rig": [
+      {
+        "executionId": "62ac770c-ab2c-4172-ae90-e4de3e5ef006",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1787212620820
+      }
+    ],
+    "9. Implement accepted-state-driven HUD, accessibility, and presentation integration": [
+      {
+        "executionId": "62ac770c-ab2c-4172-ae90-e4de3e5ef006",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1787212620933
+      }
+    ],
+    "11. Implement and run one bounded final client/shared validation pass": [
+      {
+        "executionId": "62ac770c-ab2c-4172-ae90-e4de3e5ef006",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1787212621110
+      }
+    ],
+    "6. Build the shared-geometry-driven Three.js arena and original exterior stadium": [
+      {
+        "executionId": "62ac770c-ab2c-4172-ae90-e4de3e5ef006",
+        "chatSessionId": "sess_5a183aa7-c04e-42e5-864c-63ad7c26970e",
+        "timestamp": 1787213189674
+      }
     ]
   }
 }
