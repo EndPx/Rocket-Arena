@@ -4,7 +4,10 @@ import * as THREE from 'three';
 import { BALL, CAR, VISUAL } from '@rocket-arena/shared';
 import {
   createCarMesh,
+  createCarVisualRig,
   createSectionedShellGeometry,
+  getCarVisualRig,
+  getSharedCarResourceReferenceCount,
   type CarVisualRig,
   type ShellSection,
 } from '../src/renderer/car.js';
@@ -99,5 +102,133 @@ test('sectioned shell geometry stays finite and bounded across generated profile
     assert.ok(Math.abs(bounds.min.z - sections[0].z) <= 1e-6);
     assert.ok(Math.abs(bounds.max.z - sections[sections.length - 1].z) <= 1e-6);
     geometry.dispose();
+  }
+});
+
+// Validates: Requirements 1.9-1.12, 18.24 (Task 7 rig ownership and budgets)
+
+test('eight car rigs share one immutable resource set and release it exactly once', () => {
+  const before = getSharedCarResourceReferenceCount();
+  const rigs = [
+    ...Array.from({ length: 4 }, () => createCarVisualRig('blue')),
+    ...Array.from({ length: 4 }, () => createCarVisualRig('orange')),
+  ];
+
+  try {
+    assert.equal(getSharedCarResourceReferenceCount(), before + 8);
+
+    const shells = rigs.map((rig) => {
+      const shell = rig.object.getObjectByName('faceted-main-shell');
+      assert.ok(shell instanceof THREE.Mesh);
+      return shell;
+    });
+    const geometries = new Set(shells.map((shell) => shell.geometry));
+    assert.equal(geometries.size, 1, 'all eight rigs must reuse one shell geometry');
+
+    const bodyMaterials = new Set(shells.map((shell) => shell.material));
+    assert.equal(bodyMaterials.size, 2, 'exactly one body material per team is shared');
+
+    const flameMaterials = new Set(rigs.flatMap((rig) => rig.boostFlames.map((f) => f.material)));
+    assert.equal(
+      flameMaterials.size,
+      16,
+      'boost flame opacity is animated per car, so those materials stay per car',
+    );
+
+    const wheelGeometries = new Set(rigs.flatMap((rig) => rig.wheelSpins.map((wheel) => {
+      const tire = wheel.getObjectByName('tire');
+      assert.ok(tire instanceof THREE.Mesh);
+      return tire.geometry;
+    })));
+    assert.equal(wheelGeometries.size, 1, 'all 32 wheels reuse one tire geometry');
+  } finally {
+    for (const rig of rigs) rig.dispose();
+  }
+
+  assert.equal(getSharedCarResourceReferenceCount(), before);
+  assert.ok(rigs.every((rig) => rig.isDisposed));
+
+  const disposedTwice = createCarVisualRig('blue');
+  const afterCreate = getSharedCarResourceReferenceCount();
+  disposedTwice.dispose();
+  disposedTwice.dispose();
+  assert.equal(
+    getSharedCarResourceReferenceCount(),
+    afterCreate - 1,
+    'repeated disposal must release only one shared reference',
+  );
+});
+
+test('rigs carry team shape cues and an opt-in local marker', () => {
+  const blue = createCarVisualRig('blue');
+  const orange = createCarVisualRig('orange');
+
+  try {
+    assert.equal(blue.team, 'blue');
+    assert.equal(orange.team, 'orange');
+    assert.ok(blue.object.getObjectByName('team-crest-blue-left'));
+    assert.ok(blue.object.getObjectByName('team-crest-blue-right'));
+    assert.equal(blue.object.getObjectByName('team-crest-orange'), undefined);
+    assert.ok(orange.object.getObjectByName('team-crest-orange'));
+    assert.equal(orange.object.getObjectByName('team-crest-blue-left'), undefined);
+
+    const marker = blue.object.getObjectByName('local-player-marker');
+    assert.ok(marker instanceof THREE.Mesh);
+    assert.equal(marker.visible, false, 'remote cars must not show the local marker');
+    assert.equal(blue.isLocal, false);
+
+    blue.setLocal(true);
+    assert.equal(blue.isLocal, true);
+    assert.equal(marker.visible, true);
+
+    blue.setLocal(false);
+    assert.equal(marker.visible, false);
+
+    assert.strictEqual(getCarVisualRig(blue.object), blue);
+    assert.equal(getCarVisualRig(new THREE.Group()), null);
+  } finally {
+    blue.dispose();
+    orange.dispose();
+  }
+});
+
+test('an unknown team label resolves to a presentable identity', () => {
+  const rig = createCarVisualRig('spectator');
+  try {
+    assert.equal(rig.team, 'orange');
+    assert.ok(rig.object.getObjectByName('team-crest-orange'));
+  } finally {
+    rig.dispose();
+  }
+});
+
+test('rig temporal state rebases without touching the transform', () => {
+  const car = createCarMesh('blue');
+  const rig = getCarVisualRig(car);
+  assert.ok(rig);
+
+  try {
+    car.position.set(4, 2, -7);
+    rig.motion.wheelSpeed = 12;
+    rig.motion.boostBlend = 0.8;
+    rig.motion.boostActiveUntil = 99;
+    rig.motion.lastBoost = 21;
+    rig.motion.hasBoostReference = true;
+    rig.wheelSpins[0]!.rotation.x = 1.2;
+    rig.frontWheelSteers[0]!.rotation.y = 0.4;
+    for (const flame of rig.boostFlames) flame.visible = true;
+
+    rig.resetTemporalState();
+
+    assert.equal(rig.motion.wheelSpeed, 0);
+    assert.equal(rig.motion.boostBlend, 0);
+    assert.equal(rig.motion.boostActiveUntil, 0);
+    assert.equal(rig.motion.hasBoostReference, false);
+    assert.equal(rig.wheelSpins[0]!.rotation.x, 0);
+    assert.equal(rig.frontWheelSteers[0]!.rotation.y, 0);
+    assert.ok(rig.boostFlames.every((flame) => !flame.visible));
+    assert.deepEqual(car.position.toArray(), [4, 2, -7], 'a rebase must not move the car');
+  } finally {
+    rig.dispose();
   }
 });

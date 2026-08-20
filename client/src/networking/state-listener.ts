@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { Room } from 'colyseus.js';
 import type { CountdownKind, MatchPhase, RoomMode, Team } from '@rocket-arena/shared';
-import { createCarMesh, type CarVisualRig } from '../renderer/car.js';
+import { createCarMesh, getCarVisualRig, type CarVisualRig } from '../renderer/car.js';
 import { createBallMesh } from '../renderer/ball.js';
 import {
   SnapshotBuffer,
@@ -32,6 +32,8 @@ let localState: Readonly<StateSync> | null = null;
 let listenerGeneration = 0;
 let arrivalMetrics: SnapshotArrivalMetrics = emptyArrivalMetrics();
 let appliedRenderFrames = 0;
+let localSessionId: string | null = null;
+let presentedKickoffEpoch: number | null = null;
 
 export interface StateEntity {
   readonly x: number;
@@ -145,10 +147,23 @@ function nextArrivalMetrics(
   });
 }
 
+/**
+ * Release one car's presentation resources exactly once. A rig-backed root
+ * frees its per-car effect materials and drops one shared-resource reference;
+ * a plain root only exposes effect materials, so those are freed directly.
+ */
 function disposeCarEffects(car: THREE.Group): void {
-  const rig = car.userData.visualRig as CarVisualRig | undefined;
-  if (!rig) return;
-  for (const effect of [...rig.boostFlames, ...rig.boostTrails]) {
+  const rig = getCarVisualRig(car);
+  if (rig) {
+    rig.dispose();
+    return;
+  }
+
+  const legacy = car.userData.visualRig as
+    | Pick<CarVisualRig, 'boostFlames' | 'boostTrails'>
+    | undefined;
+  if (!legacy) return;
+  for (const effect of [...legacy.boostFlames, ...legacy.boostTrails]) {
     const materials = Array.isArray(effect.material) ? effect.material : [effect.material];
     materials.forEach((material) => material.dispose());
   }
@@ -189,6 +204,8 @@ function cleanupEntityMeshes(): void {
   }
 
   localState = null;
+  localSessionId = null;
+  presentedKickoffEpoch = null;
   resetInterpolationState();
 }
 
@@ -329,6 +346,15 @@ function prepareReconciliation(
       assertPreparedMesh(mesh, `Car mesh for ${car.sessionId}`);
       mesh.userData.lastBoost = car.boost;
       mesh.userData.team = car.team;
+      const rig = getCarVisualRig(mesh);
+      if (rig) {
+        // The local marker is presentation only; it never affects simulation.
+        rig.setLocal(localSessionId !== null && car.sessionId === localSessionId);
+        // Seed the boost reference from the accepted value so a freshly
+        // attached car cannot flare on its first presented frame.
+        rig.motion.lastBoost = car.boost;
+        rig.motion.hasBoostReference = true;
+      }
       applyEntityTransform(mesh, toEntitySnapshot(car));
       additions.push({ sessionId: car.sessionId, team: car.team, mesh });
       nextMeshes.set(car.sessionId, mesh);
@@ -554,6 +580,9 @@ export function setupStateListener(
   const roomMode = requireRoomMode(options.roomMode);
   const generation = ++listenerGeneration;
   cleanupEntityMeshes();
+  localSessionId = typeof room.sessionId === 'string' && room.sessionId.length > 0
+    ? room.sessionId
+    : null;
   const acceptedGeneration = resetAcceptedSnapshotStore();
   const carMeshFactory = options.carMeshFactory ?? createCarMesh;
   const ballMeshFactory = options.ballMeshFactory ?? createBallMesh;
@@ -658,8 +687,21 @@ export function updateInterpolatedEntities(
     const player = frame.entities[`${PLAYER_ENTITY_PREFIX}${sessionId}`];
     if (player) applyEntityTransform(car, player);
   }
+
+  // A kickoff teleports every car, so smoothed presentation state from before
+  // the teleport must not bleed across the rebase.
+  if (presentedKickoffEpoch !== frame.kickoffEpoch) {
+    presentedKickoffEpoch = frame.kickoffEpoch;
+    for (const car of carMeshes.values()) getCarVisualRig(car)?.resetTemporalState();
+  }
+
   appliedRenderFrames += 1;
   return frame;
+}
+
+/** The presented kickoff epoch, used to rebase temporal presentation effects. */
+export function getPresentedKickoffEpoch(): number | null {
+  return presentedKickoffEpoch;
 }
 
 export function getCarMeshes(): ReadonlyMap<string, THREE.Group> {

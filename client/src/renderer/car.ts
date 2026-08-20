@@ -25,13 +25,37 @@ export interface ShellSection {
   top: number;
 }
 
+/**
+ * Bounded temporal presentation state owned by one rig. It is smoothed from
+ * accepted values only, and it is reset whenever the car is teleported by a
+ * kickoff so a rebased car never inherits motion from before the teleport.
+ */
+export interface CarRigMotionState {
+  wheelSpeed: number;
+  boostBlend: number;
+  boostActiveUntil: number;
+  lastBoost: number;
+  hasBoostReference: boolean;
+}
+
 export interface CarVisualRig {
-  wheelSpins: THREE.Group[];
-  frontWheelSteers: THREE.Group[];
-  exhausts: THREE.Group[];
-  boostFlames: THREE.Mesh[];
-  boostTrails: THREE.Mesh[];
-  wheelRadius: number;
+  readonly team: CarTeam;
+  /** The root this rig owns; the reconciler parents this into the scene. */
+  readonly object: THREE.Group;
+  readonly wheelSpins: readonly THREE.Group[];
+  readonly frontWheelSteers: readonly THREE.Group[];
+  readonly exhausts: readonly THREE.Group[];
+  readonly boostFlames: readonly THREE.Mesh[];
+  readonly boostTrails: readonly THREE.Mesh[];
+  readonly wheelRadius: number;
+  readonly motion: CarRigMotionState;
+  readonly isLocal: boolean;
+  readonly isDisposed: boolean;
+  /** Show the local-player marker; presentation only. */
+  setLocal(isLocal: boolean): void;
+  resetTemporalState(): void;
+  /** Detach, free per-car effect materials, and release one shared reference. */
+  dispose(): void;
 }
 
 /**
@@ -114,66 +138,56 @@ interface CarGeometrySet {
   exhaustRing: THREE.TorusGeometry;
   flame: THREE.ConeGeometry;
   trail: THREE.ConeGeometry;
+  /** Twin blades read as Blue even without colour. */
+  blueCrest: THREE.BufferGeometry;
+  /** A single wide chevron reads as Orange even without colour. */
+  orangeCrest: THREE.BufferGeometry;
+  localMarker: THREE.TorusGeometry;
 }
 
-let cachedGeometry: CarGeometrySet | null = null;
-const teamMaterials = new Map<string, { body: THREE.MeshStandardMaterial; accent: THREE.MeshStandardMaterial }>();
+export type CarTeam = 'blue' | 'orange';
 
-const neutralMaterial = new THREE.MeshStandardMaterial({
-  color: VISUAL.PALETTE.NEUTRAL_METAL,
-  roughness: 0.42,
-  metalness: 0.72,
-});
-const darkMaterial = new THREE.MeshStandardMaterial({
-  color: VISUAL.PALETTE.STRUCTURE_DARK,
-  roughness: 0.62,
-  metalness: 0.48,
-});
-const tireMaterial = new THREE.MeshStandardMaterial({
-  color: VISUAL.PALETTE.RUBBER,
-  roughness: 0.92,
-  metalness: 0.04,
-});
-const rimMaterial = new THREE.MeshStandardMaterial({
-  color: VISUAL.PALETTE.STRUCTURE_LIGHT,
-  roughness: 0.24,
-  metalness: 0.9,
-});
-const brakeMaterial = new THREE.MeshStandardMaterial({
-  color: 0x51251f,
-  roughness: 0.48,
-  metalness: 0.66,
-});
-const glassMaterial = new THREE.MeshPhysicalMaterial({
-  color: VISUAL.PALETTE.GLASS,
-  roughness: VISUAL.CAR.MATERIAL.GLASS_ROUGHNESS,
-  metalness: VISUAL.CAR.MATERIAL.GLASS_METALNESS,
-  transparent: true,
-  opacity: VISUAL.CAR.MATERIAL.GLASS_OPACITY,
-  clearcoat: 0.72,
-  clearcoatRoughness: 0.18,
-});
-const headlightMaterial = new THREE.MeshStandardMaterial({
-  color: VISUAL.PALETTE.WHITE_LIGHT,
-  emissive: VISUAL.PALETTE.WHITE_LIGHT,
-  emissiveIntensity: VISUAL.CAR.LIGHTS.HEADLIGHT_GLOW,
-  roughness: 0.2,
-});
-const tailLightMaterial = new THREE.MeshStandardMaterial({
-  color: 0xff352f,
-  emissive: 0xff1f18,
-  emissiveIntensity: VISUAL.CAR.LIGHTS.TAILLIGHT_GLOW,
-  roughness: 0.28,
-});
+/** Normalize any wire team label onto the two presented identities. */
+export function resolveCarTeam(team: string): CarTeam {
+  return team === 'blue' ? 'blue' : 'orange';
+}
 
-function getTeamMaterials(team: string): { body: THREE.MeshStandardMaterial; accent: THREE.MeshStandardMaterial } {
-  const key = team === 'blue' ? 'blue' : 'orange';
-  const cached = teamMaterials.get(key);
-  if (cached) return cached;
+interface CarTeamMaterialSet {
+  readonly body: THREE.MeshStandardMaterial;
+  readonly accent: THREE.MeshStandardMaterial;
+}
 
-  const bodyColor = key === 'blue' ? VISUAL.PALETTE.BLUE : VISUAL.PALETTE.ORANGE;
-  const accentColor = key === 'blue' ? VISUAL.PALETTE.BLUE_LIGHT : VISUAL.PALETTE.ORANGE_LIGHT;
-  const materials = {
+interface CarSharedMaterials {
+  readonly neutral: THREE.MeshStandardMaterial;
+  readonly dark: THREE.MeshStandardMaterial;
+  readonly tire: THREE.MeshStandardMaterial;
+  readonly rim: THREE.MeshStandardMaterial;
+  readonly brake: THREE.MeshStandardMaterial;
+  readonly glass: THREE.MeshPhysicalMaterial;
+  readonly headlight: THREE.MeshStandardMaterial;
+  readonly tailLight: THREE.MeshStandardMaterial;
+  readonly localMarker: THREE.MeshBasicMaterial;
+  readonly blue: CarTeamMaterialSet;
+  readonly orange: CarTeamMaterialSet;
+}
+
+interface CarSharedResources {
+  readonly geometry: CarGeometrySet;
+  readonly materials: CarSharedMaterials;
+}
+
+/**
+ * Every immutable car geometry and material is built once and shared by all
+ * rigs. Rigs hold a reference, and the resources are released only when the
+ * last rig is disposed, so an eight-car room allocates exactly one set.
+ */
+let sharedResources: CarSharedResources | null = null;
+let sharedResourceReferences = 0;
+
+function teamMaterialSet(team: CarTeam): CarTeamMaterialSet {
+  const bodyColor = team === 'blue' ? VISUAL.PALETTE.BLUE : VISUAL.PALETTE.ORANGE;
+  const accentColor = team === 'blue' ? VISUAL.PALETTE.BLUE_LIGHT : VISUAL.PALETTE.ORANGE_LIGHT;
+  return {
     body: new THREE.MeshStandardMaterial({
       color: bodyColor,
       roughness: VISUAL.CAR.MATERIAL.BODY_ROUGHNESS,
@@ -187,13 +201,116 @@ function getTeamMaterials(team: string): { body: THREE.MeshStandardMaterial; acc
       metalness: 0.7,
     }),
   };
-  teamMaterials.set(key, materials);
-  return materials;
 }
 
-function getGeometry(): CarGeometrySet {
-  if (cachedGeometry) return cachedGeometry;
+function createSharedMaterials(): CarSharedMaterials {
+  return {
+    neutral: new THREE.MeshStandardMaterial({
+      color: VISUAL.PALETTE.NEUTRAL_METAL,
+      roughness: 0.42,
+      metalness: 0.72,
+    }),
+    dark: new THREE.MeshStandardMaterial({
+      color: VISUAL.PALETTE.STRUCTURE_DARK,
+      roughness: 0.62,
+      metalness: 0.48,
+    }),
+    tire: new THREE.MeshStandardMaterial({
+      color: VISUAL.PALETTE.RUBBER,
+      roughness: 0.92,
+      metalness: 0.04,
+    }),
+    rim: new THREE.MeshStandardMaterial({
+      color: VISUAL.PALETTE.STRUCTURE_LIGHT,
+      roughness: 0.24,
+      metalness: 0.9,
+    }),
+    brake: new THREE.MeshStandardMaterial({
+      color: 0x51251f,
+      roughness: 0.48,
+      metalness: 0.66,
+    }),
+    glass: new THREE.MeshPhysicalMaterial({
+      color: VISUAL.PALETTE.GLASS,
+      roughness: VISUAL.CAR.MATERIAL.GLASS_ROUGHNESS,
+      metalness: VISUAL.CAR.MATERIAL.GLASS_METALNESS,
+      transparent: true,
+      opacity: VISUAL.CAR.MATERIAL.GLASS_OPACITY,
+      clearcoat: 0.72,
+      clearcoatRoughness: 0.18,
+    }),
+    headlight: new THREE.MeshStandardMaterial({
+      color: VISUAL.PALETTE.WHITE_LIGHT,
+      emissive: VISUAL.PALETTE.WHITE_LIGHT,
+      emissiveIntensity: VISUAL.CAR.LIGHTS.HEADLIGHT_GLOW,
+      roughness: 0.2,
+    }),
+    tailLight: new THREE.MeshStandardMaterial({
+      color: 0xff352f,
+      emissive: 0xff1f18,
+      emissiveIntensity: VISUAL.CAR.LIGHTS.TAILLIGHT_GLOW,
+      roughness: 0.28,
+    }),
+    localMarker: new THREE.MeshBasicMaterial({
+      color: VISUAL.PALETTE.WHITE_LIGHT,
+      transparent: true,
+      opacity: 0.72,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    }),
+    blue: teamMaterialSet('blue'),
+    orange: teamMaterialSet('orange'),
+  };
+}
 
+function disposeSharedMaterials(materials: CarSharedMaterials): void {
+  const teams = [materials.blue, materials.orange];
+  const values: THREE.Material[] = [
+    materials.neutral,
+    materials.dark,
+    materials.tire,
+    materials.rim,
+    materials.brake,
+    materials.glass,
+    materials.headlight,
+    materials.tailLight,
+    materials.localMarker,
+    ...teams.flatMap((team) => [team.body, team.accent]),
+  ];
+  for (const material of values) material.dispose();
+}
+
+function disposeGeometrySet(geometry: CarGeometrySet): void {
+  for (const value of Object.values(geometry) as THREE.BufferGeometry[]) value.dispose();
+}
+
+function acquireSharedCarResources(): CarSharedResources {
+  if (sharedResources === null) {
+    sharedResources = {
+      geometry: createGeometrySet(),
+      materials: createSharedMaterials(),
+    };
+  }
+  sharedResourceReferences += 1;
+  return sharedResources;
+}
+
+function releaseSharedCarResources(): void {
+  if (sharedResourceReferences === 0) return;
+  sharedResourceReferences -= 1;
+  if (sharedResourceReferences > 0 || sharedResources === null) return;
+
+  disposeGeometrySet(sharedResources.geometry);
+  disposeSharedMaterials(sharedResources.materials);
+  sharedResources = null;
+}
+
+/** Live reference count, used by presentation-budget assertions. */
+export function getSharedCarResourceReferenceCount(): number {
+  return sharedResourceReferences;
+}
+
+function createGeometrySet(): CarGeometrySet {
   const width = CAR.BODY.WIDTH;
   const height = CAR.BODY.HEIGHT;
   const length = CAR.BODY.LENGTH;
@@ -207,7 +324,7 @@ function getGeometry(): CarGeometrySet {
   const canopyBottom = height * canopy.BASE_Y_RATIO;
   const canopyTop = height * canopy.HEIGHT_RATIO;
 
-  cachedGeometry = {
+  return {
     shell: createSectionedShellGeometry([
       { z: length * shell.REAR_Z_RATIO, width: width * shell.REAR_WIDTH_RATIO, bottom: height * shell.BELLY_Y_RATIO, top: height * shell.REAR_DECK_Y_RATIO },
       { z: length * shell.SHOULDER_Z_RATIO, width: width * shell.SHOULDER_WIDTH_RATIO, bottom: height * shell.BELLY_Y_RATIO, top: height * shell.SHOULDER_Y_RATIO },
@@ -308,9 +425,18 @@ function getGeometry(): CarGeometrySet {
       1,
       true,
     ),
+    // Deck-level crests give each team a silhouette cue that survives
+    // colour-blindness and greyscale capture without raising the roofline.
+    blueCrest: createSectionedShellGeometry([
+      { z: -length * 0.09, width: width * 0.09, bottom: 0, top: height * 0.03 },
+      { z: length * 0.11, width: width * 0.05, bottom: 0, top: height * 0.012 },
+    ]),
+    orangeCrest: createSectionedShellGeometry([
+      { z: -length * 0.05, width: width * 0.34, bottom: 0, top: height * 0.028 },
+      { z: length * 0.09, width: width * 0.1, bottom: 0, top: height * 0.012 },
+    ]),
+    localMarker: new THREE.TorusGeometry(width * 0.3, width * 0.035, 4, 16),
   };
-
-  return cachedGeometry;
 }
 
 function addMesh(
@@ -329,15 +455,33 @@ function addMesh(
 }
 
 /**
- * Create Rocket Arena's original low-profile industrial rocket car.
- * Forward is +Z and the silhouette remains tied to the Rapier chassis extents.
+ * Create Rocket Arena's original low-profile industrial rocket car as an
+ * explicitly owned presentation rig. Forward is +Z. Visual proportions come
+ * from the presentation constants, never from the authoritative collider; only
+ * the ground offset is aligned so the wheels rest on the surface the server
+ * simulates.
  */
-export function createCarMesh(team: string): THREE.Group {
+export function createCarVisualRig(
+  teamLabel: string,
+  options: { readonly isLocal?: boolean } = {},
+): CarVisualRig {
+  const team = resolveCarTeam(teamLabel);
   const group = new THREE.Group();
   group.name = `rocket-arena-car-${team}`;
 
-  const geometry = getGeometry();
-  const materials = getTeamMaterials(team);
+  const shared = acquireSharedCarResources();
+  const geometry = shared.geometry;
+  const {
+    neutral: neutralMaterial,
+    dark: darkMaterial,
+    tire: tireMaterial,
+    rim: rimMaterial,
+    brake: brakeMaterial,
+    glass: glassMaterial,
+    headlight: headlightMaterial,
+    tailLight: tailLightMaterial,
+  } = shared.materials;
+  const materials = shared.materials[team];
   const width = CAR.BODY.WIDTH;
   const height = CAR.BODY.HEIGHT;
   const length = CAR.BODY.LENGTH;
@@ -352,6 +496,21 @@ export function createCarMesh(team: string): THREE.Group {
 
   const hoodBlade = addMesh(group, geometry.hoodBlade, neutralMaterial, 'hood-spine');
   hoodBlade.position.set(0, height * 0.205, length * 0.27);
+
+  if (team === 'blue') {
+    for (const side of [-1, 1]) {
+      const crest = addMesh(
+        group,
+        geometry.blueCrest,
+        materials.accent,
+        `team-crest-blue-${side < 0 ? 'left' : 'right'}`,
+      );
+      crest.position.set(side * width * 0.12, height * 0.205, length * 0.1);
+    }
+  } else {
+    const crest = addMesh(group, geometry.orangeCrest, materials.accent, 'team-crest-orange');
+    crest.position.set(0, height * 0.205, length * 0.1);
+  }
 
   for (const side of [-1, 1]) {
     const shoulder = addMesh(group, geometry.shoulderPlate, materials.accent, `shoulder-${side < 0 ? 'left' : 'right'}`);
@@ -495,27 +654,98 @@ export function createCarMesh(team: string): THREE.Group {
     boostTrails.push(trail);
   }
 
+  const localMarker = addMesh(
+    group,
+    geometry.localMarker,
+    shared.materials.localMarker,
+    'local-player-marker',
+    false,
+  );
+  localMarker.position.y = height * 0.62;
+  localMarker.rotation.x = Math.PI / 2;
+  localMarker.visible = false;
+
   const presentationRoot = new THREE.Group();
   presentationRoot.name = 'car-presentation-root';
   presentationRoot.position.y = CAR_PRESENTATION_Y_OFFSET;
   presentationRoot.add(...group.children);
   group.add(presentationRoot);
 
+  const motion: CarRigMotionState = {
+    wheelSpeed: 0,
+    boostBlend: 0,
+    boostActiveUntil: 0,
+    lastBoost: 0,
+    hasBoostReference: false,
+  };
+  let isLocal = false;
+  let disposed = false;
+
   const rig: CarVisualRig = {
+    team,
+    object: group,
     wheelSpins,
     frontWheelSteers,
     exhausts,
     boostFlames,
     boostTrails,
     wheelRadius,
+    motion,
+    get isLocal(): boolean {
+      return isLocal;
+    },
+    get isDisposed(): boolean {
+      return disposed;
+    },
+    setLocal(next: boolean): void {
+      if (disposed) return;
+      isLocal = next;
+      localMarker.visible = next;
+    },
+    resetTemporalState(): void {
+      motion.wheelSpeed = 0;
+      motion.boostBlend = 0;
+      motion.boostActiveUntil = 0;
+      motion.hasBoostReference = false;
+      for (const wheel of wheelSpins) wheel.rotation.x = 0;
+      for (const steer of frontWheelSteers) steer.rotation.y = 0;
+      for (const effect of [...boostFlames, ...boostTrails]) effect.visible = false;
+    },
+    dispose(): void {
+      if (disposed) return;
+      disposed = true;
+      group.removeFromParent();
+      // Only the per-car effect materials are owned here. Their opacity is
+      // animated per car, so they cannot be shared; every immutable resource
+      // is released through the shared reference count instead.
+      for (const effect of [...boostFlames, ...boostTrails]) {
+        const effectMaterials = Array.isArray(effect.material)
+          ? effect.material
+          : [effect.material];
+        for (const material of effectMaterials) material.dispose();
+      }
+      releaseSharedCarResources();
+    },
   };
-  group.userData.visualRig = rig;
-  group.userData.wheels = wheelSpins;
-  group.userData.exhausts = exhausts;
-  group.userData.boostFlames = boostFlames;
-  group.userData.boostTrails = boostTrails;
-  group.userData.lastVisualPosition = new THREE.Vector3();
-  group.userData.lastBoost = CAR.BOOST.START_AMOUNT;
 
-  return group;
+  rig.setLocal(options.isLocal === true);
+  group.userData.visualRig = rig;
+  group.userData.team = team;
+
+  return rig;
+}
+
+/** Read the rig that owns one car root, when the root is rig-backed. */
+export function getCarVisualRig(car: THREE.Object3D): CarVisualRig | null {
+  const rig = car.userData.visualRig as CarVisualRig | undefined;
+  return rig !== undefined && typeof rig.dispose === 'function' ? rig : null;
+}
+
+/**
+ * Production car factory used by the snapshot reconciler. The returned root
+ * carries its owning rig, so removal can release both per-car and shared
+ * presentation resources.
+ */
+export function createCarMesh(team: string): THREE.Group {
+  return createCarVisualRig(team).object;
 }

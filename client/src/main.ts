@@ -66,8 +66,9 @@ function animate(): void {
   sendInput(room);
 
   if (room) {
+    // One presentation order: accepted/interpolated state, entity effects,
+    // camera, HUD, audio, then render.
     const presentedFrame = updateInterpolatedEntities(frameNowMs);
-    updateHUD(room);
     updateEntityEffects(deltaSeconds, time);
 
     const localCar = getCarMeshes().get(room.sessionId) || null;
@@ -81,6 +82,7 @@ function animate(): void {
       cameraToggleSequence: inputCommand.cameraToggleSequence,
       presentedKickoffEpoch: presentedFrame?.kickoffEpoch ?? null,
     });
+    updateHUD(room);
     updateAudio({
       roomId: room.id,
       sessionId: room.sessionId,
