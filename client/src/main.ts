@@ -21,6 +21,10 @@ import {
   sendInput,
 } from './input/keyboard-handler.js';
 import { createHUD, destroyHUD, resetHUD, updateHUD } from './hud/hud.js';
+import {
+  projectBallIndicator,
+  type BallIndicatorProjection,
+} from './hud/ball-indicator.js';
 import { createDevPanel } from './dev-panel/dev-panel.js';
 import { createLobby } from './ui/lobby.js';
 import { showGameOver } from './ui/game-over.js';
@@ -44,6 +48,33 @@ initializeAudio();
 
 let gameEnded = false;
 let previousFrameTime = performance.now() / 1000;
+
+/** Indicator centres stay clear of the protected central region of the view. */
+const BALL_INDICATOR_INSET_RATIO = 0.11;
+
+interface PresentedBall {
+  readonly position: { readonly x: number; readonly y: number; readonly z: number };
+}
+
+function projectOffscreenBall(ball: PresentedBall | null): BallIndicatorProjection | null {
+  if (!ball) return null;
+  const width = renderer.domElement.clientWidth;
+  const height = renderer.domElement.clientHeight;
+  if (width <= 0 || height <= 0) return null;
+
+  camera.updateMatrixWorld();
+  return projectBallIndicator({
+    worldPosition: ball.position,
+    viewMatrix: camera.matrixWorldInverse,
+    projectionMatrix: camera.projectionMatrix,
+    viewport: {
+      width,
+      height,
+      insetX: width * BALL_INDICATOR_INSET_RATIO,
+      insetY: height * BALL_INDICATOR_INSET_RATIO,
+    },
+  });
+}
 
 setOrbitMode();
 
@@ -82,7 +113,10 @@ function animate(): void {
       cameraToggleSequence: inputCommand.cameraToggleSequence,
       presentedKickoffEpoch: presentedFrame?.kickoffEpoch ?? null,
     });
-    updateHUD(room);
+    updateHUD({
+      cameraMode: getCameraMode(),
+      ballIndicator: projectOffscreenBall(ball),
+    });
     updateAudio({
       roomId: room.id,
       sessionId: room.sessionId,

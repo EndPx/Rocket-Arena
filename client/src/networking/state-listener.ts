@@ -732,6 +732,11 @@ export function getLocalState(): Readonly<StateSync> | null {
   return localState;
 }
 
+/** The joined local identity, or null outside a joined room. */
+export function getLocalSessionId(): string | null {
+  return localSessionId;
+}
+
 /** Serializable instrumentation used by the dev console and browser checks. */
 export function getInterpolationStats(): RuntimeInterpolationStats {
   const stats = snapshotBuffer.getStats();
