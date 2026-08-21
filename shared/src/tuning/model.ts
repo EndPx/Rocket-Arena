@@ -261,6 +261,9 @@ export const TUNING_IDS = deepFreeze({
     normalAngleThresholdDegrees: 'support.normal-angle-threshold-degrees',
   },
   boostPads: {
+    /** Inventory a large pad grants, and how long it stays spent after pickup. */
+    largeBoostAmount: 'boost-pad.large.boost-amount',
+    largeRespawnSeconds: 'boost-pad.large.respawn-seconds',
     largePositions: [
       'boost-pad.large.0.position',
       'boost-pad.large.1.position',

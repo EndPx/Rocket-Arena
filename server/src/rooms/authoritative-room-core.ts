@@ -222,6 +222,17 @@ export interface AuthoritativeRoomWorldBundle<TWorld, TCar, TBall> {
   readonly recoverBallAfterStep: (
     context: AuthoritativeFixedStepContext<TWorld, TCar, TBall>,
   ) => void;
+  /**
+   * Optional per-step tail, run once after every car command has committed.
+   *
+   * This is the only place a rule can observe the whole settled world for a step,
+   * which is what world-owned pickups need: a per-car hook cannot decide which of
+   * two cars on the same pad collects it. It runs after commits so it sees final
+   * inventories, and it is optional so existing adapters are unaffected.
+   */
+  readonly afterFixedStep?: (
+    context: AuthoritativeFixedStepContext<TWorld, TCar, TBall>,
+  ) => void;
   readonly extractMatchFlowInput: (
     context: AuthoritativeFixedStepContext<TWorld, TCar, TBall>,
   ) => Readonly<MatchFlowStepInput>;
@@ -1185,6 +1196,7 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
     for (const context of carContexts) bundle.recoverCarAfterStep(context);
     bundle.recoverBallAfterStep(stepContext);
     for (const command of commands) command.commit();
+    bundle.afterFixedStep?.(stepContext);
 
     const matchFlowInput = bundle.extractMatchFlowInput(stepContext);
     if (!this.initialCountdownStartedAtBoundary) {

@@ -22,6 +22,8 @@ import {
   type AuthoritativeRapierCar,
   type AuthoritativeRapierRoomWorldBundle,
 } from './rapier-room-world.js';
+import { getConstant } from '@rocket-arena/shared/constants';
+import { resolveBoostPadDescriptors } from '../systems/boost-pads.js';
 
 const FIXED_STEP_MS = PHYSICS.TIMESTEP * 1_000;
 let nextHarnessId = 1;
@@ -436,4 +438,103 @@ test('a staged simulation failure stops later work and frees the Rapier world ex
   core.dispose();
   core.dispose();
   assert.equal(disposeCalls, 1);
+});
+
+// Validates: Requirements 14.15-14.16 (large boost pads inside a live room)
+
+test('a car parked on a large boost pad is topped up, and the pad then stays spent', async () => {
+  const { core, bundle } = await createHarness();
+  try {
+    await join(core, 'host');
+    const car = bundle.carsBySessionId.get('host');
+    assert.ok(car);
+
+    await start(core, 'host');
+    advanceSteps(core, MATCH_RULES.kickoffCountdownSteps);
+    assert.equal(projection(core).phase, 'playing');
+
+    const descriptors = resolveBoostPadDescriptors();
+    assert.ok(descriptors.length > 0, 'the room must resolve its seeded pad table');
+    // A pad on flat floor, so the placement below is a plain ride height.
+    const pad = descriptors.find(({ onRampBand }) => !onRampBand);
+    assert.ok(pad, 'at least one pad must sit on flat floor');
+
+    const parkCarOnPad = (): void => {
+      car.body.setTranslation(
+        { x: pad.position[0], y: pad.position[1] + 0.25, z: pad.position[2] },
+        true,
+      );
+      car.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      car.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    };
+
+    // Spend the tank first so a grant is unambiguous.
+    car.boostAmount = 5;
+    parkCarOnPad();
+    core.advanceSimulation(FIXED_STEP_MS);
+    assert.equal(
+      car.boostAmount,
+      getConstant('CAR.BOOST.MAX_AMOUNT'),
+      'driving onto a large pad must fill the tank',
+    );
+
+    // The pad is now spent, so parking on it again grants nothing.
+    car.boostAmount = 5;
+    for (let step = 0; step < 30; step += 1) {
+      parkCarOnPad();
+      core.advanceSimulation(FIXED_STEP_MS);
+      assert.ok(
+        car.boostAmount < 50,
+        `a spent pad must not grant again at step ${step}, boost was ${car.boostAmount}`,
+      );
+    }
+
+    // After the respawn delay it comes back and grants once more.
+    const respawnSteps = Math.ceil(pad.respawnSeconds / PHYSICS.TIMESTEP);
+    for (let step = 0; step < respawnSteps; step += 1) {
+      car.body.setTranslation({ x: 0, y: 0.5, z: 0 }, true);
+      core.advanceSimulation(FIXED_STEP_MS);
+    }
+    car.boostAmount = 5;
+    parkCarOnPad();
+    core.advanceSimulation(FIXED_STEP_MS);
+    assert.equal(
+      car.boostAmount,
+      getConstant('CAR.BOOST.MAX_AMOUNT'),
+      'the pad must grant again after its respawn delay',
+    );
+  } finally {
+    core.dispose();
+  }
+});
+
+test('boost pads cannot be farmed before the whistle', async () => {
+  const { core, bundle } = await createHarness();
+  try {
+    await join(core, 'host');
+    const car = bundle.carsBySessionId.get('host');
+    assert.ok(car);
+
+    await start(core, 'host');
+    // Still inside the kickoff countdown, so Active Play has not begun.
+    assert.equal(projection(core).phase, 'countdown');
+
+    const pad = resolveBoostPadDescriptors().find(({ onRampBand }) => !onRampBand);
+    assert.ok(pad);
+
+    car.boostAmount = 5;
+    for (let step = 0; step < 20; step += 1) {
+      car.body.setTranslation(
+        { x: pad.position[0], y: pad.position[1] + 0.25, z: pad.position[2] },
+        true,
+      );
+      core.advanceSimulation(FIXED_STEP_MS);
+    }
+    assert.ok(
+      car.boostAmount < 50,
+      `countdown must not grant pad boost, tank was ${car.boostAmount}`,
+    );
+  } finally {
+    core.dispose();
+  }
 });

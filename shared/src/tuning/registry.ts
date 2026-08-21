@@ -242,6 +242,9 @@ export const SEEDED_TUNING_ENTRIES: readonly TuningEntry[] = deepFreeze([
   ),
   scalar(TUNING_IDS.support.rayDistance, 'Local-down support ray distance', 'm', 0.25, 0.05, 1, 'unverified-hypothesis'),
   scalar(TUNING_IDS.support.normalAngleThresholdDegrees, 'Support normal angle threshold', 'degrees', 60, 0, 90, 'unverified-hypothesis'),
+  // Rocket League's large pads fill the tank outright and take 10 s to come back.
+  scalar(TUNING_IDS.boostPads.largeBoostAmount, 'Large boost pad grant', 'boost units', 100, 0, 100),
+  scalar(TUNING_IDS.boostPads.largeRespawnSeconds, 'Large boost pad respawn', 's', 10, 10, 10),
   padPosition(TUNING_IDS.boostPads.largePositions[0], 0, [-30, 0.15, -35]),
   padPosition(TUNING_IDS.boostPads.largePositions[1], 1, [30, 0.15, -35]),
   padPosition(TUNING_IDS.boostPads.largePositions[2], 2, [-39, 0.15, 0]),

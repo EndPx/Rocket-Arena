@@ -31,6 +31,11 @@ import {
   advanceGoalCrossing,
   createGoalCrossingState,
 } from '../systems/goal-crossing.js';
+import {
+  createBoostPadStates,
+  resolveBoostPadDescriptors,
+  stepBoostPads,
+} from '../systems/boost-pads.js';
 import { prepareResetToKickoff } from '../systems/scoring.js';
 import type {
   AuthoritativeGroundingResult,
@@ -174,6 +179,11 @@ export async function initializeAuthoritativeRapierWorld(
     const ball = createBall(initializedWorld, undefined, tuning);
     let goalCrossingState = createGoalCrossingState(options.resolvedGeometry.goals);
     let ballCenterBeforeStep = Object.freeze({ ...ball.translation() });
+    // Pads are world-owned, resolved once from this room's pinned tuning. An
+    // empty table is a valid arena with no pads and every pad hook no-ops.
+    const boostPadDescriptors = resolveBoostPadDescriptors(tuning);
+    let boostPadStates = createBoostPadStates(boostPadDescriptors);
+    let boostPadKickoffEpoch = -1;
     const carsBySessionId = new Map<string, AuthoritativeRapierCar>();
     let disposed = false;
 
@@ -255,6 +265,57 @@ export async function initializeAuthoritativeRapierWorld(
       ),
       synchronizeCarInput: ({ car, input }) => {
         car.jumpAirState = synchronizeCarJumpAirState(car.jumpAirState, input);
+      },
+      /**
+       * Large boost pads, resolved from the room's own pinned tuning.
+       *
+       * The rule itself lives in `systems/boost-pads.ts` and is pure; this hook
+       * only supplies settled car positions in Stable_Roster_Order and applies
+       * the grants it returns, so which car wins a shared pad is decided by
+       * roster order rather than by map iteration.
+       */
+      afterFixedStep: ({ state, fixedStepSeconds, activePlay, kickoffEpoch }) => {
+        if (boostPadDescriptors.length === 0) return;
+
+        // Every kickoff and goal reset restores the full set.
+        if (kickoffEpoch !== boostPadKickoffEpoch) {
+          boostPadKickoffEpoch = kickoffEpoch;
+          boostPadStates = createBoostPadStates(boostPadDescriptors);
+        }
+        // Pads cannot be farmed while the whistle has not gone.
+        if (!activePlay) return;
+
+        const collectors = [...state.roster.entries()]
+          .sort(([, left], [, right]) => left.acceptedJoinOrdinal - right.acceptedJoinOrdinal)
+          .flatMap(([sessionId]) => {
+            const car = state.cars.get(sessionId);
+            if (!car) return [];
+            const translation = car.body.translation();
+            return [{
+              id: sessionId,
+              position: { x: translation.x, y: translation.y, z: translation.z },
+              boost: car.boostAmount,
+            }];
+          });
+
+        const result = stepBoostPads(
+          boostPadDescriptors,
+          boostPadStates,
+          collectors,
+          fixedStepSeconds,
+          getConstant('CAR.BOOST.MAX_AMOUNT'),
+        );
+        boostPadStates = result.pads;
+
+        for (const grant of result.grants) {
+          const car = state.cars.get(grant.collectorId);
+          if (!car) continue;
+          car.boostAmount += grant.boostAmount;
+          // A collected pad ends any pending regeneration; the tank is topped up
+          // by the pad, not by the timer that was counting down.
+          car.boostRechargeDelaySeconds = 0;
+          car.boostRechargeArmed = car.boostAmount < getConstant('CAR.BOOST.MAX_AMOUNT');
+        }
       },
       recoverBallBeforeStep: ({ ball: authoritativeBall }) => {
         recoverBallBeforeStep(authoritativeBall);
