@@ -21,7 +21,7 @@
 | Custom Room | Existing room-code and host flow with shared 2v2 limits | Up to eight humans, maximum four per team, host-controlled start |
 | Match flow | Five-minute match with golden-goal overtime when tied | Five-minute regulation, above-zero first-to-6 win-by-2, hard cutoff at `0:00`, then sudden-death OT only when tied |
 | Transport | Authoritative server state and client interpolation | Versioned, validated snapshots carrying as many as eight unique cars |
-| Mechanics | Playable authoritative Rapier driving, ball, arena, scoring, boost, HUD, audio, and lobby | Metric arena and bodies, deterministic kickoff slots, expanded controls, bounded boost pads, cameras, and evidence-gated tuning |
+| Mechanics | Playable authoritative Rapier driving, ball, arena, scoring, HUD, audio, lobby, an ESC match menu, and all 34 authoritative boost pads | Metric arena and bodies, deterministic kickoff slots, expanded controls, cameras, and evidence-gated tuning |
 | Delivery phase | Playable locally | Requirements/design/task plan finalized; implementation and validation underway |
 
 ## Why Rocket Arena
@@ -36,6 +36,7 @@ Two teams drive physics-controlled cars in a closed arena and knock a ball into 
 - **Deterministic multiplayer rules** — Room capacities, team assignment, kickoff placement, match outcomes, and reset behavior are specified as testable server policies.
 - **Bounded netcode** — Server snapshots are sequenced and validated before the client atomically accepts them into its interpolation and presentation state.
 - **Procedural gameplay visuals** — Gameplay geometry is built with Three.js primitives. Original locally bundled 2D brand images are presentation-only and never define collisions.
+- **Readable boundaries** — The arena shell is painted from the resolved geometry's own material roles and transition heights, so the paint cannot describe a curve the collider does not have. The containment wall is opaque and carries panel seams, a team stripe, and a marked ramp band, which is what makes height and position legible while a car is on it. A floor disc under the ball reports where it is even when it is high in the air.
 - **Evidence-gated tuning** — Confirmed values and unverified Rocket League-style tuning hypotheses are kept distinct; uncertain values remain configurable until deterministic and browser evidence is approved.
 - **Accessible presentation** — The target HUD exposes team, score, timer, boost, room capacity, camera mode, and match transitions without relying on color alone.
 
@@ -112,11 +113,73 @@ If PowerShell reports that `concurrently` is not recognized, run `npm install` f
 | S / Down | Brake / Reverse |
 | A / Left | Steer left |
 | D / Right | Steer right |
-| Space | Jump |
+| Q / E | Air yaw while airborne |
+| Space | Jump (hold for the sustained first jump) |
 | Shift | Boost |
+| Ctrl | Powerslide |
+| C | Toggle Ball / Car camera |
+| Esc | Open the match menu |
 | ` (backtick) | Toggle the development panel in development mode |
 
-Expanded powerslide, directional flip, air-control, and Ball/Car Camera bindings are part of the finalized mechanics target and will be documented as shipped controls after implementation.
+The same key list is rendered along the bottom edge in-match, generated from the
+real bindings rather than maintained by hand, and can be hidden in Settings.
+
+Air pitch and air roll are read from the ground axes: while airborne, W/S pitches
+the nose and A/D rolls the car. They are the same physical axes, so an inversion
+applied to one applies to the other.
+
+## Match Menu and Settings
+
+`Esc` opens a menu that is local to the player. The match keeps running behind it;
+this is not a pause, and gameplay input is suspended and flushed so a key held as
+the menu opened cannot leave the car driving into a wall.
+
+| Action | Behavior |
+|--------|----------|
+| Resume | Close the menu and hand input back |
+| Settings | Open the settings panel |
+| Return to Lobby | Leave the room and go back to the lobby |
+
+Settings are stored locally under `rocket-arena-settings-v1` and applied before the
+first frame on a later visit. A blocked, full, or corrupt store degrades to
+defaults rather than failing.
+
+| Setting | Default | Notes |
+|---------|---------|-------|
+| Sound volume | Project default | Owned by the audio manager; the panel is a view of it |
+| Mute sound | Off | As above |
+| Ball floor marker | On | The floor disc that reports where the ball is |
+| Control hints | On | The on-screen key reference |
+| Invert W / S (drive) | Off | Also inverts air pitch |
+| Invert A / D (steer) | Off | Also inverts air roll |
+| Invert Q / E (air yaw) | Off | |
+| Reset to Defaults | — | Disabled while nothing differs from the shipped defaults |
+
+Inversion is applied to the command this client builds and to nothing else. The
+server keeps one sign convention and is never told that a player flipped an axis.
+
+## Boost
+
+| Property | Value |
+|----------|-------|
+| Starting inventory | `100` |
+| Consumption | `33.3` units per second while held |
+| Large pads | `6`, each grants a full `100`, returns after `10` seconds |
+| Small pads | `28`, each grants `12`, returns after `5` seconds |
+| Full tank | A pad is left standing rather than wasted |
+| Partial tank | A grant is clamped to the cap, so `95` boost takes `5` from a small pad |
+
+Pad pickup, inventory, and respawn are authoritative and stepped on the server.
+Positions come from one shared table that the room grants from and the renderer
+draws, so a drawn pad is always a pad that pays out.
+
+Two deliberate divergences from Rocket League, both recorded in the tuning
+registry rather than hidden in code. Boost starts at `100` instead of `33`, by
+project decision, and is classified as a hypothesis across the full `0`–`100`
+range rather than pinned. Pad availability is not yet carried by the snapshot
+envelope, so pads are drawn as always available; they mark where boost is, which
+is the half a player cannot work out alone, and no attempt is made to animate a
+guess about whether a given pad is currently spent.
 
 ## Architecture
 
@@ -224,6 +287,10 @@ Rocket-Arena/
 3. Open `http://localhost:3000` in 2–4 browser tabs.
 4. Join through Quick Match or create and join a Custom Room.
 5. Drive, jump, boost, score, and verify synchronized timer and HUD behavior.
+6. Drive over a boost pad on an empty tank and watch the HUD gauge fill; a large
+   pad fills it outright, a small one adds twelve.
+7. Press `Esc`, open Settings, flip an axis inversion, and confirm the car steers
+   the other way once you resume.
 
 No external services, API keys, accounts, database, or runtime asset download are required.
 
@@ -234,9 +301,13 @@ The required staging path includes expanded room capacity, eight-car transport, 
 The following remain optional final-fidelity increments until evidence is approved:
 
 - Proximity-sensitive kickoff selection.
-- The complete 28-Small-Boost-Pad layout.
+- Authoritative pad availability in the snapshot envelope, so a spent pad can be
+  drawn as spent.
 - Full Surface Driving across walls, corners, ceiling transitions, and ceiling.
 - Final evidence/approval promotion from Hackathon Staging to Mechanics Fidelity Release.
+
+Both boost-pad classes have since landed: the six Large pads and the complete
+28-Small-Boost-Pad layout are seeded, authoritative, and drawn.
 
 Demolition remains deferred until it receives a separately approved behavior contract.
 
