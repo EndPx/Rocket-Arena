@@ -164,6 +164,11 @@ export const SEEDED_TUNING_ENTRIES: readonly TuningEntry[] = deepFreeze([
   scalar(TUNING_IDS.car.collider.width, 'Car collider width', 'm', 1.8, 1.4, 2.2, 'unverified-hypothesis'),
   scalar(TUNING_IDS.car.collider.height, 'Car collider height', 'm', 0.8, 0.6, 1.2, 'unverified-hypothesis'),
   scalar(TUNING_IDS.car.throttle.targetSpeed, 'Throttle target speed provenance', 'm/s', 14.1, 10, 18, 'unverified-hypothesis', ['authority', 'perceived-control']),
+  // Rocket League's throttle curve: 1600 uu/s^2 from rest, falling to 160 uu/s^2
+  // at 1400 uu/s and to nothing at the 1410 uu/s throttle ceiling. On this
+  // metric scale that is 16 m/s^2, 1.6 m/s^2, and 0 at 14.1 m/s. Acceleration
+  // and speed are both length-per-time, so these transfer exactly; the earlier
+  // seed peaked at 10 m/s^2 and pulled away from a standstill far more softly.
   curve(
     TUNING_IDS.car.throttle.accelerationCurve,
     'Throttle acceleration curve provenance',
@@ -171,9 +176,8 @@ export const SEEDED_TUNING_ENTRIES: readonly TuningEntry[] = deepFreeze([
     {
       outputOrder: 'non-increasing',
       samples: [
-        { input: 0, output: 10 },
-        { input: 5, output: 8 },
-        { input: 10, output: 4 },
+        { input: 0, output: 16 },
+        { input: 14, output: 1.6 },
         { input: 14.1, output: 0 },
       ],
     },
@@ -210,7 +214,12 @@ export const SEEDED_TUNING_ENTRIES: readonly TuningEntry[] = deepFreeze([
   scalar(TUNING_IDS.car.air.pitchDamping, 'Air pitch damping', 's^-1', 2.798, 0, 20, 'unverified-hypothesis', ['authority', 'perceived-control']),
   scalar(TUNING_IDS.car.air.yawDamping, 'Air yaw damping', 's^-1', 1.886, 0, 20, 'unverified-hypothesis', ['authority', 'perceived-control']),
   scalar(TUNING_IDS.car.air.rollDamping, 'Air roll damping', 's^-1', 4.687, 0, 20, 'unverified-hypothesis', ['authority', 'perceived-control']),
-  scalar(TUNING_IDS.car.jump.holdForce, 'Jump hold force', 'N', 1450, 0, 5000, 'unverified-hypothesis', ['authority', 'perceived-control']),
+  // Rocket League sustains a jump at 1458.333 uu/s^2 while the button is held,
+  // which is 14.58333 m/s^2 on this metric scale. Against the confirmed 150 kg
+  // car mass that is exactly 2187.5 N. Held for the full 0.2 s it contributes
+  // another 2.91667 m/s, matching the initial impulse, so a full jump leaves the
+  // floor at 5.83334 m/s: apex 2.617 m, air time 1.795 s under gravity -6.5.
+  scalar(TUNING_IDS.car.jump.holdForce, 'Jump hold force', 'N', 2187.5, 0, 5000, 'unverified-hypothesis', ['authority', 'perceived-control']),
   scalar(TUNING_IDS.car.jump.holdDuration, 'Jump hold duration', 's', 0.2, 0, 0.5, 'unverified-hypothesis', ['authority', 'perceived-control']),
   scalar(TUNING_IDS.car.jump.secondJumpWindow, 'Second jump window', 's', 1.25, 0.5, 2, 'unverified-hypothesis', ['authority', 'perceived-control']),
   scalar(TUNING_IDS.car.jump.flipActuationWindow, 'Flip actuation window', 's', 0.65, 0.1, 1, 'unverified-hypothesis', ['authority', 'perceived-control']),

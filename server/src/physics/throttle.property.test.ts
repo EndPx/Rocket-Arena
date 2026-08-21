@@ -523,10 +523,14 @@ test('Property 9 exact boundaries and malformed inputs remain deterministic and 
     DEFAULT_TUNING_REGISTRY_SNAPSHOT,
     TUNING_IDS.car.throttle.accelerationCurve,
   );
+  // The seeded samples are Rocket League's throttle curve: 16 m/s^2 from rest,
+  // 1.6 m/s^2 at 14 m/s, nothing at the 14.1 m/s ceiling. The two off-sample
+  // speeds pin the interpolation between them.
   for (const [speed, expectedAcceleration] of [
-    [0, 10],
-    [5, 8],
-    [10, 4],
+    [0, 16],
+    [7, 8.8],
+    [14, 1.6],
+    [14.05, 0.8],
     [TARGET_SPEED, 0],
   ] as const) {
     assertApproximately(
@@ -568,7 +572,13 @@ test('Property 9 exact boundaries and malformed inputs remain deterministic and 
     0,
     tuningWithThrottleCurve(malformedCurves[1]!),
   );
-  assertApproximately(fallbackPlan.throttleAcceleration.z, 8, 'malformed tuning curve fallback');
+  // A malformed injected curve falls back to the seeded one, so the expectation
+  // is read from that curve rather than restated as a literal.
+  assertApproximately(
+    fallbackPlan.throttleAcceleration.z,
+    evaluateNonIncreasingThrottleCurve(curve, 5),
+    'malformed tuning curve fallback',
+  );
   assertFiniteThrottlePlan(fallbackPlan, 'malformed tuning fallback');
 
   const atTargetNoBoost = planAtSpeed(

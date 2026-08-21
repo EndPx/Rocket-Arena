@@ -162,9 +162,12 @@ function runPurePlanningCases(): void {
     TUNING_IDS.car.throttle.accelerationCurve,
   );
   assert.equal(curve.outputOrder, 'non-increasing');
-  assertApproximately(evaluateNonIncreasingThrottleCurve(curve, 0), 10, 'curve at 0m/s');
-  assertApproximately(evaluateNonIncreasingThrottleCurve(curve, 2.5), 9, 'curve interpolation');
-  assertApproximately(evaluateNonIncreasingThrottleCurve(curve, 7.5), 6, 'curve interpolation 2');
+  // Rocket League's throttle curve: 16 m/s^2 from rest, 1.6 m/s^2 at 14 m/s,
+  // nothing at the 14.1 m/s ceiling. Midpoints pin the interpolation.
+  assertApproximately(evaluateNonIncreasingThrottleCurve(curve, 0), 16, 'curve at 0m/s');
+  assertApproximately(evaluateNonIncreasingThrottleCurve(curve, 7), 8.8, 'curve interpolation');
+  assertApproximately(evaluateNonIncreasingThrottleCurve(curve, 14), 1.6, 'curve near target');
+  assertApproximately(evaluateNonIncreasingThrottleCurve(curve, 14.05), 0.8, 'curve interpolation 2');
   assertApproximately(evaluateNonIncreasingThrottleCurve(curve, 14.1), 0, 'curve target');
   assertApproximately(evaluateNonIncreasingThrottleCurve(curve, 30), 0, 'curve high clamp');
   assert.throws(
@@ -185,7 +188,7 @@ function runPurePlanningCases(): void {
   );
   assertApproximately(
     fallbackCurvePlan.throttleAcceleration.z,
-    8,
+    evaluateNonIncreasingThrottleCurve(curve, 5),
     'zero-output sub-target curve must fall back to the validated default',
   );
 
