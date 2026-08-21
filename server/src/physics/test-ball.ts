@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import RAPIER from '@dimforge/rapier3d-compat';
 import {
+  ARENA_CEILING_HEIGHT_METERS,
   ARENA_COLLISION_GEOMETRY,
+  ARENA_HALF_LENGTH_METERS,
+  ARENA_HALF_WIDTH_METERS,
   DEFAULT_TUNING_REGISTRY_SNAPSHOT,
   TUNING_IDS,
   getScalarTuningValue,
@@ -349,11 +352,132 @@ function assertSetupFailureCleanup(): void {
   );
 }
 
+/**
+ * The ball must never leave the arena, from any direction, at its top speed.
+ *
+ * This is the gated half of what `test-metric-arena.ts` tries to assert. That
+ * harness demands the ball never interpenetrate any resolved surface at all, and
+ * that cannot hold here: at the configured `60 m/s` on a `60 Hz` fixed step the
+ * ball advances a full metre per step, so a discrete solver resolves the first
+ * contact frame from inside the surface. Measured transient overlap peaks near
+ * `0.91 m` against the goal back wall and `0.82 m` against the floor, lasts about
+ * four frames, and settles under `4 mm`.
+ *
+ * Raising `maxCcdSubsteps` does not move those numbers at all, measured
+ * identically at 2, 4, 8, and 16: one metre of travel is still well under the
+ * `1.8 m` radius, so Rapier never classifies the motion as needing nonlinear CCD.
+ * The only lever that would remove the overlap is soft-CCD prediction, and that
+ * is precisely what discards the bounce, so it stays off.
+ *
+ * Escape is the property that would actually break the game, because a ball
+ * outside the shell breaks scoring, and that is what this pins.
+ */
+function runContainmentSweep(): { readonly worstOverlap: number; readonly shots: number } {
+  const radius = getScalarTuningValue(DEFAULT_TUNING_REGISTRY_SNAPSHOT, TUNING_IDS.ball.radius);
+  const speed = getScalarTuningValue(
+    DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+    TUNING_IDS.ball.maxLinearSpeed,
+  );
+  const halfWidth = ARENA_HALF_WIDTH_METERS;
+  const halfLength = ARENA_HALF_LENGTH_METERS;
+  const ceiling = ARENA_CEILING_HEIGHT_METERS;
+  const goal = ARENA_COLLISION_GEOMETRY.goals.find(({ zDirection }) => zDirection === -1)!;
+  const backWallAbsZ = Math.abs(goal.backWallZ);
+
+  const shots: readonly {
+    label: string;
+    from: { x: number; y: number; z: number };
+    velocity: { x: number; y: number; z: number };
+  }[] = [
+    {
+      label: 'blue goal back wall',
+      from: { x: 0, y: goal.opening.height / 2, z: goal.goalLineZ + 3 },
+      velocity: { x: 0, y: 0, z: -speed },
+    },
+    {
+      label: 'orange goal back wall',
+      from: { x: 0, y: goal.opening.height / 2, z: -goal.goalLineZ - 3 },
+      velocity: { x: 0, y: 0, z: speed },
+    },
+    { label: 'east wall', from: { x: 20, y: 6, z: 0 }, velocity: { x: speed, y: 0, z: 0 } },
+    { label: 'west wall', from: { x: -20, y: 6, z: 0 }, velocity: { x: -speed, y: 0, z: 0 } },
+    {
+      label: 'blue end wall off-mouth',
+      from: { x: 30, y: 6, z: -20 },
+      velocity: { x: 0, y: 0, z: -speed },
+    },
+    { label: 'ceiling', from: { x: 0, y: 10, z: 0 }, velocity: { x: 0, y: speed, z: 0 } },
+    { label: 'floor', from: { x: 0, y: 12, z: 0 }, velocity: { x: 0, y: -speed, z: 0 } },
+    {
+      label: 'blue corner diagonal',
+      from: { x: 20, y: 6, z: -20 },
+      velocity: { x: speed / Math.SQRT2, y: 0, z: -speed / Math.SQRT2 },
+    },
+  ];
+
+  let worstOverlap = 0;
+
+  for (const shot of shots) {
+    withTrackedWorld((world) => {
+      const arena = createArenaColliders(world, ARENA_COLLISION_GEOMETRY);
+      try {
+        const ball = createBall(world, shot.from);
+        ball.setLinvel(shot.velocity, true);
+
+        for (let frame = 0; frame < 240; frame += 1) {
+          recoverBallBeforeStep(ball);
+          world.step();
+          const { translation } = recoverBallAfterStep(ball);
+
+          // Inside a goal mouth footprint the back wall is the boundary, not the
+          // end wall, so entering the net is never mistaken for an escape.
+          const withinMouth = Math.abs(translation.x) < goal.opening.width / 2
+            && translation.y < goal.opening.height;
+          const zLimit = withinMouth ? backWallAbsZ : halfLength;
+          const outsideBy = Math.max(
+            Math.abs(translation.x) - halfWidth,
+            Math.abs(translation.z) - zLimit,
+            -translation.y,
+            translation.y - ceiling,
+          );
+
+          assert.ok(
+            [translation.x, translation.y, translation.z].every(Number.isFinite),
+            `${shot.label}: ball transform must stay finite at frame ${frame}`,
+          );
+          assert.ok(
+            outsideBy <= 0,
+            `${shot.label}: ball centre left the arena by ${outsideBy.toFixed(4)} m`
+            + ` at frame ${frame}, position ${translation.x.toFixed(2)},`
+            + `${translation.y.toFixed(2)},${translation.z.toFixed(2)}`,
+          );
+          worstOverlap = Math.max(worstOverlap, -outsideBy < radius ? radius + outsideBy : 0);
+        }
+
+        // Whatever the transient was, the ball has to come to rest in bounds.
+        const settled = ball.translation();
+        assert.ok(
+          Math.abs(settled.x) <= halfWidth
+          && Math.abs(settled.z) <= backWallAbsZ
+          && settled.y >= 0
+          && settled.y <= ceiling,
+          `${shot.label}: ball must settle inside the arena`,
+        );
+      } finally {
+        arena.dispose();
+      }
+    });
+  }
+
+  return { worstOverlap, shots: shots.length };
+}
+
 async function main(): Promise<void> {
   await initPhysics();
   runConstructionAndRecovery();
   const drop = runDropHarness();
   const bounce = runBounceConsistencySweep();
+  const containment = runContainmentSweep();
   assertSetupFailureCleanup();
   assert.equal(
     disposalTracker.freed,
@@ -365,6 +489,7 @@ async function main(): Promise<void> {
   console.log(`drop=${DROP_HEIGHT.toFixed(2)}m impact=${drop.impactSeconds.toFixed(2)}s reboundApex=${drop.reboundApex.toFixed(2)}m`);
   console.log(`settled=${drop.settledSeconds.toFixed(2)}s restY=${drop.restY.toFixed(3)}m maxSpeed=${drop.maximumSpeed.toFixed(2)}m/s`);
   console.log(`bounce sweep: ${bounce.samples} approaches, worst restitution deviation=${bounce.worstDeviation.toFixed(3)}`);
+  console.log(`containment sweep: ${containment.shots} max-speed shots, none escaped`);
   console.log(`cleanup=${disposalTracker.freed}/${disposalTracker.created} worlds`);
 }
 
