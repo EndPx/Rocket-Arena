@@ -151,7 +151,11 @@ export const SEEDED_TUNING_ENTRIES: readonly TuningEntry[] = deepFreeze([
   scalar(TUNING_IDS.car.maxLinearSpeed, 'Car maximum propulsion speed', 'm/s', 23, 23, 23),
   scalar(TUNING_IDS.car.maxAngularSpeed, 'Car maximum angular speed', 'rad/s', 5.5, 5.5, 5.5),
   scalar(TUNING_IDS.car.boost.acceleration, 'Boost acceleration', 'm/s^2', 9.91666, 9.91666, 9.91666),
-  scalar(TUNING_IDS.car.boost.initialInventory, 'Kickoff boost inventory', 'boost units', 33, 33, 33),
+  // Rocket League starts a kickoff with 33, and this deliberately does not. It is
+  // a product choice rather than a reference-derived number, so it is classified
+  // as a hypothesis over the full inventory range instead of being pinned to a
+  // single confirmed value it no longer matches.
+  scalar(TUNING_IDS.car.boost.initialInventory, 'Kickoff boost inventory', 'boost units', 100, 0, 100, 'unverified-hypothesis', ['authority', 'perceived-control']),
   scalar(TUNING_IDS.car.boost.consumptionPerSecond, 'Boost consumption rate', 'boost units/s', 33.3, 33.3, 33.3),
   scalar(TUNING_IDS.car.jump.firstVelocityChange, 'First jump velocity change', 'm/s', 2.91667, 2.91667, 2.91667),
   scalar(TUNING_IDS.ball.radius, 'Ball radius', 'm', 1.8, 1.8, 1.8),
