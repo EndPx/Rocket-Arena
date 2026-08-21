@@ -4,6 +4,7 @@ import { InputController, isEditableTarget } from './input-controller.js';
 
 const controller = new InputController();
 let activeRoom: Room | null = null;
+let inputSuspended = false;
 
 function nowMs(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -20,13 +21,32 @@ function forceNeutralSync(): void {
   }
 }
 
+/**
+ * Suspend gameplay input without tearing down the transport.
+ *
+ * A menu overlay needs the car to stop, but the room connection and the monotonic
+ * jump and camera edge floors have to survive so resuming does not fire a phantom
+ * jump. Suspending drops new presses and flushes whatever was held.
+ */
+export function setInputSuspended(suspended: boolean): void {
+  if (inputSuspended === suspended) return;
+  inputSuspended = suspended;
+  if (suspended) forceNeutralSync();
+}
+
+export function isInputSuspended(): boolean {
+  return inputSuspended;
+}
+
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   window.addEventListener('keydown', (event) => {
-    if (isEditableTarget(event.target)) return;
+    if (inputSuspended || isEditableTarget(event.target)) return;
     if (controller.handleKeyDown(event.code, event.repeat)) event.preventDefault();
   });
 
   window.addEventListener('keyup', (event) => {
+    // Releases are always accepted, so a key held as the menu opened cannot stay
+    // latched once it is let go.
     const handled = controller.handleKeyUp(event.code);
     if (handled && !isEditableTarget(event.target)) event.preventDefault();
   });

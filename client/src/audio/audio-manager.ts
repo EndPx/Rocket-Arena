@@ -909,6 +909,15 @@ class ProceduralAudioManager {
     return this.muted ? 0 : this.volume * AUDIO.MASTER.MAX_GAIN;
   }
 
+  /** External entry points for the same state the built-in aside controls. */
+  applyMuted(muted: boolean): void {
+    this.setMuted(muted === true);
+  }
+
+  applyVolume(volume: number): void {
+    this.setVolume(volume);
+  }
+
   private setMuted(muted: boolean): void {
     this.muted = muted;
     this.applyMasterGain();
@@ -1076,4 +1085,25 @@ export function cleanupAudio(): void {
 
 export function getAudioDebugState(): AudioDebugState {
   return audioManager.getDebugState();
+}
+
+/**
+ * Mute state and volume, for a settings surface other than the built-in aside.
+ *
+ * These delegate to the same private setters the aside's own controls use, and
+ * those already persist and call updateControl(), so the aside stays in step
+ * without the caller having to touch it. This exists so a settings panel drives
+ * one source of truth instead of keeping a second copy of the audio state.
+ */
+export function setAudioMuted(muted: boolean): void {
+  audioManager.applyMuted(muted);
+}
+
+export function setAudioVolume(volume: number): void {
+  audioManager.applyVolume(volume);
+}
+
+export function getAudioSettings(): { readonly volume: number; readonly muted: boolean } {
+  const state = audioManager.getDebugState();
+  return Object.freeze({ volume: state.volume, muted: state.muted });
 }

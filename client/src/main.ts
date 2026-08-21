@@ -27,8 +27,9 @@ import {
   type BallIndicatorProjection,
 } from './hud/ball-indicator.js';
 import { createDevPanel } from './dev-panel/dev-panel.js';
-import { createLobby } from './ui/lobby.js';
+import { createLobby, showLobby } from './ui/lobby.js';
 import { showGameOver } from './ui/game-over.js';
+import { createPauseMenu, destroyPauseMenu } from './ui/pause-menu.js';
 import {
   beginGameplayCameraSession,
   getCameraMode,
@@ -48,6 +49,21 @@ const ballFieldMarker = createBallFieldMarker();
 scene.add(ballFieldMarker.object);
 createHUD();
 initializeAudio();
+
+/** Client-only presentation toggle owned by the settings panel. */
+let ballMarkerVisible = true;
+
+createPauseMenu({
+  isInMatch: () => getRoom() !== null,
+  returnToLobby: () => {
+    getRoom()?.leave();
+    showLobby();
+  },
+  applyBallMarkerVisible: (visible) => {
+    ballMarkerVisible = visible;
+    if (!visible) ballFieldMarker.update(null);
+  },
+});
 
 let gameEnded = false;
 let previousFrameTime = performance.now() / 1000;
@@ -109,7 +125,7 @@ function animate(): void {
     const ball = getBallMesh();
     // The field circle is a floor overlay, not a snapshot entity, so it simply
     // follows whichever ball currently exists and hides when there is none.
-    ballFieldMarker.update(ball ? ball.position : null);
+    ballFieldMarker.update(ballMarkerVisible && ball ? ball.position : null);
     const state = getLocalState();
     const inputCommand = getCurrentInputCommandV2();
     const activePlay = state?.phase === 'playing' || state?.phase === 'overtime';
@@ -160,6 +176,7 @@ function animate(): void {
 }
 
 const disposeClient = (): void => {
+  destroyPauseMenu();
   ballFieldMarker.dispose();
   arena.dispose();
   destroyHUD();

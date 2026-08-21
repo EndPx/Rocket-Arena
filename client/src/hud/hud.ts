@@ -630,6 +630,11 @@ export function updateHUD(input: HudFrameInput): void {
   if (changedMode) renderAccepted();
 }
 
+/** Show or hide the on-screen control reference, driven by client settings. */
+export function setControlHintsVisible(visible: boolean): void {
+  hudEl?.querySelector('#hud-controls')?.toggleAttribute('hidden', !visible);
+}
+
 export function resetHUD(): void {
   if (!hudEl || hudEl.dataset.active === 'false') return;
   model.reset();
