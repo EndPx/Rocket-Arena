@@ -1,5 +1,12 @@
 import * as THREE from 'three';
-import { BALL, VISUAL } from '@rocket-arena/shared';
+import {
+  ARENA_CORNER_CUT_LENGTH_METERS,
+  ARENA_FLOOR_WALL_RAMP_RUN_METERS,
+  ARENA_HALF_LENGTH_METERS,
+  ARENA_HALF_WIDTH_METERS,
+  BALL,
+  VISUAL,
+} from '@rocket-arena/shared';
 
 /**
  * The floor circle that reports where the ball is.
@@ -30,6 +37,58 @@ export interface BallFieldMarker {
 
 /** The floor plane the circle is painted on; the arena floor is the origin. */
 const ARENA_FLOOR_Y = 0;
+
+/**
+ * The flat part of the floor, derived from the authoritative arena numbers.
+ *
+ * The arena outline is inset by the floor-wall ramp run, because inside that band
+ * the surface has already curved up towards the wall. A circle pinned to the
+ * floor plane there is swallowed by the ramp mesh: measured with the ball resting
+ * on the slope at `z = 49.2`, past the `48.64` flat edge, the whole circle
+ * disappeared rather than half of it.
+ *
+ * `DIAGONAL_LIMIT` is the same inset applied to the four corner chamfers. Each
+ * chamfer runs between `(halfWidth, halfLength - cut)` and
+ * `(halfWidth - cut, halfLength)`, so it lies on `|x| + |z| = halfWidth +
+ * halfLength - cut`, and offsetting a 45 degree line inward by the run moves that
+ * sum by `run * sqrt(2)`.
+ */
+const FLAT_FLOOR_HALF_WIDTH = ARENA_HALF_WIDTH_METERS - ARENA_FLOOR_WALL_RAMP_RUN_METERS;
+const FLAT_FLOOR_HALF_LENGTH = ARENA_HALF_LENGTH_METERS - ARENA_FLOOR_WALL_RAMP_RUN_METERS;
+const FLAT_FLOOR_DIAGONAL_LIMIT = ARENA_HALF_WIDTH_METERS
+  + ARENA_HALF_LENGTH_METERS
+  - ARENA_CORNER_CUT_LENGTH_METERS
+  - ARENA_FLOOR_WALL_RAMP_RUN_METERS * Math.SQRT2;
+
+/**
+ * Pull one floor point back onto the flat floor.
+ *
+ * This is a no-op wherever the ball spends nearly all of its time, and it only
+ * bites when the ball is over the perimeter ramp, where it slides the circle to
+ * the nearest flat ground instead of letting it vanish. The correction is at most
+ * the ramp run, and in the measured wall case it was 0.56 m across a 102 m field.
+ * Keeping the cue alive is worth more than that much positional purity, and the
+ * alternative of following the ramp surface would tilt and intersect a flat ring
+ * against a curved one.
+ */
+function clampToFlatFloor(point: THREE.Vector2): THREE.Vector2 {
+  point.set(
+    THREE.MathUtils.clamp(point.x, -FLAT_FLOOR_HALF_WIDTH, FLAT_FLOOR_HALF_WIDTH),
+    THREE.MathUtils.clamp(point.y, -FLAT_FLOOR_HALF_LENGTH, FLAT_FLOOR_HALF_LENGTH),
+  );
+
+  const overshoot = Math.abs(point.x) + Math.abs(point.y) - FLAT_FLOOR_DIAGONAL_LIMIT;
+  if (overshoot <= 0) return point;
+
+  // Split the correction between both axes so the circle retreats straight along
+  // the chamfer normal rather than sliding sideways along it.
+  const share = overshoot / 2;
+  const x = Math.max(0, Math.abs(point.x) - share);
+  const z = Math.max(0, Math.abs(point.y) - share);
+  return point.set(Math.sign(point.x) * x, Math.sign(point.y) * z);
+}
+
+const scratchFloorPoint = new THREE.Vector2();
 
 export function createBallFieldMarker(): BallFieldMarker {
   const tuning = VISUAL.BALL_MOTION;
@@ -120,7 +179,12 @@ export function createBallFieldMarker(): BallFieldMarker {
         1,
       );
 
-      object.position.set(x, ARENA_FLOOR_Y + tuning.MARKER_FLOOR_CLEARANCE, z);
+      const floorPoint = clampToFlatFloor(scratchFloorPoint.set(x, z));
+      object.position.set(
+        floorPoint.x,
+        ARENA_FLOOR_Y + tuning.MARKER_FLOOR_CLEARANCE,
+        floorPoint.y,
+      );
       object.scale.setScalar(THREE.MathUtils.lerp(
         tuning.MARKER_GROUNDED_SCALE,
         tuning.MARKER_LIFTED_SCALE,

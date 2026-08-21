@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as THREE from 'three';
-import { BALL, CAR, VISUAL } from '@rocket-arena/shared';
+import {
+  ARENA_CORNER_CUT_LENGTH_METERS,
+  ARENA_FLOOR_WALL_RAMP_RUN_METERS,
+  ARENA_HALF_LENGTH_METERS,
+  ARENA_HALF_WIDTH_METERS,
+  BALL,
+  CAR,
+  VISUAL,
+} from '@rocket-arena/shared';
 import {
   createCarMesh,
   createCarVisualRig,
@@ -399,6 +407,7 @@ test('the ball field marker projects onto the floor independently of the ball', 
 
       assert.equal(marker.object.visible, true, `marker must show at height ${height}`);
       const world = marker.object.getWorldPosition(new THREE.Vector3());
+      // Mid-field is flat floor, so the projection must be exact there.
       assert.ok(
         Math.abs(world.x - 7.25) <= 1e-6 && Math.abs(world.z - -13.5) <= 1e-6,
         `marker must sit directly under the ball at height ${height}`,
@@ -447,6 +456,68 @@ test('the ball field marker projects onto the floor independently of the ball', 
     assert.equal(marker.object.visible, false, 'disposal clears the marker');
     marker.update(new THREE.Vector3(0, radius, 0));
     assert.equal(marker.object.visible, false, 'a disposed marker must stay inert');
+  } finally {
+    marker.dispose();
+  }
+});
+
+test('the ball field marker retreats onto flat floor over the perimeter ramp', () => {
+  const marker = createBallFieldMarker();
+  const flatHalfWidth = ARENA_HALF_WIDTH_METERS - ARENA_FLOOR_WALL_RAMP_RUN_METERS;
+  const flatHalfLength = ARENA_HALF_LENGTH_METERS - ARENA_FLOOR_WALL_RAMP_RUN_METERS;
+  const diagonalLimit = ARENA_HALF_WIDTH_METERS
+    + ARENA_HALF_LENGTH_METERS
+    - ARENA_CORNER_CUT_LENGTH_METERS
+    - ARENA_FLOOR_WALL_RAMP_RUN_METERS * Math.SQRT2;
+
+  const project = (x: number, z: number): THREE.Vector3 => {
+    marker.update(new THREE.Vector3(x, BALL.RADIUS, z));
+    marker.object.updateMatrixWorld(true);
+    return marker.object.getWorldPosition(new THREE.Vector3());
+  };
+
+  try {
+    // Anywhere on flat floor the projection stays exact, which is where the ball
+    // spends nearly all of its time.
+    for (const [x, z] of [[0, 0], [12, -30], [-flatHalfWidth, 0], [0, flatHalfLength]] as const) {
+      const at = project(x, z);
+      assert.ok(
+        Math.abs(at.x - x) <= 1e-6 && Math.abs(at.z - z) <= 1e-6,
+        `flat floor must not be corrected, received ${at.x}, ${at.z} for ${x}, ${z}`,
+      );
+    }
+
+    // Over the ramp band the circle would be swallowed by the ramp mesh, so it
+    // retreats to the nearest flat ground by at most the ramp run.
+    const overRamp = project(23.5, 49.2);
+    assert.ok(
+      Math.abs(overRamp.z - flatHalfLength) <= 1e-6,
+      `a ball over the end ramp must pull the circle to the flat edge, received ${overRamp.z}`,
+    );
+    assert.equal(overRamp.x, 23.5, 'only the axis that left the flat floor may move');
+    assert.ok(
+      Math.hypot(overRamp.x - 23.5, overRamp.z - 49.2) <= ARENA_FLOOR_WALL_RAMP_RUN_METERS + 1e-6,
+      'the correction must never exceed the ramp run',
+    );
+
+    for (const [x, z] of [
+      [ARENA_HALF_WIDTH_METERS, 0],
+      [0, -ARENA_HALF_LENGTH_METERS],
+      [-ARENA_HALF_WIDTH_METERS, ARENA_HALF_LENGTH_METERS],
+      [34, 44],
+      [-34, -44],
+    ] as const) {
+      const at = project(x, z);
+      assert.ok(
+        Math.abs(at.x) <= flatHalfWidth + 1e-6 && Math.abs(at.z) <= flatHalfLength + 1e-6,
+        `the circle must land inside the flat rectangle, received ${at.x}, ${at.z}`,
+      );
+      assert.ok(
+        Math.abs(at.x) + Math.abs(at.z) <= diagonalLimit + 1e-6,
+        `the circle must stay inside the chamfered corners, received ${at.x}, ${at.z}`,
+      );
+      assert.equal(marker.object.visible, true, `the circle must stay visible at ${x}, ${z}`);
+    }
   } finally {
     marker.dispose();
   }
