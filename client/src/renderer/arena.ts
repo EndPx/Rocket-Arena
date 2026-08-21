@@ -165,9 +165,200 @@ function geometryFromInwardSurface(
   return geometry;
 }
 
+/** Emit a GLSL float literal, so a baked constant always parses as source. */
+function glslFloat(value: number): string {
+  return (Number.isFinite(value) ? value : 0).toFixed(5);
+}
+
+/**
+ * Emit a palette entry as a GLSL constructor.
+ *
+ * `THREE.Color` already converts a hex literal out of sRGB into the renderer's
+ * working space, which is the same space `diffuseColor` is in, so these channels
+ * can be written straight into the fragment without a second conversion.
+ */
+function glslColor(hex: number): string {
+  const color = new THREE.Color(hex);
+  return `vec3(${glslFloat(color.r)}, ${glslFloat(color.g)}, ${glslFloat(color.b)})`;
+}
+
+/**
+ * Inject a world-space pattern into a lit standard material.
+ *
+ * Replacing the material with a `ShaderMaterial` would have been less code, but
+ * it would also have dropped the surface out of the stadium lighting and left it
+ * reading as a flat sheet. Patching the standard shader keeps the lighting and
+ * only replaces the albedo.
+ *
+ * Arena dimensions are baked into the source as literals rather than passed as
+ * uniforms: they are fixed for the life of the material, and a literal cannot be
+ * left stale by a missed update.
+ */
+function withWorldPattern<T extends THREE.MeshStandardMaterial>(
+  material: T,
+  patternSource: string,
+): T {
+  material.onBeforeCompile = (shader): void => {
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vArenaWorld;')
+      .replace(
+        '#include <begin_vertex>',
+        '#include <begin_vertex>\n  vArenaWorld = (modelMatrix * vec4(position, 1.0)).xyz;',
+      );
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vArenaWorld;')
+      .replace('#include <color_fragment>', `#include <color_fragment>\n${patternSource}`);
+  };
+  // Two materials with identical source may still be patched differently, so the
+  // key has to change with the source rather than with the material type.
+  material.customProgramCacheKey = (): string => patternSource;
+  return material;
+}
+
+/**
+ * The containment wall.
+ *
+ * It was a 20%-opacity pane with `depthWrite` disabled, which meant it never
+ * occluded anything at all: the crowd, the skyline, and the sky read straight
+ * through it, and a car driving up the wall had no visible surface underneath it
+ * to judge position or height against. That is the defect this fixes.
+ *
+ * Opaque now, and patterned so both of the things a driver needs are legible
+ * while on it: height, through evenly spaced rows plus a bright kick plate at the
+ * bottom and a cool cap at the top, and position along the wall, through vertical
+ * panel seams. Team identity strengthens toward each goal end and washes out at
+ * midfield, the way the reference arena reads from above.
+ */
+function createContainmentMaterial(
+  resources: ResourceOwnership,
+  anchors: StadiumAnchors,
+  rampRise: number,
+  wallTopY: number,
+): THREE.MeshStandardMaterial {
+  const seamSpacing = Math.max((anchors.halfLength * 2) / 24, 1);
+  const pattern = `
+  {
+    vec3 wp = vArenaWorld;
+    float h = clamp(
+      (wp.y - ${glslFloat(rampRise)}) / max(${glslFloat(wallTopY - rampRise)}, 0.001),
+      0.0,
+      1.0
+    );
+
+    // Whichever axis runs along this stretch of wall, so seams stay vertical and
+    // evenly spaced on the sides, the ends, and the corner cuts alike.
+    float along = abs(wp.x) * ${glslFloat(anchors.halfLength)}
+      >= abs(wp.z) * ${glslFloat(anchors.halfWidth)} ? wp.z : wp.x;
+
+    float seamPhase = fract(along / ${glslFloat(seamSpacing)});
+    float seam = 1.0 - smoothstep(0.0, 0.045, min(seamPhase, 1.0 - seamPhase));
+
+    float rowPhase = fract(h * 3.0);
+    float row = 1.0 - smoothstep(0.0, 0.05, min(rowPhase, 1.0 - rowPhase));
+
+    float teamWeight = smoothstep(0.18, 0.95, abs(wp.z) / ${glslFloat(anchors.halfLength)});
+    // Two strengths of the same identity. The deep tint stains the panels without
+    // lifting them off the dark base an arena wall needs; the bright one carries
+    // the stripe, because a dark tint mixed into a dark panel reads as no tint.
+    vec3 teamDeep = wp.z < 0.0
+      ? ${glslColor(VISUAL.PALETTE.FIELD_BLUE)}
+      : ${glslColor(VISUAL.PALETTE.FIELD_ORANGE)};
+    vec3 teamBright = wp.z < 0.0
+      ? ${glslColor(VISUAL.PALETTE.BLUE)}
+      : ${glslColor(VISUAL.PALETTE.ORANGE)};
+
+    vec3 panel = mix(
+      ${glslColor(VISUAL.PALETTE.STRUCTURE_DARK)},
+      ${glslColor(VISUAL.PALETTE.STRUCTURE_MID)},
+      0.34 + 0.40 * h
+    );
+    panel = mix(panel, teamDeep, teamWeight * 0.55);
+    panel = mix(panel, panel * 0.42, seam * 0.85);
+    panel = mix(panel, panel * 0.70, row * 0.40);
+
+    // One continuous team stripe at a fixed height around the whole arena. This
+    // is the strongest identity cue on the wall and the easiest thing to read
+    // while sideways on it, so it brightens toward the end it belongs to but is
+    // never absent at midfield.
+    float stripe = 1.0 - smoothstep(0.0, 0.06, abs(h - 0.30));
+    panel = mix(panel, teamBright, stripe * 0.58 * (0.38 + 0.62 * teamWeight));
+
+    float kick = 1.0 - smoothstep(0.0, 0.055, h);
+    float cap = smoothstep(0.88, 1.0, h);
+    panel = mix(
+      panel,
+      mix(${glslColor(VISUAL.PALETTE.FIELD_LINE)}, teamBright, teamWeight * 0.55),
+      kick * 0.74
+    );
+    panel = mix(panel, ${glslColor(VISUAL.PALETTE.STRUCTURE_LIGHT)}, cap * 0.34);
+
+    diffuseColor.rgb = panel * mix(0.92, 1.14, h);
+  }`;
+
+  return resources.ownMaterial(withWorldPattern(
+    new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.42,
+      metalness: 0.22,
+      side: THREE.FrontSide,
+    }),
+    pattern,
+  ));
+}
+
+/**
+ * The floor-to-wall ramp band.
+ *
+ * A driver has to know where the floor stops being flat, because that is where a
+ * car starts climbing whether or not it meant to. The band carries the team tint
+ * of the half it is in and a bright line along its top edge, so the start of the
+ * curve is something you can see rather than something you discover.
+ */
+function createLowerTransitionMaterial(
+  resources: ResourceOwnership,
+  anchors: StadiumAnchors,
+  rampRise: number,
+): THREE.MeshStandardMaterial {
+  const pattern = `
+  {
+    vec3 wp = vArenaWorld;
+    float t = clamp(wp.y / max(${glslFloat(rampRise)}, 0.001), 0.0, 1.0);
+    float teamWeight = smoothstep(0.18, 0.95, abs(wp.z) / ${glslFloat(anchors.halfLength)});
+    vec3 team = wp.z < 0.0
+      ? ${glslColor(VISUAL.PALETTE.FIELD_BLUE)}
+      : ${glslColor(VISUAL.PALETTE.FIELD_ORANGE)};
+
+    vec3 c = mix(
+      ${glslColor(VISUAL.PALETTE.STRUCTURE_DARK)},
+      ${glslColor(VISUAL.PALETTE.STRUCTURE_MID)},
+      0.25 + 0.40 * t
+    );
+    c = mix(c, team, teamWeight * 0.45 + 0.12);
+    c = mix(c, ${glslColor(VISUAL.PALETTE.FIELD_LINE)}, smoothstep(0.86, 1.0, t) * 0.50);
+    diffuseColor.rgb = c;
+  }`;
+
+  return resources.ownMaterial(withWorldPattern(
+    new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.58,
+      metalness: 0.30,
+      side: THREE.FrontSide,
+    }),
+    pattern,
+  ));
+}
+
 function createBoundaryMaterials(
   resources: ResourceOwnership,
+  resolvedGeometry: ResolvedArenaGeometry,
+  anchors: StadiumAnchors,
 ): Readonly<Record<ArenaBoundaryMaterialRole, THREE.Material>> {
+  // Both risers come from the resolved geometry rather than from a local copy of
+  // the numbers, so the paint cannot describe a curve the collider does not have.
+  const rampRise = resolvedGeometry.profiles.floorWall.rise;
+  const wallTopY = anchors.ceilingY - resolvedGeometry.profiles.wallCeiling.rise;
+
   return Object.freeze({
     'field-floor': resources.ownMaterial(new THREE.MeshStandardMaterial({
       color: 0x155c35,
@@ -177,22 +368,8 @@ function createBoundaryMaterials(
       polygonOffsetFactor: 1,
       polygonOffsetUnits: 1,
     })),
-    'field-lower-transition': resources.ownMaterial(new THREE.MeshStandardMaterial({
-      color: 0x25333a,
-      roughness: 0.64,
-      metalness: 0.34,
-      side: THREE.FrontSide,
-    })),
-    'field-containment': resources.ownMaterial(new THREE.MeshPhysicalMaterial({
-      color: 0xb8e7f2,
-      roughness: 0.05,
-      metalness: 0.04,
-      transmission: 0.12,
-      transparent: true,
-      opacity: 0.2,
-      depthWrite: false,
-      side: THREE.FrontSide,
-    })),
+    'field-lower-transition': createLowerTransitionMaterial(resources, anchors, rampRise),
+    'field-containment': createContainmentMaterial(resources, anchors, rampRise, wallTopY),
     'field-ceiling': resources.ownMaterial(new THREE.MeshPhysicalMaterial({
       color: 0xc8edf5,
       roughness: 0.06,
@@ -203,14 +380,18 @@ function createBoundaryMaterials(
       depthWrite: false,
       side: THREE.FrontSide,
     })),
+    // The two goal interiors were near-black and within a few points of each
+    // other, so which end you were looking into was not something the colour told
+    // you. They stay dark, because a lit recess hides the ball, but they now carry
+    // enough of their own team to be told apart at a glance.
     'blue-goal': resources.ownMaterial(new THREE.MeshStandardMaterial({
-      color: 0x17252e,
+      color: 0x14304a,
       roughness: 0.56,
       metalness: 0.48,
       side: THREE.FrontSide,
     })),
     'orange-goal': resources.ownMaterial(new THREE.MeshStandardMaterial({
-      color: 0x2b2420,
+      color: 0x4a2a15,
       roughness: 0.56,
       metalness: 0.48,
       side: THREE.FrontSide,
@@ -248,10 +429,12 @@ function createAuthoritativeBoundaries(
     const geometry = geometryFromInwardSurface(primitive, resources);
     const mesh = new THREE.Mesh(geometry, materials[primitive.materialRole]);
     mesh.name = `arena-boundary:${primitive.id}`;
-    mesh.receiveShadow = primitive.materialRole !== 'field-containment'
-      && primitive.materialRole !== 'field-ceiling';
-    mesh.renderOrder = primitive.materialRole === 'field-containment'
-      || primitive.materialRole === 'field-ceiling' ? 2 : 0;
+    // The ceiling is the only boundary still drawn as glass, so it is the only one
+    // that has to be held back for transparency sorting. The wall is opaque now
+    // and sorts with everything else.
+    const isGlass = primitive.materialRole === 'field-ceiling';
+    mesh.receiveShadow = !isGlass;
+    mesh.renderOrder = isGlass ? 2 : 0;
     mesh.userData = Object.freeze({
       arenaBoundary: immutableBoundaryMetadata(primitive, resolvedGeometry),
     });
@@ -1063,14 +1246,17 @@ export function createArena(
   const exteriorPresentation = new THREE.Group();
   exteriorPresentation.name = 'arena-exterior-presentation';
 
-  const materials = createBoundaryMaterials(resources);
+  // Anchors are resolved first because the wall and ramp paint are sized from the
+  // arena's own dimensions. `createStadiumAnchors` reads only the resolved
+  // geometry, so moving it ahead of the materials changes nothing else.
+  const anchors = createStadiumAnchors(resolvedGeometry);
+  const materials = createBoundaryMaterials(resources, resolvedGeometry, anchors);
   const boundaryGeometries = createAuthoritativeBoundaries(
     authoritativeBoundaries,
     resolvedGeometry,
     resources,
     materials,
   );
-  const anchors = createStadiumAnchors(resolvedGeometry);
   const animatedGoalMaterials = createDaylightGameplayPresentation(
     gameplayOverlays,
     resolvedGeometry,
