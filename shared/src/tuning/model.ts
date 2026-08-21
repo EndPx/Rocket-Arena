@@ -226,6 +226,18 @@ export const TUNING_IDS = deepFreeze({
       powerslideCurvatureMultiplier: 'car.steering.powerslide-curvature-multiplier',
     },
     aerodynamicDragCoefficient: 'car.aerodynamic-drag.coefficient',
+    /**
+     * Airborne rotation authority. Rocket League drives each local axis with its
+     * own torque and its own damping, which is why roll snaps and yaw is heavy.
+     */
+    air: {
+      pitchTorque: 'car.air.pitch-torque',
+      yawTorque: 'car.air.yaw-torque',
+      rollTorque: 'car.air.roll-torque',
+      pitchDamping: 'car.air.pitch-damping',
+      yawDamping: 'car.air.yaw-damping',
+      rollDamping: 'car.air.roll-damping',
+    },
     jump: {
       firstVelocityChange: 'car.jump.first-velocity-change',
       holdForce: 'car.jump.hold-force',

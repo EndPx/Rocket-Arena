@@ -199,6 +199,17 @@ export const SEEDED_TUNING_ENTRIES: readonly TuningEntry[] = deepFreeze([
   scalar(TUNING_IDS.car.steering.powerslideCurvatureMultiplier, 'Powerslide curvature multiplier', 'ratio', 1.5, 1.01, 3, 'unverified-hypothesis', ['authority', 'perceived-control']),
   scalar(TUNING_IDS.car.aerodynamicDragCoefficient, 'Aerodynamic drag coefficient', 's^-1', 0.05, 0, 2, 'unverified-hypothesis', ['authority', 'perceived-control']),
   scalar(TUNING_IDS.ball.linearDamping, 'Ball linear damping', 's^-1', 0.1, 0, 0.2, 'unverified-hypothesis', ['authority', 'perceived-control']),
+  // Airborne rotation is integrated per local axis rather than snapped to the
+  // maximum angular speed, so the car has to spin up and spin down. The seeds
+  // are the Rocket League air-control accelerations and damping rates, which is
+  // where the asymmetry comes from: roll reaches full rate in about 0.14 s,
+  // pitch in 0.44 s, and yaw in 0.60 s.
+  scalar(TUNING_IDS.car.air.pitchTorque, 'Air pitch angular acceleration', 'rad/s^2', 12.46, 1, 60, 'unverified-hypothesis', ['authority', 'perceived-control']),
+  scalar(TUNING_IDS.car.air.yawTorque, 'Air yaw angular acceleration', 'rad/s^2', 9.11, 1, 60, 'unverified-hypothesis', ['authority', 'perceived-control']),
+  scalar(TUNING_IDS.car.air.rollTorque, 'Air roll angular acceleration', 'rad/s^2', 38.34, 1, 60, 'unverified-hypothesis', ['authority', 'perceived-control']),
+  scalar(TUNING_IDS.car.air.pitchDamping, 'Air pitch damping', 's^-1', 2.798, 0, 20, 'unverified-hypothesis', ['authority', 'perceived-control']),
+  scalar(TUNING_IDS.car.air.yawDamping, 'Air yaw damping', 's^-1', 1.886, 0, 20, 'unverified-hypothesis', ['authority', 'perceived-control']),
+  scalar(TUNING_IDS.car.air.rollDamping, 'Air roll damping', 's^-1', 4.687, 0, 20, 'unverified-hypothesis', ['authority', 'perceived-control']),
   scalar(TUNING_IDS.car.jump.holdForce, 'Jump hold force', 'N', 1450, 0, 5000, 'unverified-hypothesis', ['authority', 'perceived-control']),
   scalar(TUNING_IDS.car.jump.holdDuration, 'Jump hold duration', 's', 0.2, 0, 0.5, 'unverified-hypothesis', ['authority', 'perceived-control']),
   scalar(TUNING_IDS.car.jump.secondJumpWindow, 'Second jump window', 's', 1.25, 0.5, 2, 'unverified-hypothesis', ['authority', 'perceived-control']),

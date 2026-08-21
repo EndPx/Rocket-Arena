@@ -79,7 +79,14 @@ export interface JumpAirControlPlan {
   readonly jumpDeltaVelocity: ControllerVector3;
   readonly holdForce: ControllerVector3;
   readonly holdDeltaVelocity: ControllerVector3;
+  /** The instantaneous rate a fully deflected axis is allowed to reach. */
   readonly airAngularTarget: ControllerVector3;
+  /**
+   * The rate this step actually commands. It ramps toward the target under the
+   * per-axis torque and decays under the per-axis damping, so it only equals the
+   * target once an axis has spun up, or immediately during a flip.
+   */
+  readonly airAngularVelocity: ControllerVector3;
   readonly flipActive: boolean;
   readonly nextState: Readonly<CarJumpAirState>;
 }
@@ -473,6 +480,12 @@ interface JumpAirTuning {
   readonly flipActuationWindow: number;
   readonly directionalDeadzone: number;
   readonly maximumAngularSpeed: number;
+  readonly pitchTorque: number;
+  readonly yawTorque: number;
+  readonly rollTorque: number;
+  readonly pitchDamping: number;
+  readonly yawDamping: number;
+  readonly rollDamping: number;
 }
 
 function readJumpAirTuning(tuning: CarControllerTuningSnapshot): JumpAirTuning {
@@ -494,6 +507,12 @@ function readJumpAirTuning(tuning: CarControllerTuningSnapshot): JumpAirTuning {
       TUNING_IDS.car.jump.directionalDeadzone,
     ),
     maximumAngularSpeed: getScalarTuningValue(tuning, TUNING_IDS.car.maxAngularSpeed),
+    pitchTorque: getScalarTuningValue(tuning, TUNING_IDS.car.air.pitchTorque),
+    yawTorque: getScalarTuningValue(tuning, TUNING_IDS.car.air.yawTorque),
+    rollTorque: getScalarTuningValue(tuning, TUNING_IDS.car.air.rollTorque),
+    pitchDamping: getScalarTuningValue(tuning, TUNING_IDS.car.air.pitchDamping),
+    yawDamping: getScalarTuningValue(tuning, TUNING_IDS.car.air.yawDamping),
+    rollDamping: getScalarTuningValue(tuning, TUNING_IDS.car.air.rollDamping),
   };
 }
 
@@ -507,7 +526,13 @@ function validJumpAirTuning(candidate: JumpAirTuning): boolean {
     && candidate.flipActuationWindow >= 0
     && candidate.directionalDeadzone >= 0
     && candidate.directionalDeadzone <= 1
-    && candidate.maximumAngularSpeed > 0;
+    && candidate.maximumAngularSpeed > 0
+    && candidate.pitchTorque > 0
+    && candidate.yawTorque > 0
+    && candidate.rollTorque > 0
+    && candidate.pitchDamping >= 0
+    && candidate.yawDamping >= 0
+    && candidate.rollDamping >= 0;
 }
 
 function resolveJumpAirTuning(tuning: CarControllerTuningSnapshot): JumpAirTuning {
@@ -614,6 +639,29 @@ function boundedAngularTarget(
   const magnitude = Math.hypot(raw.x, raw.y, raw.z);
   if (!Number.isFinite(magnitude) || magnitude <= CURVE_EPSILON) return ZERO_VECTOR;
   return scale(raw, maximumAngularSpeed / Math.max(1, magnitude));
+}
+
+/**
+ * Advance one local rotation axis by a fixed step.
+ *
+ * A commanded axis accelerates at its own torque; a released axis is dragged
+ * back toward rest by its own damping, scaled by how much of the command is
+ * missing. Snapping straight to the maximum angular speed instead, which is what
+ * this replaces, made every axis reach full rate inside a single 16.7 ms step
+ * and left airborne rotation weightless and identical on all three axes.
+ */
+function advanceAirAxisRate(
+  currentRate: number,
+  command: number,
+  torque: number,
+  damping: number,
+  timestepSeconds: number,
+): number {
+  const commanded = clamp(command, -1, 1);
+  const drive = torque * commanded;
+  const decay = damping * currentRate * (1 - Math.abs(commanded));
+  const next = currentRate + (drive - decay) * timestepSeconds;
+  return Number.isFinite(next) ? next : 0;
 }
 
 /** Plan one fixed-step jump, hold, flip, and local-axis air-control command. */
@@ -813,6 +861,44 @@ export function planJumpAirControl(
     tuning.maximumAngularSpeed,
   );
 
+  // A dodge is an impulse in Rocket League, so a flip keeps the instant target.
+  // Held air control integrates instead, which is what gives rotation its mass.
+  let airAngularVelocity = airAngularTarget;
+  if (context.observation.grounded === true) {
+    airAngularVelocity = ZERO_VECTOR;
+  } else if (!flipActive) {
+    const currentAngular = finiteVector(context.observation.angularVelocity) ?? ZERO_VECTOR;
+    const nextPitchRate = advanceAirAxisRate(
+      dot(currentAngular, localRight),
+      pitchCommand,
+      tuning.pitchTorque,
+      tuning.pitchDamping,
+      timestepSeconds,
+    );
+    const nextYawRate = advanceAirAxisRate(
+      dot(currentAngular, localRoof),
+      normalizedYaw,
+      tuning.yawTorque,
+      tuning.yawDamping,
+      timestepSeconds,
+    );
+    const nextRollRate = advanceAirAxisRate(
+      dot(currentAngular, localForward),
+      rollCommand,
+      tuning.rollTorque,
+      tuning.rollDamping,
+      timestepSeconds,
+    );
+    // The three local axes are orthonormal, so recomposition is lossless.
+    airAngularVelocity = clampVectorMagnitude(
+      add(
+        add(scale(localRight, nextPitchRate), scale(localRoof, nextYawRate)),
+        scale(localForward, nextRollRate),
+      ),
+      tuning.maximumAngularSpeed,
+    );
+  }
+
   return Object.freeze({
     event,
     localForward,
@@ -825,6 +911,7 @@ export function planJumpAirControl(
     holdForce,
     holdDeltaVelocity,
     airAngularTarget,
+    airAngularVelocity,
     flipActive,
     nextState,
   });
@@ -1033,13 +1120,10 @@ export function planCarControllerCommand(
     projectedVelocity = add(baseProjectedVelocity, jumpLinearDelta);
     deltaVelocity = add(baseDeltaVelocity, jumpLinearDelta);
     if (context.observation.grounded !== true) {
-      const hasExplicitAirAngularCommand = jumpAirControl.flipActive
-        || Math.abs(jumpAirControl.normalizedPitch) > CURVE_EPSILON
-        || Math.abs(jumpAirControl.normalizedYaw) > CURVE_EPSILON
-        || Math.abs(jumpAirControl.normalizedRoll) > CURVE_EPSILON;
-      projectedAngularVelocity = hasExplicitAirAngularCommand
-        ? jumpAirControl.airAngularTarget
-        : angularVelocity;
+      // Airborne rotation is always integrated now. Releasing the sticks used to
+      // freeze the current spin forever; the per-axis damping inside the plan is
+      // what lets a car settle, so an uncommanded step still has to be applied.
+      projectedAngularVelocity = jumpAirControl.airAngularVelocity;
       finalAngularDeltaVelocity = subtract(projectedAngularVelocity, angularVelocity);
     }
   }

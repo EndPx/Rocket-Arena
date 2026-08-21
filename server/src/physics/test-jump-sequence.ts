@@ -55,6 +55,22 @@ const MAX_ANGULAR_SPEED = getScalarTuningValue(
   DEFAULT_TUNING_REGISTRY_SNAPSHOT,
   TUNING_IDS.car.maxAngularSpeed,
 );
+const PITCH_TORQUE = getScalarTuningValue(
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  TUNING_IDS.car.air.pitchTorque,
+);
+const YAW_TORQUE = getScalarTuningValue(
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  TUNING_IDS.car.air.yawTorque,
+);
+const ROLL_TORQUE = getScalarTuningValue(
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  TUNING_IDS.car.air.rollTorque,
+);
+const ROLL_DAMPING = getScalarTuningValue(
+  DEFAULT_TUNING_REGISTRY_SNAPSHOT,
+  TUNING_IDS.car.air.rollDamping,
+);
 const IDENTITY: ControllerQuaternion = { x: 0, y: 0, z: 0, w: 1 };
 const NEUTRAL: Readonly<InputCommandV2> = Object.freeze({
   protocolVersion: INPUT_PROTOCOL_VERSION,
@@ -102,12 +118,48 @@ function planAt(
   fixedStepIndex: number,
   grounded: boolean,
   rotation: ControllerQuaternion = IDENTITY,
+  angularVelocity: ControllerVector3 = { x: 0, y: 0, z: 0 },
 ): Readonly<JumpAirControlPlan> {
   return planJumpAirControl(input, state, {
-    observation: observation(grounded, rotation),
+    observation: observation(grounded, rotation, { x: 0, y: 0, z: 0 }, angularVelocity),
     fixedStepIndex,
     timestepSeconds: TIMESTEP,
   });
+}
+
+/**
+ * Hold one axis from rest and report how long it takes to reach a share of the
+ * maximum angular speed, plus the rate it settles at.
+ */
+function spinUpAxis(
+  axis: 'pitch' | 'yaw' | 'roll',
+  steps: number,
+): { readonly stepsToNearMax: number; readonly finalRate: number } {
+  const state = createCarJumpAirState(5);
+  const readRate = (plan: Readonly<JumpAirControlPlan>): number => (
+    axis === 'pitch'
+      ? plan.airAngularVelocity.x
+      : axis === 'yaw' ? plan.airAngularVelocity.y : plan.airAngularVelocity.z
+  );
+  let angularVelocity: ControllerVector3 = { x: 0, y: 0, z: 0 };
+  let stepsToNearMax = Number.POSITIVE_INFINITY;
+  let finalRate = 0;
+  for (let step = 0; step < steps; step += 1) {
+    const plan = planAt(
+      command({ [axis]: 1, jumpSequence: 5 } as Partial<InputCommandV2>),
+      state,
+      step,
+      false,
+      IDENTITY,
+      angularVelocity,
+    );
+    angularVelocity = plan.airAngularVelocity;
+    finalRate = readRate(plan);
+    if (finalRate >= MAX_ANGULAR_SPEED * 0.99 && !Number.isFinite(stepsToNearMax)) {
+      stepsToNearMax = step + 1;
+    }
+  }
+  return { stepsToNearMax, finalRate };
 }
 
 function assertApproximately(actual: number, expected: number, label: string): void {
@@ -428,6 +480,86 @@ function runAirAxisCases(): void {
   ].every(Number.isFinite));
 }
 
+/**
+ * Airborne rotation has to spin up and spin down instead of snapping. Roll is
+ * the quickest axis, pitch is slower, and yaw is the slowest, which is the
+ * asymmetry that makes air control feel like it has mass.
+ */
+function runAirRampCases(): { readonly rollSteps: number; readonly yawSteps: number } {
+  const state = createCarJumpAirState(5);
+
+  // One step from rest is exactly one step of that axis' acceleration.
+  const firstPitch = planAt(command({ pitch: 1, jumpSequence: 5 }), state, 0, false);
+  const firstYaw = planAt(command({ yaw: 1, jumpSequence: 5 }), state, 0, false);
+  const firstRoll = planAt(command({ roll: 1, jumpSequence: 5 }), state, 0, false);
+  assertApproximately(firstPitch.airAngularVelocity.x, PITCH_TORQUE * TIMESTEP, 'first pitch step');
+  assertApproximately(firstYaw.airAngularVelocity.y, YAW_TORQUE * TIMESTEP, 'first yaw step');
+  assertApproximately(firstRoll.airAngularVelocity.z, ROLL_TORQUE * TIMESTEP, 'first roll step');
+  for (const plan of [firstPitch, firstYaw, firstRoll]) {
+    assert.ok(
+      vectorMagnitude(plan.airAngularVelocity) < MAX_ANGULAR_SPEED,
+      'a single step must not reach the maximum angular speed',
+    );
+  }
+
+  const pitch = spinUpAxis('pitch', 120);
+  const yaw = spinUpAxis('yaw', 120);
+  const roll = spinUpAxis('roll', 120);
+  for (const [label, result] of [['pitch', pitch], ['yaw', yaw], ['roll', roll]] as const) {
+    assert.ok(
+      Number.isFinite(result.stepsToNearMax),
+      `${label} must reach the maximum angular speed while held`,
+    );
+    assert.ok(
+      result.finalRate <= MAX_ANGULAR_SPEED + EPSILON,
+      `${label} must never exceed the maximum angular speed, received ${result.finalRate}`,
+    );
+  }
+  assert.ok(
+    roll.stepsToNearMax < pitch.stepsToNearMax,
+    `roll must spin up faster than pitch, received ${roll.stepsToNearMax} vs ${pitch.stepsToNearMax}`,
+  );
+  assert.ok(
+    pitch.stepsToNearMax < yaw.stepsToNearMax,
+    `pitch must spin up faster than yaw, received ${pitch.stepsToNearMax} vs ${yaw.stepsToNearMax}`,
+  );
+
+  // Releasing the axis decays it toward rest without overshooting past zero.
+  let decaying: ControllerVector3 = { x: 0, y: 0, z: MAX_ANGULAR_SPEED };
+  let previousRate = decaying.z;
+  for (let step = 0; step < 240; step += 1) {
+    const plan = planAt(command({ jumpSequence: 5 }), state, step, false, IDENTITY, decaying);
+    decaying = plan.airAngularVelocity;
+    assert.ok(
+      decaying.z >= -EPSILON && decaying.z <= previousRate + EPSILON,
+      `released roll must decay monotonically toward rest, received ${decaying.z}`,
+    );
+    previousRate = decaying.z;
+  }
+  assert.ok(
+    previousRate < MAX_ANGULAR_SPEED * 0.02,
+    `released roll must settle near rest, received ${previousRate}`,
+  );
+  assertApproximately(
+    planAt(command({ jumpSequence: 5 }), state, 0, false, IDENTITY, { x: 0, y: 0, z: 1 })
+      .airAngularVelocity.z,
+    1 - ROLL_DAMPING * 1 * TIMESTEP,
+    'one released roll step',
+  );
+
+  // Grounded steps stay owned by the grounded steering path.
+  assertApproximately(
+    vectorMagnitude(
+      planAt(command({ pitch: 1, yaw: 1, roll: 1, jumpSequence: 5 }), state, 0, true)
+        .airAngularVelocity,
+    ),
+    0,
+    'grounded air rotation',
+  );
+
+  return { rollSteps: roll.stepsToNearMax, yawSteps: yaw.stepsToNearMax };
+}
+
 function runIntegratedPlannerCase(): void {
   const result = planCarControllerCommand(command({ jumpHeld: true, jumpSequence: 1 }), {
     observation: observation(true),
@@ -469,9 +601,11 @@ function runIntegratedPlannerCase(): void {
     { x: -1, y: 0, z: 0 },
     'last-finite recovered Local_Roof',
   );
+  // Yaw is applied about the recovered Local_Roof, and one step is one step of
+  // the yaw ramp rather than a snap to the maximum angular speed.
   assertVectorApproximately(
     recovered.projectedAngularVelocity,
-    { x: -MAX_ANGULAR_SPEED, y: 0, z: 0 },
+    { x: -YAW_TORQUE * TIMESTEP, y: 0, z: 0 },
     'last-finite recovered yaw',
   );
   assertVectorApproximately(
@@ -722,6 +856,7 @@ async function main(): Promise<void> {
   const flip = runFlipCases();
   runGroundResetAndSynchronizationCases();
   runAirAxisCases();
+  const airRamp = runAirRampCases();
   runIntegratedPlannerCase();
   const groundingLifecycle = runRealGroundingLifecycle();
   const rapier = runRapierSmoke();
@@ -734,6 +869,9 @@ async function main(): Promise<void> {
 
   console.log('=== JUMP / FLIP / AIR HARNESS: PASS ===');
   console.log(`flipAngular=${flip.activeAngularSpeed.toFixed(5)}rad/s`);
+  console.log(
+    `airSpinUp roll=${airRamp.rollSteps} steps yaw=${airRamp.yawSteps} steps`,
+  );
   console.log(
     `groundingResidual=${groundingLifecycle.residualSupportSteps} steps airborneAt=${groundingLifecycle.airborneStep}`,
   );
