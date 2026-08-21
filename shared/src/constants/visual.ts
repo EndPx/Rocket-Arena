@@ -156,22 +156,28 @@ export const VISUAL = {
     MARKER_GROUNDED_OPACITY: 0.58,
     MARKER_LIFTED_OPACITY: 0.34,
     /**
-     * Field-marker radii, as ratios of the ball radius. The marker is a scene
-     * overlay rather than part of the ball rig, so it is authored at the size it
-     * should be instead of being capped by the ball's bounding-box budget and
-     * then multiplied at runtime.
+     * Field-marker radii, as ratios of the ball radius.
      *
-     * Every ratio must exceed one: a circle the width of the ball sits inside
-     * the ball's own silhouette, so whether it is visible would depend on the
-     * camera angle rather than on where the ball is. The outer edge lands at
-     * `1.95 x 1.8 m`, a `7.02 m` circle around a `3.6 m` ball, which is the same
-     * relative footprint Rocket League gives its ball shadow.
+     * The marker is a filled disc with a rim, not a ring. A ring wide enough to
+     * survive being viewed almost edge-on from across the field had to be about
+     * twice the ball's width, which read as an oversized target rather than as
+     * the ball's own footprint. Filled area holds its screen size under that
+     * foreshortening, so the disc can sit at `1.35 x` the ball radius, a `4.86 m`
+     * circle under a `3.6 m` ball, and still be legible at 90 m.
+     *
+     * The rim must start outside the ball radius. While the ball rests on the
+     * floor it covers everything inside `1.0`, so the rim is what remains visible.
      */
-    MARKER_INNER_RADIUS_RATIO: 1.2,
-    MARKER_MID_RADIUS_RATIO: 1.55,
-    MARKER_OUTER_RADIUS_RATIO: 1.95,
-    /** Centre dot, the only part the ball itself covers while resting. */
-    MARKER_CORE_RADIUS_RATIO: 0.26,
+    MARKER_DISC_RADIUS_RATIO: 1.12,
+    MARKER_RIM_RADIUS_RATIO: 1.35,
+    /**
+     * The body is the light part and the rim is the dark part, not the other way
+     * around. Most of the floor is dark turf, so the large filled area has to be
+     * the one that contrasts against it; the dark rim then covers the pale
+     * concrete surround. Carrying a dark body over dark turf spent the marker's
+     * whole contrast budget on the minority case and left it faint at range.
+     */
+    MARKER_DISC_OPACITY_SCALE: 0.55,
     /** Altitude only widens the circle a little; the authored size does the work. */
     MARKER_GROUNDED_SCALE: 1,
     MARKER_LIFTED_SCALE: 1.35,

@@ -370,32 +370,36 @@ test('the ball field marker projects onto the floor independently of the ball', 
     assert.equal(marker.object.visible, false, 'a fresh marker shows nothing');
     assert.equal(marker.altitudeBlend, 0);
 
-    const band = marker.object.getObjectByName('ball-field-marker-band');
-    const frame = marker.object.getObjectByName('ball-field-marker-frame');
-    assert.ok(band instanceof THREE.Mesh);
-    assert.ok(frame instanceof THREE.Mesh, 'the marker needs its dark contrast band');
+    const disc = marker.object.getObjectByName('ball-field-marker-disc');
+    const rim = marker.object.getObjectByName('ball-field-marker-rim');
+    assert.ok(disc instanceof THREE.Mesh, 'the marker needs its filled shadow body');
+    assert.ok(rim instanceof THREE.Mesh, 'the marker needs its contrasting rim');
 
-    // Authored size is the whole point of owning this outside the ball rig: it is
-    // no longer capped by the ball's bounding-box budget, so it can read at range.
-    const bandGeometry = band.geometry.parameters as { innerRadius: number; outerRadius: number };
-    const frameGeometry = frame.geometry.parameters as { innerRadius: number; outerRadius: number };
+    // A filled body is what lets the marker stay the ball's own size: an annulus
+    // thin enough to look right vanished when the camera looked along the floor.
+    const discGeometry = disc.geometry.parameters as { radius: number };
+    const rimGeometry = rim.geometry.parameters as { innerRadius: number; outerRadius: number };
     assert.ok(
-      frameGeometry.innerRadius > radius,
-      'the circle must start outside the ball silhouette, or the ball hides it',
+      Math.abs(rimGeometry.innerRadius - discGeometry.radius) <= 1e-6,
+      'the rim must meet the disc exactly so neither tints the other',
     );
     assert.ok(
-      Math.abs(frameGeometry.outerRadius - bandGeometry.innerRadius) <= 1e-6,
-      'the two bands must meet exactly so neither tints the other',
+      rimGeometry.innerRadius > radius,
+      'the rim must sit outside the ball silhouette, or a resting ball hides it',
     );
-    assert.ok(bandGeometry.outerRadius > radius * 1.5, 'the circle must read wider than the ball');
+    // Sized like the ball's own footprint rather than an oversized target.
+    assert.ok(
+      rimGeometry.outerRadius > radius && rimGeometry.outerRadius <= radius * 1.5,
+      `the circle must stay near the ball's size, received ${rimGeometry.outerRadius}`,
+    );
     assert.notEqual(
-      (frame.material as THREE.MeshBasicMaterial).color.getHex(),
-      (band.material as THREE.MeshBasicMaterial).color.getHex(),
-      'the bands must differ in tone to survive both floor colours',
+      (disc.material as THREE.MeshBasicMaterial).color.getHex(),
+      (rim.material as THREE.MeshBasicMaterial).color.getHex(),
+      'the two parts must differ in tone to survive both floor colours',
     );
     // Fog would wash the marker out at exactly the range it matters most.
-    assert.equal((band.material as THREE.MeshBasicMaterial).fog, false);
-    assert.equal((frame.material as THREE.MeshBasicMaterial).fog, false);
+    assert.equal((rim.material as THREE.MeshBasicMaterial).fog, false);
+    assert.equal((disc.material as THREE.MeshBasicMaterial).fog, false);
 
     const heights = [radius, 4, 9, 18, 30];
     let previousOpacity = Number.POSITIVE_INFINITY;
@@ -421,11 +425,14 @@ test('the ball field marker projects onto the floor independently of the ball', 
         .applyQuaternion(marker.object.getWorldQuaternion(new THREE.Quaternion()));
       assert.ok(up.dot(new THREE.Vector3(0, 1, 0)) >= 1 - 1e-6, 'marker must stay flat');
 
-      const material = band.material as THREE.MeshBasicMaterial;
-      assert.equal(
-        (frame.material as THREE.MeshBasicMaterial).opacity,
-        material.opacity,
-        `both bands must share one opacity at height ${height}`,
+      const material = rim.material as THREE.MeshBasicMaterial;
+      // The body is carried lighter than the rim, but the two must fade together.
+      assert.ok(
+        Math.abs(
+          (disc.material as THREE.MeshBasicMaterial).opacity
+          - material.opacity * tuning.MARKER_DISC_OPACITY_SCALE,
+        ) <= 1e-9,
+        `the body must track the rim opacity at height ${height}`,
       );
       assert.ok(
         material.opacity >= tuning.MARKER_LIFTED_OPACITY - 1e-9

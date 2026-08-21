@@ -94,19 +94,15 @@ export function createBallFieldMarker(): BallFieldMarker {
   const tuning = VISUAL.BALL_MOTION;
   const radius = BALL.RADIUS;
 
-  const frameGeometry = new THREE.RingGeometry(
-    radius * tuning.MARKER_INNER_RADIUS_RATIO,
-    radius * tuning.MARKER_MID_RADIUS_RATIO,
+  // A filled body plus an adjacent rim, so neither tints the other and the pair
+  // keeps its screen area when the camera looks along the floor.
+  const discGeometry = new THREE.CircleGeometry(radius * tuning.MARKER_DISC_RADIUS_RATIO, 48);
+  const rimGeometry = new THREE.RingGeometry(
+    radius * tuning.MARKER_DISC_RADIUS_RATIO,
+    radius * tuning.MARKER_RIM_RADIUS_RATIO,
     48,
     1,
   );
-  const bandGeometry = new THREE.RingGeometry(
-    radius * tuning.MARKER_MID_RADIUS_RATIO,
-    radius * tuning.MARKER_OUTER_RADIUS_RATIO,
-    48,
-    1,
-  );
-  const coreGeometry = new THREE.CircleGeometry(radius * tuning.MARKER_CORE_RADIUS_RATIO, 24);
 
   // Fog is off because this is a readability aid: the ball is most often chased
   // from the far end of a 102 m field, exactly where fog would wash it out.
@@ -117,28 +113,25 @@ export function createBallFieldMarker(): BallFieldMarker {
     fog: false,
     side: THREE.DoubleSide,
   } as const;
-  // Two tones, radially adjacent so neither tints the other. A light-only circle
-  // vanished against the pale concrete surround while reading fine on turf.
-  const frameMaterial = new THREE.MeshBasicMaterial({ color: VISUAL.PALETTE.RUBBER, ...shared });
-  const bandMaterial = new THREE.MeshBasicMaterial({ color: VISUAL.PALETTE.WHITE_LIGHT, ...shared });
+  // A light body against the dark turf that covers most of the floor, ringed by a
+  // dark rim that takes over on the pale concrete surround. A single tone lost one
+  // surface or the other depending on where the ball happened to be.
+  const discMaterial = new THREE.MeshBasicMaterial({ color: VISUAL.PALETTE.WHITE_LIGHT, ...shared });
+  const rimMaterial = new THREE.MeshBasicMaterial({ color: VISUAL.PALETTE.RUBBER, ...shared });
 
   const object = new THREE.Group();
   object.name = 'ball-field-marker';
   object.visible = false;
 
-  const frame = new THREE.Mesh(frameGeometry, frameMaterial);
-  frame.name = 'ball-field-marker-frame';
-  frame.rotation.x = -Math.PI / 2;
-  frame.renderOrder = 4;
-  const band = new THREE.Mesh(bandGeometry, bandMaterial);
-  band.name = 'ball-field-marker-band';
-  band.rotation.x = -Math.PI / 2;
-  band.renderOrder = 5;
-  const core = new THREE.Mesh(coreGeometry, bandMaterial);
-  core.name = 'ball-field-marker-core';
-  core.rotation.x = -Math.PI / 2;
-  core.renderOrder = 5;
-  object.add(frame, band, core);
+  const disc = new THREE.Mesh(discGeometry, discMaterial);
+  disc.name = 'ball-field-marker-disc';
+  disc.rotation.x = -Math.PI / 2;
+  disc.renderOrder = 4;
+  const rim = new THREE.Mesh(rimGeometry, rimMaterial);
+  rim.name = 'ball-field-marker-rim';
+  rim.rotation.x = -Math.PI / 2;
+  rim.renderOrder = 5;
+  object.add(disc, rim);
 
   let altitudeBlend = 0;
   let disposed = false;
@@ -196,8 +189,8 @@ export function createBallFieldMarker(): BallFieldMarker {
         tuning.MARKER_LIFTED_OPACITY,
         altitudeBlend,
       );
-      frameMaterial.opacity = opacity;
-      bandMaterial.opacity = opacity;
+      rimMaterial.opacity = opacity;
+      discMaterial.opacity = opacity * tuning.MARKER_DISC_OPACITY_SCALE;
       object.visible = opacity > 0.01;
     },
 
@@ -206,8 +199,8 @@ export function createBallFieldMarker(): BallFieldMarker {
       disposed = true;
       object.removeFromParent();
       object.clear();
-      for (const geometry of [frameGeometry, bandGeometry, coreGeometry]) geometry.dispose();
-      for (const material of [frameMaterial, bandMaterial]) material.dispose();
+      for (const geometry of [discGeometry, rimGeometry]) geometry.dispose();
+      for (const material of [discMaterial, rimMaterial]) material.dispose();
       hide();
     },
   };
