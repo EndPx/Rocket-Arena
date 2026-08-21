@@ -68,9 +68,7 @@ interface BallGeometrySet {
   node: THREE.CylinderGeometry;
   glow: THREE.SphereGeometry;
   trail: THREE.ConeGeometry;
-  /** Flat ring projected onto the floor to show where the ball is. */
-  groundMarker: THREE.RingGeometry;
-  groundMarkerCore: THREE.CircleGeometry;
+
 }
 
 interface BallSharedMaterials {
@@ -110,12 +108,7 @@ function createGeometrySet(): BallGeometrySet {
     node: new THREE.CylinderGeometry(nodeRadius, nodeRadius * 0.84, nodeHeight, 8),
     glow: new THREE.SphereGeometry(BALL.RADIUS * GLOW_RADIUS_RATIO, 24, 16),
     trail: new THREE.ConeGeometry(BALL.RADIUS * 0.82, BALL.RADIUS * TRAIL_LENGTH_RATIO, 14, 1, true),
-    // Outer radius stays at the ball radius so the resting rig keeps its
-    // spherical silhouette allowance. VISUAL.BALL_MOTION.MARKER_*_SCALE widens
-    // it past the ball at runtime, which is what makes it visible from a low
-    // chase camera.
-    groundMarker: new THREE.RingGeometry(BALL.RADIUS * 0.74, BALL.RADIUS, 40, 1),
-    groundMarkerCore: new THREE.CircleGeometry(BALL.RADIUS * 0.16, 20),
+
   };
 }
 
@@ -180,8 +173,6 @@ export interface BallRigMotionState {
   speed: number;
   trailBlend: number;
   proximityBlend: number;
-  /** Normalized height of the ball above the floor, used by the ground marker. */
-  altitudeBlend: number;
 }
 
 export interface BallVisualRig {
@@ -199,12 +190,6 @@ export interface BallVisualRig {
   readonly gyro: THREE.Group;
   readonly glow: THREE.Mesh;
   readonly trail: THREE.Mesh;
-  /**
-   * Ground marker that shows where the ball is on the floor. It is a child of
-   * this rig for ownership, but it is counter-transformed every frame so it
-   * stays flat on the floor and never inherits the ball's rotation.
-   */
-  readonly groundMarker: THREE.Group;
   readonly motion: BallRigMotionState;
   readonly isDisposed: boolean;
   resetTemporalState(): void;
@@ -321,30 +306,6 @@ export function createBallVisualRig(): BallVisualRig {
   trail.scale.setScalar(TRAIL_REST_SCALE);
   group.add(trail);
 
-  // Fog is disabled because this is a readability aid, not scenery: the ball is
-  // most often chased from the far end of a 102 m field, exactly where fog would
-  // wash the marker into the night sky colour.
-  const markerMaterial = new THREE.MeshBasicMaterial({
-    color: VISUAL.PALETTE.WHITE_LIGHT,
-    transparent: true,
-    opacity: 0,
-    depthWrite: false,
-    fog: false,
-    side: THREE.DoubleSide,
-  });
-  const groundMarker = new THREE.Group();
-  groundMarker.name = 'ball-ground-marker';
-  groundMarker.visible = false;
-  const markerRing = new THREE.Mesh(geometry.groundMarker, markerMaterial);
-  markerRing.name = 'ball-ground-marker-ring';
-  markerRing.rotation.x = -Math.PI / 2;
-  markerRing.renderOrder = 4;
-  const markerCore = new THREE.Mesh(geometry.groundMarkerCore, markerMaterial);
-  markerCore.name = 'ball-ground-marker-core';
-  markerCore.rotation.x = -Math.PI / 2;
-  markerCore.renderOrder = 4;
-  groundMarker.add(markerRing, markerCore);
-  group.add(groundMarker);
 
   const motion: BallRigMotionState = {
     gyroAngle: 0,
@@ -352,7 +313,6 @@ export function createBallVisualRig(): BallVisualRig {
     speed: 0,
     trailBlend: 0,
     proximityBlend: 0,
-    altitudeBlend: 0,
   };
   let disposed = false;
 
@@ -368,7 +328,6 @@ export function createBallVisualRig(): BallVisualRig {
     gyro,
     glow,
     trail,
-    groundMarker,
     motion,
     get isDisposed(): boolean {
       return disposed;
@@ -379,12 +338,6 @@ export function createBallVisualRig(): BallVisualRig {
       motion.speed = 0;
       motion.trailBlend = 0;
       motion.proximityBlend = 0;
-      motion.altitudeBlend = 0;
-      groundMarker.visible = false;
-      groundMarker.position.set(0, 0, 0);
-      groundMarker.quaternion.identity();
-      groundMarker.scale.setScalar(1);
-      markerMaterial.opacity = 0;
       gyro.rotation.set(0, 0, 0);
       glow.visible = false;
       glowMaterial.opacity = 0;
@@ -405,7 +358,6 @@ export function createBallVisualRig(): BallVisualRig {
         nodeMaterial,
         glowMaterial,
         trailMaterial,
-        markerMaterial,
       ]) {
         material.dispose();
       }

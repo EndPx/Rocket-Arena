@@ -8,6 +8,7 @@ import { RESOLVED_ARENA_GEOMETRY } from '@rocket-arena/shared';
 import { initScene } from './renderer/scene.js';
 import { createLighting } from './renderer/lighting.js';
 import { createArena } from './renderer/arena.js';
+import { createBallFieldMarker } from './renderer/ball-field-marker.js';
 import { getRoom } from './networking/client.js';
 import {
   getBallMesh,
@@ -43,6 +44,8 @@ const { renderer, scene, camera } = initScene(app);
 const resolvedArenaGeometry = RESOLVED_ARENA_GEOMETRY;
 createLighting(scene, resolvedArenaGeometry);
 const arena = createArena(scene, resolvedArenaGeometry);
+const ballFieldMarker = createBallFieldMarker();
+scene.add(ballFieldMarker.object);
 createHUD();
 initializeAudio();
 
@@ -104,6 +107,9 @@ function animate(): void {
 
     const localCar = getCarMeshes().get(room.sessionId) || null;
     const ball = getBallMesh();
+    // The field circle is a floor overlay, not a snapshot entity, so it simply
+    // follows whichever ball currently exists and hides when there is none.
+    ballFieldMarker.update(ball ? ball.position : null);
     const state = getLocalState();
     const inputCommand = getCurrentInputCommandV2();
     const activePlay = state?.phase === 'playing' || state?.phase === 'overtime';
@@ -154,6 +160,7 @@ function animate(): void {
 }
 
 const disposeClient = (): void => {
+  ballFieldMarker.dispose();
   arena.dispose();
   destroyHUD();
 };

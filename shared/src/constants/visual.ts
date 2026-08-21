@@ -156,14 +156,25 @@ export const VISUAL = {
     MARKER_GROUNDED_OPACITY: 0.58,
     MARKER_LIFTED_OPACITY: 0.34,
     /**
-     * The ring geometry is authored at the ball radius so a freshly built rig
-     * keeps its spherical silhouette allowance, then scaled at runtime. Both
-     * scales must exceed one: a ring the width of the ball sits entirely inside
-     * the ball's own silhouette, so whether it is visible depends on the camera
-     * angle rather than on the ball's position.
+     * Field-marker radii, as ratios of the ball radius. The marker is a scene
+     * overlay rather than part of the ball rig, so it is authored at the size it
+     * should be instead of being capped by the ball's bounding-box budget and
+     * then multiplied at runtime.
+     *
+     * Every ratio must exceed one: a circle the width of the ball sits inside
+     * the ball's own silhouette, so whether it is visible would depend on the
+     * camera angle rather than on where the ball is. The outer edge lands at
+     * `1.95 x 1.8 m`, a `7.02 m` circle around a `3.6 m` ball, which is the same
+     * relative footprint Rocket League gives its ball shadow.
      */
-    MARKER_GROUNDED_SCALE: 1.6,
-    MARKER_LIFTED_SCALE: 2.2,
+    MARKER_INNER_RADIUS_RATIO: 1.2,
+    MARKER_MID_RADIUS_RATIO: 1.55,
+    MARKER_OUTER_RADIUS_RATIO: 1.95,
+    /** Centre dot, the only part the ball itself covers while resting. */
+    MARKER_CORE_RADIUS_RATIO: 0.26,
+    /** Altitude only widens the circle a little; the authored size does the work. */
+    MARKER_GROUNDED_SCALE: 1,
+    MARKER_LIFTED_SCALE: 1.35,
     MARKER_FLOOR_CLEARANCE: 0.05,
   },
 

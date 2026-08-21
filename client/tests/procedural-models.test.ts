@@ -18,6 +18,7 @@ import {
   getSharedBallResourceReferenceCount,
 } from '../src/renderer/ball.js';
 import { updateBallVisualRig } from '../src/renderer/entity-effects.js';
+import { createBallFieldMarker } from '../src/renderer/ball-field-marker.js';
 
 function seededRandom(seed: number): () => number {
   let state = seed >>> 0;
@@ -350,107 +351,103 @@ test('ball effects are inert without a rig and after disposal', () => {
   assert.equal(rig.motion.speed, 0, 'a disposed rig must not keep animating');
 });
 
-// Validates: Requirements 11.1, 16.6-16.7, 18.24 (ball ground marker)
+// Validates: Requirements 11.1, 16.6-16.7, 18.24 (ball field marker)
 
-test('the ball ground marker stays flat on the floor under the ball', () => {
-  const ball = createBallMesh();
-  const rig = getBallVisualRig(ball);
-  assert.ok(rig);
-  const marker = rig.groundMarker;
-  const worldPosition = new THREE.Vector3();
-  const worldNormal = new THREE.Vector3();
-  const flatUp = new THREE.Vector3(0, 1, 0);
+test('the ball field marker projects onto the floor independently of the ball', () => {
+  const marker = createBallFieldMarker();
+  const tuning = VISUAL.BALL_MOTION;
+  const radius = BALL.RADIUS;
 
   try {
-    assert.equal(marker.visible, false, 'a fresh rig shows no marker');
-    assert.ok(marker.getObjectByName('ball-ground-marker-ring'));
-    assert.ok(marker.getObjectByName('ball-ground-marker-core'));
+    assert.equal(marker.object.visible, false, 'a fresh marker shows nothing');
+    assert.equal(marker.altitudeBlend, 0);
 
-    const heights = [rig.radius, 4, 9, 18, 30];
+    const band = marker.object.getObjectByName('ball-field-marker-band');
+    const frame = marker.object.getObjectByName('ball-field-marker-frame');
+    assert.ok(band instanceof THREE.Mesh);
+    assert.ok(frame instanceof THREE.Mesh, 'the marker needs its dark contrast band');
+
+    // Authored size is the whole point of owning this outside the ball rig: it is
+    // no longer capped by the ball's bounding-box budget, so it can read at range.
+    const bandGeometry = band.geometry.parameters as { innerRadius: number; outerRadius: number };
+    const frameGeometry = frame.geometry.parameters as { innerRadius: number; outerRadius: number };
+    assert.ok(
+      frameGeometry.innerRadius > radius,
+      'the circle must start outside the ball silhouette, or the ball hides it',
+    );
+    assert.ok(
+      Math.abs(frameGeometry.outerRadius - bandGeometry.innerRadius) <= 1e-6,
+      'the two bands must meet exactly so neither tints the other',
+    );
+    assert.ok(bandGeometry.outerRadius > radius * 1.5, 'the circle must read wider than the ball');
+    assert.notEqual(
+      (frame.material as THREE.MeshBasicMaterial).color.getHex(),
+      (band.material as THREE.MeshBasicMaterial).color.getHex(),
+      'the bands must differ in tone to survive both floor colours',
+    );
+    // Fog would wash the marker out at exactly the range it matters most.
+    assert.equal((band.material as THREE.MeshBasicMaterial).fog, false);
+    assert.equal((frame.material as THREE.MeshBasicMaterial).fog, false);
+
+    const heights = [radius, 4, 9, 18, 30];
     let previousOpacity = Number.POSITIVE_INFINITY;
     let previousScale = 0;
 
     for (const height of heights) {
-      ball.position.set(7.25, height, -13.5);
-      // A rolling ball also spins; the marker must not inherit that rotation.
-      ball.quaternion.setFromEuler(new THREE.Euler(1.1, -0.7, 2.4));
-      updateBallVisualRig(ball, { vx: 6, vy: -3, vz: 2 }, null, 1 / 60);
-      ball.updateMatrixWorld(true);
+      marker.update(new THREE.Vector3(7.25, height, -13.5));
+      marker.object.updateMatrixWorld(true);
 
-      assert.equal(marker.visible, true, `marker must show at height ${height}`);
-      marker.getWorldPosition(worldPosition);
+      assert.equal(marker.object.visible, true, `marker must show at height ${height}`);
+      const world = marker.object.getWorldPosition(new THREE.Vector3());
       assert.ok(
-        Math.abs(worldPosition.x - ball.position.x) <= 1e-6
-        && Math.abs(worldPosition.z - ball.position.z) <= 1e-6,
-        `marker must sit directly under the ball at height ${height},`
-        + ` received ${worldPosition.toArray().join(', ')}`,
+        Math.abs(world.x - 7.25) <= 1e-6 && Math.abs(world.z - -13.5) <= 1e-6,
+        `marker must sit directly under the ball at height ${height}`,
       );
       assert.ok(
-        Math.abs(worldPosition.y - VISUAL.BALL_MOTION.MARKER_FLOOR_CLEARANCE) <= 1e-6,
-        `marker must rest on the floor plane at height ${height}, received ${worldPosition.y}`,
+        Math.abs(world.y - tuning.MARKER_FLOOR_CLEARANCE) <= 1e-6,
+        `marker must rest on the floor plane at height ${height}, received ${world.y}`,
       );
+      // It is a scene sibling, so no ball rotation can tilt or drag it.
+      const up = new THREE.Vector3(0, 1, 0)
+        .applyQuaternion(marker.object.getWorldQuaternion(new THREE.Quaternion()));
+      assert.ok(up.dot(new THREE.Vector3(0, 1, 0)) >= 1 - 1e-6, 'marker must stay flat');
 
-      // Counter-rotation must leave the marker's own up axis pointing at world up.
-      worldNormal.copy(flatUp).applyQuaternion(marker.getWorldQuaternion(new THREE.Quaternion()));
-      assert.ok(
-        worldNormal.dot(flatUp) >= 1 - 1e-6,
-        `marker must stay flat at height ${height}, received ${worldNormal.toArray().join(', ')}`,
-      );
-
-      const ring = marker.getObjectByName('ball-ground-marker-ring');
-      assert.ok(ring instanceof THREE.Mesh);
-      const material = ring.material as THREE.MeshBasicMaterial;
-      assert.ok(
-        material.opacity >= VISUAL.BALL_MOTION.MARKER_LIFTED_OPACITY - 1e-9
-        && material.opacity <= VISUAL.BALL_MOTION.MARKER_GROUNDED_OPACITY + 1e-9,
-        `marker opacity must stay inside its tuned band (height ${height}),`
-        + ` received ${material.opacity}`,
+      const material = band.material as THREE.MeshBasicMaterial;
+      assert.equal(
+        (frame.material as THREE.MeshBasicMaterial).opacity,
+        material.opacity,
+        `both bands must share one opacity at height ${height}`,
       );
       assert.ok(
-        material.opacity <= previousOpacity + 1e-9,
-        `marker must not become more opaque as the ball rises (height ${height})`,
+        material.opacity >= tuning.MARKER_LIFTED_OPACITY - 1e-9
+        && material.opacity <= tuning.MARKER_GROUNDED_OPACITY + 1e-9,
+        `marker opacity must stay inside its tuned band at height ${height}`,
       );
-      assert.ok(
-        marker.scale.x >= previousScale - 1e-9,
-        `marker must not shrink as the ball rises (height ${height})`,
-      );
-      // The ring geometry is authored at exactly the ball radius, so any scale
-      // of one or less puts it inside the ball's silhouette and makes its
-      // visibility a function of the camera angle instead of the ball.
-      assert.ok(
-        marker.scale.x * rig.radius >= rig.radius * 1.35,
-        `marker must read wider than the ball at height ${height},`
-        + ` received scale ${marker.scale.x}`,
-      );
+      assert.ok(material.opacity <= previousOpacity + 1e-9, 'opacity must not rise with altitude');
+      assert.ok(marker.object.scale.x >= previousScale - 1e-9, 'scale must not shrink with altitude');
       previousOpacity = material.opacity;
-      previousScale = marker.scale.x;
-      assert.ok(rig.motion.altitudeBlend >= 0 && rig.motion.altitudeBlend <= 1);
+      previousScale = marker.object.scale.x;
+      assert.ok(marker.altitudeBlend >= 0 && marker.altitudeBlend <= 1);
     }
+    assert.ok(previousScale > tuning.MARKER_GROUNDED_SCALE, 'a high ball must widen its circle');
 
-    // Far above the field the marker is at its faintest and widest.
-    assert.ok(
-      previousScale > VISUAL.BALL_MOTION.MARKER_GROUNDED_SCALE,
-      'a high ball must widen its marker past the grounded width',
-    );
+    marker.update(new THREE.Vector3(0, -12, 0));
+    assert.equal(marker.object.visible, false, 'below the floor there is nothing to project');
+    assert.equal(marker.altitudeBlend, 0);
 
-    ball.position.set(0, -12, 0);
-    updateBallVisualRig(ball, { vx: 0, vy: 0, vz: 0 }, null, 1 / 60);
-    assert.equal(marker.visible, false, 'below the floor there is nothing to project');
-    assert.equal(rig.motion.altitudeBlend, 0);
+    marker.update(new THREE.Vector3(0, Number.NaN, 0));
+    assert.equal(marker.object.visible, false, 'a non-finite height must hide the marker');
 
-    ball.position.set(0, Number.NaN, 0);
-    updateBallVisualRig(ball, { vx: 0, vy: 0, vz: 0 }, null, 1 / 60);
-    assert.equal(marker.visible, false, 'a non-finite height must hide the marker');
+    marker.update(null);
+    assert.equal(marker.object.visible, false, 'no ball means no marker');
 
-    ball.position.set(0, rig.radius, 0);
-    ball.quaternion.identity();
-    updateBallVisualRig(ball, { vx: 0, vy: 0, vz: 0 }, null, 1 / 60);
-    assert.equal(marker.visible, true);
-    rig.resetTemporalState();
-    assert.equal(marker.visible, false, 'a kickoff rebase clears the marker');
-    assert.equal(marker.scale.x, 1);
-    assert.deepEqual(marker.position.toArray(), [0, 0, 0]);
+    marker.update(new THREE.Vector3(0, radius, 0));
+    assert.equal(marker.object.visible, true);
+    marker.dispose();
+    assert.equal(marker.object.visible, false, 'disposal clears the marker');
+    marker.update(new THREE.Vector3(0, radius, 0));
+    assert.equal(marker.object.visible, false, 'a disposed marker must stay inert');
   } finally {
-    rig.dispose();
+    marker.dispose();
   }
 });
