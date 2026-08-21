@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import {
   DEFAULT_TUNING_REGISTRY_SNAPSHOT,
   TUNING_IDS,
+  VISUAL,
 } from '@rocket-arena/shared';
 import { InputController } from '../src/input/input-controller.js';
 import {
@@ -396,5 +397,95 @@ test('a front flip hands the heading over without reversing the chase side', () 
   assert.ok(
     first.dot(last) > 0.9,
     'a completed flip must return to the same chase side',
+  );
+});
+
+// Validates: Requirements 15.1-15.11 (chase framing while reversing)
+
+test('reversing at full speed never collapses the chase follow distance', () => {
+  const configuredDistance = DEFAULT_CAMERA_CONFIGURATION.car.distance;
+  const floor = configuredDistance * VISUAL.CAMERA.MINIMUM_FOLLOW_RATIO;
+
+  for (const mode of ['ball', 'car'] as const) {
+    const fixture = createFixture();
+    const controller = new CameraController();
+    controller.beginGameplaySession(0);
+
+    // The first Active Play frame forces Ball Camera, so one toggle selects Car.
+    const toggleSequence = mode === 'car' ? 1 : 0;
+    update(controller, fixture, { cameraToggleSequence: 0, elapsedSeconds: 0 });
+    fixture.car.position.set(0, 0.4, 0);
+    fixture.car.quaternion.identity();
+    for (let frame = 1; frame < 90; frame++) {
+      update(controller, fixture, {
+        cameraToggleSequence: toggleSequence,
+        elapsedSeconds: frame / 60,
+      });
+    }
+    assert.equal(controller.mode, mode);
+
+    // Reverse along local forward at the reverse cap. The car drives into its own
+    // chase target, which is what used to eat the follow distance.
+    const reverseSpeed = 12;
+    let closest = Number.POSITIVE_INFINITY;
+    for (let step = 0; step < 180; step++) {
+      fixture.car.position.z -= reverseSpeed / 60;
+      update(controller, fixture, {
+        cameraToggleSequence: toggleSequence,
+        elapsedSeconds: 1.5 + step / 60,
+      });
+
+      const horizontal = Math.hypot(
+        fixture.camera.position.x - fixture.car.position.x,
+        fixture.camera.position.z - fixture.car.position.z,
+      );
+      assert.ok(
+        Number.isFinite(horizontal),
+        `${mode} camera must stay finite while reversing`,
+      );
+      closest = Math.min(closest, horizontal);
+      assert.ok(
+        horizontal >= floor - 1e-6,
+        `${mode} camera came within ${horizontal} of the car, floor is ${floor}`,
+      );
+      // The camera must stay above the car so the chassis reads against the floor.
+      assert.ok(
+        fixture.camera.position.y >= fixture.car.position.y,
+        `${mode} camera must not sink below the car`,
+      );
+    }
+
+    // The floor has to actually engage, otherwise this proves nothing.
+    assert.ok(
+      closest <= configuredDistance,
+      `${mode} reversing must close the gap enough to exercise the floor`,
+    );
+  }
+});
+
+test('driving forward is left alone by the follow-distance floor', () => {
+  const fixture = createFixture();
+  const controller = new CameraController();
+  controller.beginGameplaySession(0);
+  update(controller, fixture, { cameraToggleSequence: 0, elapsedSeconds: 0 });
+  fixture.car.position.set(0, 0.4, 0);
+  fixture.car.quaternion.identity();
+  for (let frame = 1; frame < 90; frame++) {
+    update(controller, fixture, { cameraToggleSequence: 1, elapsedSeconds: frame / 60 });
+  }
+
+  // Forward motion pushes the camera further out, so the floor must be inert and
+  // the trailing lag must survive untouched.
+  for (let step = 0; step < 120; step++) {
+    fixture.car.position.z += 20 / 60;
+    update(controller, fixture, { cameraToggleSequence: 1, elapsedSeconds: 1.5 + step / 60 });
+  }
+  const horizontal = Math.hypot(
+    fixture.camera.position.x - fixture.car.position.x,
+    fixture.camera.position.z - fixture.car.position.z,
+  );
+  assert.ok(
+    horizontal > DEFAULT_CAMERA_CONFIGURATION.car.distance,
+    `forward driving must still trail beyond the configured distance, received ${horizontal}`,
   );
 });

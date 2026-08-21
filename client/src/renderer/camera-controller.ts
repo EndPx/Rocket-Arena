@@ -22,6 +22,7 @@ const FLIP_CAMERA_PULLBACK_RESPONSE = 8;
 const MAX_DELTA_SECONDS = 0.1;
 const MAX_SAFE_WORLD_COORDINATE = 1_000_000_000;
 const VECTOR_EPSILON_SQUARED = 1e-10;
+const VECTOR_EPSILON = 1e-5;
 
 export type GameplayCameraMode = 'ball' | 'car';
 export type CameraMode = 'orbit' | GameplayCameraMode;
@@ -598,7 +599,7 @@ export class CameraController {
       );
     }
 
-    this.clampPositionAroundCar(camera.position);
+    this.clampPositionAroundCar(camera.position, config.distance);
     clampVectorComponents(this.smoothedLookAt);
     this.orientCamera(camera, this.smoothedLookAt);
     this.updateFieldOfView(
@@ -654,7 +655,7 @@ export class CameraController {
       );
     }
 
-    this.clampPositionAroundCar(camera.position);
+    this.clampPositionAroundCar(camera.position, config.distance);
     clampVectorComponents(this.smoothedLookAt);
     this.orientCamera(camera, this.smoothedLookAt);
     this.updateFieldOfView(
@@ -667,7 +668,7 @@ export class CameraController {
     );
   }
 
-  private clampPositionAroundCar(position: THREE.Vector3): void {
+  private clampPositionAroundCar(position: THREE.Vector3, configuredDistance: number): void {
     clampVectorComponents(position);
     const offsetX = position.x - this.carPosition.x;
     const offsetZ = position.z - this.carPosition.z;
@@ -681,6 +682,32 @@ export class CameraController {
       const scale = maxDistance / horizontalDistance;
       position.x = this.carPosition.x + offsetX * scale;
       position.z = this.carPosition.z + offsetZ * scale;
+    }
+
+    // Reversing drives the car towards its own chase target, so the spring lag
+    // subtracts from the follow distance instead of adding to it. Hold a floor.
+    const minimumDistance = Number.isFinite(configuredDistance)
+      ? Math.max(0, configuredDistance) * VISUAL.CAMERA.MINIMUM_FOLLOW_RATIO
+      : 0;
+    if (
+      minimumDistance > 0
+      && Number.isFinite(horizontalDistance)
+      && horizontalDistance < minimumDistance
+    ) {
+      // Push straight out along the direction the camera already sits, so it
+      // keeps its side of the car instead of snapping behind the heading. The
+      // heading is the only sane fallback when the camera is right on top.
+      let directionX = offsetX;
+      let directionZ = offsetZ;
+      if (horizontalDistance <= VECTOR_EPSILON) {
+        directionX = -this.forward.x;
+        directionZ = -this.forward.z;
+      }
+      const length = Math.hypot(directionX, directionZ);
+      if (Number.isFinite(length) && length > VECTOR_EPSILON) {
+        position.x = this.carPosition.x + (directionX / length) * minimumDistance;
+        position.z = this.carPosition.z + (directionZ / length) * minimumDistance;
+      }
     }
 
     const maxHeight = Math.max(

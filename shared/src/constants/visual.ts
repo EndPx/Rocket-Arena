@@ -271,6 +271,19 @@ export const VISUAL = {
     HEIGHT_MAX: 5.4,
     LOOK_AHEAD_MIN: 4.6,
     LOOK_AHEAD_MAX: 8.6,
+    /**
+     * Floor on how far the chase camera may end up from the car, as a share of
+     * its configured distance.
+     *
+     * The camera trails a target parked one configured distance behind the car,
+     * so a spring lag of roughly `speed * damping / stiffness` sits between them
+     * whenever the car holds a steady velocity. Driving forward that lag pushes
+     * the camera further out, which is harmless. Reversing closes it instead: at
+     * the `12 m/s` reverse cap the lag reaches about `8.3 m`, which eats a `12 m`
+     * follow distance down to under `4 m` and drops the car off the bottom edge
+     * of the frame. This bounds that without stiffening the spring everywhere.
+     */
+    MINIMUM_FOLLOW_RATIO: 0.7,
     POSITION_RESPONSE: 7.2,
     LOOK_RESPONSE: 9.5,
     YAW_RESPONSE: 11,
