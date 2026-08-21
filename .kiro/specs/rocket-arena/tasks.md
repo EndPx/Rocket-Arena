@@ -133,12 +133,17 @@ The arena must consume the completed frozen `ResolvedArenaGeometry` contract dir
   - Delivered: focused coverage lives in `client/tests/arena-geometry.test.ts`, `client/tests/procedural-models.test.ts`, `client/tests/hud-accessibility.test.ts`, `client/tests/stadium-camera-effects.test.ts`, `client/tests/state-listener.test.ts`, `client/tests/camera-controller.test.ts`, and `client/tests/ball-indicator.test.ts`. The final matrix ran green: `npx tsc -b shared server client`, `npm run build -w client`, 325/325 focused Node tests, and all seven standalone physics harnesses.
   - Deviation from this task as written: no `playwright.config.ts` or `client/tests/browser/client-presentation.spec.ts` was added. Browser evidence was captured interactively instead, against a clean dev server, at 1440x900 and 414x896: zero console errors, zero warnings, and no page error; boost starts at 33, drains to zero while held, then regenerates to exactly 100 after its delay; the accepted-state scoreboard, occupancy, camera-mode, and boost readings all render; regulation ran out and the match entered overtime. Adding a checked-in, pinned Playwright runner remains open.
 
-- [ ] 12. Restore flat-surface car contact on the resolved arena floor
+- [x] 12. Restore flat-surface car contact on the resolved arena floor
   - A car resting on the arena floor sinks `98 mm` and is supported by a single solver contact point with a small persistent tilt, instead of resting `1-3 mm` down on four contacts. Isolated measurement: the real 16-vertex `field.floor.center` convex hull yields restY `0.3016`, one solver contact, and `0.68` degrees of tilt, while an equivalent cuboid slab yields restY `0.3987`, four solver contacts, and zero tilt.
   - The defect is independent of mass (`1`, `25`, and `150 kg` are identical), independent of contact skin, present with both the sharp and the rounded chassis, and it grows with more solver iterations, so it is a contact-manifold generation problem rather than a force or penetration-recovery problem. A synthetic eight-vertex slab hull of the same footprint behaves correctly, so the trigger is the specific octagonal floor hull.
   - Consequence: the presented car sits about `10 cm` into the floor because the presentation offset assumes a `0.4 m` resting centre, and single-point support explains residual wobble while grounded.
   - This is pre-existing and predates the current session's physics work. Fixing it means changing the authoritative arena collision representation for flat slab primitives, which changes the resolved geometry fingerprint and touches `shared/tests/arena-collision.test.ts`, the renderer boundary metadata, and `server/src/physics/test-metric-arena.ts`. It therefore needs an explicit decision before implementation.
   - _Requirements: 10.1-10.9, 12.1-12.9_
+  - Delivered: worst resting height error `0.1318 m` -> `0.0039 m`, worst resting tilt `1.06` -> `0.22` degrees, and sunk positions `7/11` -> `0/11` across eleven sampled floor positions.
+  - Deviation from this task as written: the authoritative arena collision representation was **not** changed, so the resolved geometry fingerprint, `shared/tests/arena-collision.test.ts`, the renderer boundary metadata, and `test-metric-arena.ts` are all untouched. The decision this task asked for was resolved the other way: stop depending on Rapier's box-vs-convex-polyhedron manifold for car support instead of reshaping the hull.
+  - Approach: `server/src/physics/grounding.ts` gains `probeRideHeight()`, which casts one ray per support contact point starting one `rayDistance` **above** that point along local-down, so `gap = toi - lift` is signed: positive hovering, about zero at rest, negative sunk. `server/src/physics/car-controller.ts` consumes it as `CarRideHeightObservation` and emits `rideHeightDeltaVelocity` under `RIDE_HEIGHT_RESPONSE 14`, `RIDE_HEIGHT_MAX_CORRECTION 0.35`, and `RIDE_HEIGHT_MAX_SPEED 2.5`. The correction runs only while grounded **and** sunk, and subtracts the current closing speed along the normal, so it can only lift a sunk chassis and never adds energy to a jump, a landing, or an airborne car. `rapier-room-world.ts` probes only when grounding already reported support.
+  - Ruled out first, each measured rather than assumed: mass (`1`, `25`, `150 kg` identical), arena contact skin (moved rest height without restoring contact count, and lifted the ball), car contact skin (masked the height but left one contact, so the wobble stayed), spawn clearance, vertex rounding, slab thickness, extra solver iterations, and `roundConvexHull`.
+  - Coverage: `runRideHeightProbeCases()` in `server/src/physics/test-grounding.ts` pins a resting gap of about zero on four samples with `normal.y` 1, a hovering gap equal to its `0.12` clearance, a sunk gap of `-0.10`, `null` when airborne, and finite bounded unit-normal readings on a ramp. The ramp case stays loose on purpose: the chassis is longer than one chord segment, so an exact gap assertion there fails at about `-0.094`.
 
 ## Notes
 
@@ -146,7 +151,9 @@ The arena must consume the completed frozen `ResolvedArenaGeometry` contract dir
   - Boost regenerates. Requirement 14.5 previously forbade passive recharge; it now specifies a `1.25` second delay, `12` units per second, a clamp at 100, regeneration armed only after boost is spent, and no regeneration on a Fixed_Step where boost input is held at zero inventory.
   - The ball radius stays `1.8 m`. Requirement 11.1 previously specified `0.9125 m`; production, tuning, and the client all use `1.8 m`, and the ball's visual scale stays anchored to that shared radius.
   - A directional flip now requires held intent. Requirement 9.8 previously flipped as soon as directional magnitude reached the deadzone on an accepted edge; it now also requires Directional_Flip_Intent, and a brief tap produces a neutral second jump instead of a flip.
-- Ball bounce was restored by fixing the ball's soft-CCD prediction rather than by retuning damping or resizing the ball. A fixed one-metre prediction made the solver brake the ball before contact and discard restitution entirely; the prediction is now scaled to the ball's own per-step travel. Damping stayed at its seed value and the radius was untouched.
+- Ball bounce was restored by fixing the ball's soft-CCD prediction rather than by retuning damping or resizing the ball. Damping stayed at its seed value and the radius was untouched. The prediction is now disabled outright: `BALL.SOFT_CCD_PREDICTION` stays `0` and `applyConfiguredSoftCcdPrediction()` replaced the adaptive version, with `BALL.SOFT_CCD_TRAVEL_RATIO` removed. An earlier attempt scaled the prediction to the ball's own per-step travel, but measurement showed **any** non-zero prediction makes the solver brake the ball one step before contact and discard restitution non-deterministically: `e` came out `0.592` from 10 m, `0.585` from 3 m, but `0.159` from 5 m, and one fast case overshot at `1.162`. With prediction off, `e` is `0.582-0.597` at every sampled height and speed. `runBounceConsistencySweep()` in `server/src/physics/test-ball.ts` guards it across seven heights and three speeds with a `0.09` tolerance; worst observed deviation is `0.048`.
+- Airborne rotation is integrated per local axis instead of snapped. The planner used to replace angular velocity with the capped target, so any deflection reached the full `5.5 rad/s` inside one `16.7 ms` step, all three axes behaved identically, and releasing the sticks froze the spin because nothing damped it. `TUNING_IDS.car.air` seeds six new unverified hypotheses with real ranges (torque `12.46` pitch, `9.11` yaw, `38.34` roll `rad/s^2`; damping `2.798`, `1.886`, `4.687` `s^-1`), which are the Rocket League air-control rates. Measured spin-up to 99% of maximum: roll `9` steps, pitch `27`, yaw `36`. Flips still snap, because a dodge is an impulse in Rocket League as well. No confirmed-starting-target was touched.
+- Open and deliberately not guessed: `car.jump.holdForce` is `1450 N` on a `150 kg` car, so hold acceleration is `9.67 m/s^2` against Rocket League's `14.58`. A full jump therefore reaches `1.81 m` and hangs `1.49 s` where Rocket League reaches `2.62 m` and hangs `1.79 s`. Matching it exactly is inside the declared `0-5000` range but lengthens hang time, which runs against the reported "too floaty" complaint, so it needs a product call rather than a unilateral retune.
 - `server/src/physics/test-metric-arena.ts` still fails and remains outside every gate. The severe goal-back-wall sink it previously reported is gone; the remaining failure is a `33.5 mm` tangential clearance on the curved lower-transition segments at maximum ball speed, which is unaffected by the prediction ratio and is geometric rather than tuning-related.
 - Task 10 was skipped as designed. It is optional, blocks nothing, and no boost-pad renderer was added.
 - Server, Colyseus, authoritative room/match-flow/scoring/goal-crossing, server-physics, and authoritative boost-pad work is frozen and has no remaining task or dependency in this plan. Existing dirty server work must not be reverted or rewritten.
@@ -159,16 +166,12 @@ The arena must consume the completed frozen `ResolvedArenaGeometry` contract dir
 ```json
 {
   "completedBaselines": [
-    "1", "2", "3", "4", "5", "6.1.1", "6.2", "7", "8", "8.1", "8.2", "8.3", "9", "11"
+    "1", "2", "3", "4", "5", "6.1.1", "6.2", "7", "8", "8.1", "8.2", "8.3", "9", "11", "12"
   ],
-  "waves": [
-    { "id": 5, "tasks": ["12"] }
-  ],
+  "waves": [],
   "optionalWaves": [
     { "id": 0, "tasks": ["10"] }
   ],
-  "dependencies": {
-    "12": []
-  }
+  "dependencies": {}
 }
 ```
