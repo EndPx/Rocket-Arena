@@ -2,13 +2,17 @@ import { AUDIO } from '@rocket-arena/shared';
 import { normalizeVolume } from '../audio/audio-model.js';
 
 /**
- * Client presentation settings.
+ * Client presentation and input-mapping settings.
  *
  * Sound is included because players expect to find it here, but this module is
  * not its owner: `audio-manager` holds the live mute/volume state and persists it
- * under its own key. These two fields are a view of that state, passed through so
+ * under its own key. Those two fields are a view of that state, passed through so
  * one panel can present everything, and applied back through the audio setters.
- * The two toggles below are owned here outright.
+ * Every boolean below is owned here outright.
+ *
+ * The three inversion flags are input mapping, not gameplay: they change how this
+ * client reads its own keyboard before building a command. The server keeps one
+ * sign convention and never learns that an axis was flipped.
  */
 export interface ClientSettings {
   readonly soundVolume: number;
@@ -17,13 +21,32 @@ export interface ClientSettings {
   readonly showBallMarker: boolean;
   /** Show the on-screen control reference along the bottom edge. */
   readonly showControlHints: boolean;
+  /** Read W/S backwards, which also inverts air pitch. */
+  readonly invertDrive: boolean;
+  /** Read A/D backwards, which also inverts air roll. */
+  readonly invertSteer: boolean;
+  /** Read Q/E air yaw backwards. */
+  readonly invertAirYaw: boolean;
 }
 
-/** The settings this module owns and persists; sound lives with the audio manager. */
-export type PersistedClientSettings = Pick<
-  ClientSettings,
-  'showBallMarker' | 'showControlHints'
->;
+/**
+ * The keys this module owns and persists; sound lives with the audio manager.
+ *
+ * Declared once as a list so loading, saving, and the default comparison are all
+ * derived from it. A setting added here cannot be silently forgotten by one of
+ * those three, which is exactly the bug this shape exists to prevent.
+ */
+export const PERSISTED_SETTING_KEYS = Object.freeze([
+  'showBallMarker',
+  'showControlHints',
+  'invertDrive',
+  'invertSteer',
+  'invertAirYaw',
+] as const);
+
+export type PersistedSettingKey = typeof PERSISTED_SETTING_KEYS[number];
+
+export type PersistedClientSettings = { readonly [K in PersistedSettingKey]: boolean };
 
 export const CLIENT_SETTINGS_STORAGE_KEY = 'rocket-arena-settings-v1';
 
@@ -32,6 +55,10 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = Object.freeze({
   muted: false,
   showBallMarker: true,
   showControlHints: true,
+  // Inversion is opt-in: the shipped mapping is the one the control hints show.
+  invertDrive: false,
+  invertSteer: false,
+  invertAirYaw: false,
 });
 
 /**
@@ -44,32 +71,17 @@ export interface ClientSettingsStorage {
   setItem(key: string, value: string): void;
 }
 
-function readBoolean(source: Record<string, unknown>, key: string, fallback: boolean): boolean {
-  const value = source[key];
-  return typeof value === 'boolean' ? value : fallback;
-}
-
-/** Coerce any candidate into a complete, finite settings object. */
+/** Coerce any candidate into a complete settings object, key by declared key. */
 export function normalizePersistedSettings(candidate: unknown): PersistedClientSettings {
-  if (typeof candidate !== 'object' || candidate === null) {
-    return {
-      showBallMarker: DEFAULT_CLIENT_SETTINGS.showBallMarker,
-      showControlHints: DEFAULT_CLIENT_SETTINGS.showControlHints,
-    };
+  const source: Record<string, unknown> = typeof candidate === 'object' && candidate !== null
+    ? candidate as Record<string, unknown>
+    : {};
+  const result: Record<PersistedSettingKey, boolean> = {} as Record<PersistedSettingKey, boolean>;
+  for (const key of PERSISTED_SETTING_KEYS) {
+    const value = source[key];
+    result[key] = typeof value === 'boolean' ? value : DEFAULT_CLIENT_SETTINGS[key];
   }
-  const source = candidate as Record<string, unknown>;
-  return {
-    showBallMarker: readBoolean(
-      source,
-      'showBallMarker',
-      DEFAULT_CLIENT_SETTINGS.showBallMarker,
-    ),
-    showControlHints: readBoolean(
-      source,
-      'showControlHints',
-      DEFAULT_CLIENT_SETTINGS.showControlHints,
-    ),
-  };
+  return Object.freeze(result);
 }
 
 /** Load the owned settings, falling back to defaults on anything unusable. */
@@ -93,10 +105,9 @@ export function savePersistedSettings(
 ): void {
   if (!storage) return;
   try {
-    storage.setItem(CLIENT_SETTINGS_STORAGE_KEY, JSON.stringify({
-      showBallMarker: settings.showBallMarker === true,
-      showControlHints: settings.showControlHints === true,
-    }));
+    const payload: Record<string, boolean> = {};
+    for (const key of PERSISTED_SETTING_KEYS) payload[key] = settings[key] === true;
+    storage.setItem(CLIENT_SETTINGS_STORAGE_KEY, JSON.stringify(payload));
   } catch {
     // Settings stay in memory for this session when storage refuses the write.
   }
@@ -112,7 +123,17 @@ export function composeClientSettings(
     muted: audio.muted === true,
     showBallMarker: persisted.showBallMarker === true,
     showControlHints: persisted.showControlHints === true,
+    invertDrive: persisted.invertDrive === true,
+    invertSteer: persisted.invertSteer === true,
+    invertAirYaw: persisted.invertAirYaw === true,
   });
+}
+
+/** The owned half of the defaults, which is what a reset writes back. */
+export function defaultPersistedSettings(): PersistedClientSettings {
+  const result: Record<PersistedSettingKey, boolean> = {} as Record<PersistedSettingKey, boolean>;
+  for (const key of PERSISTED_SETTING_KEYS) result[key] = DEFAULT_CLIENT_SETTINGS[key];
+  return Object.freeze(result);
 }
 
 /**
@@ -121,10 +142,11 @@ export function composeClientSettings(
  * button that would do nothing.
  */
 export function isDefaultClientSettings(settings: ClientSettings): boolean {
-  return normalizeVolume(settings.soundVolume) === normalizeVolume(
+  if (normalizeVolume(settings.soundVolume) !== normalizeVolume(
     DEFAULT_CLIENT_SETTINGS.soundVolume,
-  )
-    && settings.muted === DEFAULT_CLIENT_SETTINGS.muted
-    && settings.showBallMarker === DEFAULT_CLIENT_SETTINGS.showBallMarker
-    && settings.showControlHints === DEFAULT_CLIENT_SETTINGS.showControlHints;
+  )) {
+    return false;
+  }
+  if (settings.muted !== DEFAULT_CLIENT_SETTINGS.muted) return false;
+  return PERSISTED_SETTING_KEYS.every((key) => settings[key] === DEFAULT_CLIENT_SETTINGS[key]);
 }

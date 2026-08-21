@@ -32,6 +32,32 @@ export const GAMEPLAY_CODES = new Set([
   'ControlRight',
 ]);
 
+/**
+ * Which held-key axes this client reads backwards.
+ *
+ * This is a local input-mapping preference and nothing more. It is applied to the
+ * command this client builds, so the server keeps one sign convention and never
+ * learns that a player flipped an axis; no authoritative state is involved.
+ *
+ * Flipping the sign rather than swapping which key is bound keeps the two halves
+ * of an axis exactly symmetric, so an inverted axis cannot end up stronger in one
+ * direction than the other.
+ */
+export interface AxisInversion {
+  /** The W/S axis, which this client also uses for air pitch. */
+  readonly drive: boolean;
+  /** The A/D axis, which this client also uses for air roll. */
+  readonly steer: boolean;
+  /** The Q/E air-yaw axis. */
+  readonly airYaw: boolean;
+}
+
+export const NO_AXIS_INVERSION: AxisInversion = Object.freeze({
+  drive: false,
+  steer: false,
+  airYaw: false,
+});
+
 /** Return whether an event target is an editable control rather than gameplay. */
 export function isEditableTarget(target: EventTarget | null): boolean {
   if (!target || typeof target !== 'object') return false;
@@ -60,6 +86,34 @@ export class InputController {
   private lastPayload = '';
   private lastSentAt = Number.NEGATIVE_INFINITY;
   private forceNextSend = true;
+  private axisInversion: AxisInversion = NO_AXIS_INVERSION;
+
+  /**
+   * Adopt an axis-inversion preference.
+   *
+   * Held keys are deliberately not cleared: flipping an axis while a key is down
+   * should reverse that axis on the next payload, not drop the press and make the
+   * car coast. The next send is forced because the payload changes without any
+   * key event, and the transport dedupe would otherwise swallow it.
+   */
+  setAxisInversion(inversion: Partial<AxisInversion>): void {
+    const next = Object.freeze({
+      drive: inversion.drive === true,
+      steer: inversion.steer === true,
+      airYaw: inversion.airYaw === true,
+    });
+    if (next.drive === this.axisInversion.drive
+      && next.steer === this.axisInversion.steer
+      && next.airYaw === this.axisInversion.airYaw) {
+      return;
+    }
+    this.axisInversion = next;
+    this.forceNextSend = true;
+  }
+
+  getAxisInversion(): AxisInversion {
+    return this.axisInversion;
+  }
 
   handleKeyDown(code: string, repeat = false): boolean {
     if (!GAMEPLAY_CODES.has(code)) return false;
@@ -104,6 +158,14 @@ export class InputController {
 
     if (this.heldCodes.has('KeyE')) yaw = 1;
     else if (this.heldCodes.has('KeyQ')) yaw = -1;
+
+    // Applied once, here, so pitch and roll below inherit the same flip as the
+    // ground axis they are read from; a player who inverts W/S gets an inverted
+    // nose in the air too, because it is the same physical axis. The zero guards
+    // keep a neutral axis at exactly 0 rather than -0.
+    if (this.axisInversion.drive && throttle !== 0) throttle = -throttle;
+    if (this.axisInversion.steer && steer !== 0) steer = -steer;
+    if (this.axisInversion.airYaw && yaw !== 0) yaw = -yaw;
 
     return Object.freeze({
       protocolVersion: INPUT_PROTOCOL_VERSION,

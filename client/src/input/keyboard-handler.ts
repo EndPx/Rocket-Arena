@@ -1,6 +1,10 @@
 import type { Room } from 'colyseus.js';
 import type { InputCommandV2, InputPayload } from '@rocket-arena/shared';
-import { InputController, isEditableTarget } from './input-controller.js';
+import {
+  InputController,
+  isEditableTarget,
+  type AxisInversion,
+} from './input-controller.js';
 
 const controller = new InputController();
 let activeRoom: Room | null = null;
@@ -36,6 +40,21 @@ export function setInputSuspended(suspended: boolean): void {
 
 export function isInputSuspended(): boolean {
   return inputSuspended;
+}
+
+/**
+ * Read the W/S, A/D, and Q/E axes backwards.
+ *
+ * No explicit send is needed: the controller forces its next transmission, and
+ * the frame loop already calls `sendInput` continuously, so a flip made from the
+ * settings panel reaches the server on the following frame.
+ */
+export function setAxisInversion(inversion: Partial<AxisInversion>): void {
+  controller.setAxisInversion(inversion);
+}
+
+export function getAxisInversion(): AxisInversion {
+  return controller.getAxisInversion();
 }
 
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {

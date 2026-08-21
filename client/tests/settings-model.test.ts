@@ -4,12 +4,15 @@ import { AUDIO } from '@rocket-arena/shared';
 import {
   CLIENT_SETTINGS_STORAGE_KEY,
   DEFAULT_CLIENT_SETTINGS,
+  PERSISTED_SETTING_KEYS,
   composeClientSettings,
+  defaultPersistedSettings,
   isDefaultClientSettings,
   loadPersistedSettings,
   normalizePersistedSettings,
   savePersistedSettings,
   type ClientSettingsStorage,
+  type PersistedClientSettings,
 } from '../src/ui/settings-model.js';
 
 function memoryStorage(seed: Record<string, string> = {}): ClientSettingsStorage & {
@@ -25,15 +28,41 @@ function memoryStorage(seed: Record<string, string> = {}): ClientSettingsStorage
   };
 }
 
+/**
+ * Build a complete settings object from partial overrides.
+ *
+ * Written against the declared key list rather than a hand-listed literal so
+ * that adding a setting cannot silently turn these assertions into checks of a
+ * stale subset, which is exactly how this file broke when inversion was added.
+ */
+function persistedWith(overrides: Partial<PersistedClientSettings> = {}): PersistedClientSettings {
+  return { ...defaultPersistedSettings(), ...overrides };
+}
+
 // Validates: Requirements 16.1-16.20, 19.3-19.17 (client settings persistence)
 
-test('defaults are complete and both toggles start enabled', () => {
+test('defaults are complete, visibility on, inversion off', () => {
   assert.equal(DEFAULT_CLIENT_SETTINGS.showBallMarker, true);
   assert.equal(DEFAULT_CLIENT_SETTINGS.showControlHints, true);
+  // Inversion is opt-in, so the shipped mapping is the one the hints describe.
+  assert.equal(DEFAULT_CLIENT_SETTINGS.invertDrive, false);
+  assert.equal(DEFAULT_CLIENT_SETTINGS.invertSteer, false);
+  assert.equal(DEFAULT_CLIENT_SETTINGS.invertAirYaw, false);
   assert.equal(DEFAULT_CLIENT_SETTINGS.muted, false);
   assert.equal(DEFAULT_CLIENT_SETTINGS.soundVolume, AUDIO.MASTER.DEFAULT_VOLUME);
   assert.equal(Object.isFrozen(DEFAULT_CLIENT_SETTINGS), true);
   assert.equal(isDefaultClientSettings(DEFAULT_CLIENT_SETTINGS), true);
+});
+
+test('every declared key is actually owned, persisted, and defaulted', () => {
+  // The three sites that must agree: the key list, the defaults, and the reset.
+  const defaults = defaultPersistedSettings();
+  assert.deepEqual([...PERSISTED_SETTING_KEYS].sort(), Object.keys(defaults).sort());
+  for (const key of PERSISTED_SETTING_KEYS) {
+    assert.equal(typeof DEFAULT_CLIENT_SETTINGS[key], 'boolean', key);
+    assert.equal(defaults[key], DEFAULT_CLIENT_SETTINGS[key], key);
+  }
+  assert.equal(Object.isFrozen(defaults), true);
 });
 
 test('any malformed candidate normalizes to the defaults it cannot read', () => {
@@ -44,53 +73,51 @@ test('any malformed candidate normalizes to the defaults it cannot read', () => 
     'showBallMarker',
     [],
     {},
-    { showBallMarker: 'yes', showControlHints: 0 },
-    { showBallMarker: null },
+    { showBallMarker: 'yes', showControlHints: 0, invertDrive: 1 },
+    { showBallMarker: null, invertSteer: 'true' },
   ]) {
-    const normalized = normalizePersistedSettings(candidate);
-    assert.equal(normalized.showBallMarker, true, JSON.stringify(candidate));
-    assert.equal(normalized.showControlHints, true, JSON.stringify(candidate));
+    assert.deepEqual(
+      normalizePersistedSettings(candidate),
+      defaultPersistedSettings(),
+      JSON.stringify(candidate),
+    );
   }
 
-  // Only real booleans are honoured, and each field is independent.
-  assert.deepEqual(
-    normalizePersistedSettings({ showBallMarker: false, showControlHints: true }),
-    { showBallMarker: false, showControlHints: true },
-  );
-  assert.deepEqual(
-    normalizePersistedSettings({ showBallMarker: true, showControlHints: false }),
-    { showBallMarker: true, showControlHints: false },
-  );
+  // Only real booleans are honoured, and each field stays independent.
+  for (const key of PERSISTED_SETTING_KEYS) {
+    const flipped = !DEFAULT_CLIENT_SETTINGS[key];
+    assert.deepEqual(
+      normalizePersistedSettings({ [key]: flipped }),
+      persistedWith({ [key]: flipped }),
+      key,
+    );
+  }
 });
 
 test('settings round-trip through storage and survive a corrupt entry', () => {
   const store = memoryStorage();
-  savePersistedSettings(store, { showBallMarker: false, showControlHints: false });
-  assert.equal(
-    store.entries[CLIENT_SETTINGS_STORAGE_KEY],
-    '{"showBallMarker":false,"showControlHints":false}',
-  );
-  assert.deepEqual(loadPersistedSettings(store), {
+  const saved = persistedWith({
     showBallMarker: false,
     showControlHints: false,
+    invertDrive: true,
+    invertAirYaw: true,
   });
+  savePersistedSettings(store, saved);
+
+  // Compare parsed, not stringified: key order is an implementation detail.
+  assert.deepEqual(
+    JSON.parse(store.entries[CLIENT_SETTINGS_STORAGE_KEY]!),
+    { ...saved },
+  );
+  assert.deepEqual(loadPersistedSettings(store), saved);
 
   // Corrupt JSON must degrade to defaults rather than throw at startup.
   const corrupt = memoryStorage({ [CLIENT_SETTINGS_STORAGE_KEY]: '{not json' });
-  assert.deepEqual(loadPersistedSettings(corrupt), {
-    showBallMarker: true,
-    showControlHints: true,
-  });
+  assert.deepEqual(loadPersistedSettings(corrupt), defaultPersistedSettings());
 
   // An empty store and a missing store are both just defaults.
-  assert.deepEqual(loadPersistedSettings(memoryStorage()), {
-    showBallMarker: true,
-    showControlHints: true,
-  });
-  assert.deepEqual(loadPersistedSettings(null), {
-    showBallMarker: true,
-    showControlHints: true,
-  });
+  assert.deepEqual(loadPersistedSettings(memoryStorage()), defaultPersistedSettings());
+  assert.deepEqual(loadPersistedSettings(null), defaultPersistedSettings());
 });
 
 test('a storage that throws never breaks the session', () => {
@@ -102,24 +129,24 @@ test('a storage that throws never breaks the session', () => {
       throw new Error('full');
     },
   };
-  assert.deepEqual(loadPersistedSettings(hostile), {
-    showBallMarker: true,
-    showControlHints: true,
-  });
-  assert.doesNotThrow(() => savePersistedSettings(hostile, {
+  assert.deepEqual(loadPersistedSettings(hostile), defaultPersistedSettings());
+  assert.doesNotThrow(() => savePersistedSettings(hostile, persistedWith({
     showBallMarker: false,
-    showControlHints: false,
-  }));
+    invertSteer: true,
+  })));
 });
 
 test('the composed view takes sound from the audio owner and clamps it', () => {
-  const persisted = { showBallMarker: false, showControlHints: true };
+  const persisted = persistedWith({ showBallMarker: false, invertSteer: true });
 
   const composed = composeClientSettings(persisted, { volume: 0.5, muted: true });
   assert.equal(composed.muted, true);
   assert.equal(composed.soundVolume, 0.5);
   assert.equal(composed.showBallMarker, false);
   assert.equal(composed.showControlHints, true);
+  assert.equal(composed.invertSteer, true);
+  assert.equal(composed.invertDrive, false);
+  assert.equal(composed.invertAirYaw, false);
   assert.equal(Object.isFrozen(composed), true);
 
   // Out-of-range volume from a stale store is clamped, not trusted.
@@ -134,13 +161,22 @@ test('the composed view takes sound from the audio owner and clamps it', () => {
 
 test('the revert action is only offered when something actually differs', () => {
   const audio = { volume: DEFAULT_CLIENT_SETTINGS.soundVolume, muted: false };
-  const defaults = { showBallMarker: true, showControlHints: true };
+  const defaults = defaultPersistedSettings();
 
   assert.equal(isDefaultClientSettings(composeClientSettings(defaults, audio)), true);
 
+  // Every owned key on its own has to be enough to enable the revert, including
+  // each inversion flag; a flipped axis the panel could not reset would be a
+  // setting a player is stuck with.
+  for (const key of PERSISTED_SETTING_KEYS) {
+    const changed = composeClientSettings(
+      persistedWith({ [key]: !DEFAULT_CLIENT_SETTINGS[key] }),
+      audio,
+    );
+    assert.equal(isDefaultClientSettings(changed), false, key);
+  }
+
   for (const changed of [
-    composeClientSettings({ showBallMarker: false, showControlHints: true }, audio),
-    composeClientSettings({ showBallMarker: true, showControlHints: false }, audio),
     composeClientSettings(defaults, { volume: 0.2, muted: false }),
     composeClientSettings(defaults, { volume: DEFAULT_CLIENT_SETTINGS.soundVolume, muted: true }),
   ]) {

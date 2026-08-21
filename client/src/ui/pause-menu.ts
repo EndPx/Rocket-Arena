@@ -5,19 +5,36 @@ import {
 } from '../audio/audio-manager.js';
 import { setControlHintsVisible } from '../hud/hud.js';
 import { isEditableTarget } from '../input/input-controller.js';
-import { setInputSuspended } from '../input/keyboard-handler.js';
+import { setAxisInversion, setInputSuspended } from '../input/keyboard-handler.js';
 import {
   DEFAULT_CLIENT_SETTINGS,
   composeClientSettings,
+  defaultPersistedSettings,
   isDefaultClientSettings,
   loadPersistedSettings,
   savePersistedSettings,
   type ClientSettings,
   type PersistedClientSettings,
+  type PersistedSettingKey,
 } from './settings-model.js';
 
 const MENU_ID = 'pause-menu';
 const MENU_STYLE_ID = 'rocket-arena-pause-menu-styles';
+
+/**
+ * The axis-inversion rows, named by the keys they affect rather than by an
+ * abstraction, because that is how a player recognises the one they want. Driven
+ * from a list so the markup, the click wiring, and the reset cannot disagree.
+ */
+const INVERSION_ROWS = Object.freeze([
+  { id: 'pause-invert-drive', key: 'invertDrive', label: 'Invert W / S (drive)' },
+  { id: 'pause-invert-steer', key: 'invertSteer', label: 'Invert A / D (steer)' },
+  { id: 'pause-invert-airyaw', key: 'invertAirYaw', label: 'Invert Q / E (air yaw)' },
+] as const satisfies readonly {
+  readonly id: string;
+  readonly key: PersistedSettingKey;
+  readonly label: string;
+}[]);
 
 export interface PauseMenuHooks {
   /** Whether a match is currently joined; the menu only opens in-match. */
@@ -52,15 +69,21 @@ function settings(): ClientSettings {
 /**
  * Push the current settings into the systems that own them.
  *
- * Sound goes to the audio manager, which is the single owner of that state, and
- * the two toggles go to the renderer and the HUD. Called on every change and once
- * at startup so a stored preference takes effect before the first frame.
+ * Sound goes to the audio manager, which is the single owner of that state, the
+ * two visibility toggles go to the renderer and the HUD, and the inversion flags
+ * go to the input controller. Called on every change and once at startup so a
+ * stored preference takes effect before the first frame.
  */
 function applySettings(next: ClientSettings): void {
   setAudioMuted(next.muted);
   setAudioVolume(next.soundVolume);
   setControlHintsVisible(next.showControlHints);
   hooks?.applyBallMarkerVisible(next.showBallMarker);
+  setAxisInversion({
+    drive: next.invertDrive,
+    steer: next.invertSteer,
+    airYaw: next.invertAirYaw,
+  });
 }
 
 function persist(next: PersistedClientSettings): void {
@@ -149,6 +172,17 @@ function renderPanel(): void {
             aria-labelledby="pause-hints-label"
           >${current.showControlHints ? 'ON' : 'OFF'}</button>
         </div>
+        ${INVERSION_ROWS.map((row) => `
+        <div class="pause-row">
+          <span class="pause-label" id="${row.id}-label">${row.label}</span>
+          <button
+            type="button"
+            class="pause-toggle"
+            id="${row.id}"
+            aria-pressed="${current[row.key]}"
+            aria-labelledby="${row.id}-label"
+          >${current[row.key] ? 'ON' : 'OFF'}</button>
+        </div>`).join('')}
       </div>
       <div class="pause-actions">
         <button
@@ -184,11 +218,15 @@ function renderPanel(): void {
     applySettings(settings());
     renderPanel();
   });
-  menuEl.querySelector('#pause-reset')?.addEventListener('click', () => {
-    persist({
-      showBallMarker: DEFAULT_CLIENT_SETTINGS.showBallMarker,
-      showControlHints: DEFAULT_CLIENT_SETTINGS.showControlHints,
+  for (const row of INVERSION_ROWS) {
+    menuEl.querySelector(`#${row.id}`)?.addEventListener('click', () => {
+      persist({ ...persisted, [row.key]: !persisted[row.key] });
+      applySettings(settings());
+      renderPanel();
     });
+  }
+  menuEl.querySelector('#pause-reset')?.addEventListener('click', () => {
+    persist(defaultPersistedSettings());
     applySettings(DEFAULT_CLIENT_SETTINGS);
     renderPanel();
     const status = menuEl?.querySelector('#pause-status');

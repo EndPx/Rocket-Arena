@@ -172,3 +172,113 @@ test('128 generated press streams advance each edge exactly once despite duplica
     controller.handleKeyUp('KeyC');
   }
 });
+
+test('axis inversion is off by default and each axis flips independently', () => {
+  const controller = new InputController();
+  assert.deepEqual(controller.getAxisInversion(), {
+    drive: false,
+    steer: false,
+    airYaw: false,
+  });
+
+  controller.handleKeyDown('KeyW');
+  controller.handleKeyDown('KeyA');
+  controller.handleKeyDown('KeyE');
+  const upright = controller.getPayload();
+  assert.equal(upright.throttle, 1);
+  assert.equal(upright.steer, 1);
+  assert.equal(upright.yaw, 1);
+
+  // Drive only: steer and yaw must be untouched.
+  controller.setAxisInversion({ drive: true });
+  const driveFlipped = controller.getPayload();
+  assert.equal(driveFlipped.throttle, -1);
+  assert.equal(driveFlipped.steer, 1);
+  assert.equal(driveFlipped.yaw, 1);
+
+  // Steer only.
+  controller.setAxisInversion({ steer: true });
+  const steerFlipped = controller.getPayload();
+  assert.equal(steerFlipped.throttle, 1);
+  assert.equal(steerFlipped.steer, -1);
+  assert.equal(steerFlipped.yaw, 1);
+
+  // Air yaw only.
+  controller.setAxisInversion({ airYaw: true });
+  const yawFlipped = controller.getPayload();
+  assert.equal(yawFlipped.throttle, 1);
+  assert.equal(yawFlipped.steer, 1);
+  assert.equal(yawFlipped.yaw, -1);
+
+  // All three at once, and a partial argument means the omitted axes are off.
+  controller.setAxisInversion({ drive: true, steer: true, airYaw: true });
+  const allFlipped = controller.getPayload();
+  assert.equal(allFlipped.throttle, -1);
+  assert.equal(allFlipped.steer, -1);
+  assert.equal(allFlipped.yaw, -1);
+});
+
+test('air pitch and roll follow the same physical axis they are read from', () => {
+  const controller = new InputController();
+  controller.handleKeyDown('KeyS');
+  controller.handleKeyDown('KeyD');
+
+  const upright = controller.getPayload();
+  assert.equal(upright.pitch, upright.throttle);
+  assert.equal(upright.roll, upright.steer);
+
+  // Inverting W/S inverts the nose too, because it is one axis, not two.
+  controller.setAxisInversion({ drive: true, steer: true });
+  const flipped = controller.getPayload();
+  assert.equal(flipped.throttle, 1);
+  assert.equal(flipped.steer, 1);
+  assert.equal(flipped.pitch, flipped.throttle);
+  assert.equal(flipped.roll, flipped.steer);
+});
+
+test('an inverted but unheld axis reports exactly zero rather than negative zero', () => {
+  const controller = new InputController();
+  controller.setAxisInversion({ drive: true, steer: true, airYaw: true });
+
+  const payload = controller.getPayload();
+  for (const value of [
+    payload.throttle,
+    payload.steer,
+    payload.yaw,
+    payload.pitch,
+    payload.roll,
+  ]) {
+    assert.equal(value, 0);
+    // Negative zero would survive JSON as 0 but is still a lie about the axis.
+    assert.equal(Object.is(value, -0), false);
+  }
+});
+
+test('flipping an axis mid-hold reverses it without dropping the press', () => {
+  const controller = new InputController();
+  const sink = new RecordingSink();
+
+  controller.handleKeyDown('KeyW');
+  assert.equal(controller.send(sink, 0), true);
+  assert.equal(sink.payloads[0]!.throttle, 1);
+
+  // Nothing changed, so the transport dedupe must swallow this one.
+  assert.equal(controller.send(sink, 1), false);
+
+  // A flip changes the payload without any key event; it must still go out, and
+  // the key must still be held rather than flushed.
+  controller.setAxisInversion({ drive: true });
+  assert.equal(controller.send(sink, 2), true);
+  assert.equal(sink.payloads.length, 2);
+  assert.equal(sink.payloads[1]!.throttle, -1);
+
+  // Setting the same inversion again is not a change and must not resend.
+  controller.setAxisInversion({ drive: true });
+  assert.equal(controller.send(sink, 3), false);
+  assert.equal(sink.payloads.length, 2);
+
+  // Returning to the shipped mapping is itself a change.
+  controller.setAxisInversion({});
+  assert.equal(controller.send(sink, 4), true);
+  assert.equal(sink.payloads[2]!.throttle, 1);
+});
