@@ -9,6 +9,72 @@ import type {
 /** Camera modes the HUD can report; mirrors the local camera controller. */
 export type HudCameraMode = 'orbit' | 'ball' | 'car';
 
+/** One row of the on-screen control reference. */
+export interface HudControlHint {
+  /** Key caps to paint, in the order they are shown. */
+  readonly keys: readonly string[];
+  /** The key codes those caps stand for, as consumed by the input controller. */
+  readonly codes: readonly string[];
+  readonly action: string;
+  readonly ariaLabel: string;
+}
+
+/**
+ * On-screen control reference. This is a label for the bindings owned by
+ * `input/input-controller.ts`, so it carries the key codes it claims and a test
+ * checks them against the real gameplay set. It reads no input state, which is
+ * why it lives in the pure model rather than in the DOM layer. Arrow keys
+ * mirror WASD and are left out to keep the strip short.
+ */
+export const HUD_CONTROL_HINTS: readonly HudControlHint[] = Object.freeze([
+  {
+    keys: ['W', 'S'],
+    codes: ['KeyW', 'KeyS'],
+    action: 'DRIVE',
+    ariaLabel: 'W and S: drive forward and reverse',
+  },
+  {
+    keys: ['A', 'D'],
+    codes: ['KeyA', 'KeyD'],
+    action: 'STEER',
+    ariaLabel: 'A and D: steer on the ground, roll in the air',
+  },
+  {
+    keys: ['Q', 'E'],
+    codes: ['KeyQ', 'KeyE'],
+    action: 'AIR YAW',
+    ariaLabel: 'Q and E: yaw while airborne',
+  },
+  {
+    keys: ['SPACE'],
+    codes: ['Space'],
+    action: 'JUMP',
+    ariaLabel: 'Space: jump, press again for a second jump',
+  },
+  {
+    keys: ['SHIFT'],
+    codes: ['ShiftLeft', 'ShiftRight'],
+    action: 'BOOST',
+    ariaLabel: 'Shift: boost',
+  },
+  {
+    keys: ['CTRL'],
+    codes: ['ControlLeft', 'ControlRight'],
+    action: 'SLIDE',
+    ariaLabel: 'Control: powerslide',
+  },
+  {
+    keys: ['C'],
+    codes: ['KeyC'],
+    action: 'CAMERA',
+    ariaLabel: 'C: switch between car cam and ball cam',
+  },
+].map((hint) => Object.freeze({
+  ...hint,
+  keys: Object.freeze(hint.keys),
+  codes: Object.freeze(hint.codes),
+})));
+
 /**
  * The accepted fields the HUD reads. A decoded snapshot satisfies this
  * structurally, so the model never parses raw room state and never synthesizes

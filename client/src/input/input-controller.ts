@@ -8,7 +8,12 @@ export interface InputSink {
   send(type: 'input', payload: InputCommandV2): void;
 }
 
-const GAMEPLAY_CODES = new Set([
+/**
+ * Every key code this client consumes as gameplay input. Exported so the
+ * on-screen control reference can be checked against the real bindings instead
+ * of being maintained by hand.
+ */
+export const GAMEPLAY_CODES = new Set([
   'KeyW',
   'KeyA',
   'KeyS',

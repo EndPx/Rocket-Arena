@@ -25,7 +25,12 @@ export function initScene(container: HTMLElement): {
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = DAYLIGHT_SCENE_STYLE.exposure;
-  renderer.shadowMap.enabled = true;
+  // Shadows are off by request. One directional key light over a 102 m field
+  // produced large blocky blobs that read as dirt on the turf and competed with
+  // the ball ground marker for the same cue. Disabling the map here skips the
+  // whole shadow pass, so the per-mesh castShadow flags stay harmless and the
+  // treatment can be restored by flipping this one line back on.
+  renderer.shadowMap.enabled = false;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.setClearColor(DAYLIGHT_SCENE_STYLE.sky, 1);
   renderer.domElement.style.display = 'block';

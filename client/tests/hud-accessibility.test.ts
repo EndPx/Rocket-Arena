@@ -8,11 +8,13 @@ import {
   type TerminalResult,
 } from '@rocket-arena/shared';
 import {
+  HUD_CONTROL_HINTS,
   HudModel,
   formatHudClock,
   type HudLocalPresentation,
   type HudSnapshotInput,
 } from '../src/hud/hud-model.js';
+import { GAMEPLAY_CODES } from '../src/input/input-controller.js';
 
 const LOCAL_ID = 'local-driver';
 
@@ -360,4 +362,37 @@ test('clock formatting stays finite and non-negative', () => {
   assert.equal(formatHudClock(Number.POSITIVE_INFINITY), '0:00');
   assert.equal(formatHudClock(59.2), '1:00');
   assert.equal(formatHudClock(300), '5:00');
+});
+
+test('the on-screen control reference matches the real gameplay bindings', () => {
+  assert.ok(HUD_CONTROL_HINTS.length > 0);
+
+  const claimed = new Set<string>();
+  for (const hint of HUD_CONTROL_HINTS) {
+    assert.ok(hint.keys.length > 0, `${hint.action} must paint at least one key cap`);
+    assert.ok(hint.codes.length > 0, `${hint.action} must name the codes it stands for`);
+    assert.ok(hint.action.length > 0);
+    // Every row carries its own accessible name; the painted caps are decorative.
+    assert.match(hint.ariaLabel, /: /, `${hint.action} needs a "key: meaning" label`);
+
+    for (const code of hint.codes) {
+      assert.ok(
+        GAMEPLAY_CODES.has(code),
+        `the reference claims ${code}, which the input controller ignores`,
+      );
+      assert.equal(claimed.has(code), false, `${code} is listed twice`);
+      claimed.add(code);
+    }
+  }
+
+  // Arrow keys are deliberately unlisted because they duplicate WASD. Every
+  // other gameplay code must be discoverable on screen.
+  const arrowCodes = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+  for (const code of GAMEPLAY_CODES) {
+    if (arrowCodes.includes(code)) continue;
+    assert.ok(claimed.has(code), `${code} is a gameplay binding with no on-screen hint`);
+  }
+  for (const code of arrowCodes) {
+    assert.equal(claimed.has(code), false, 'arrow keys stay unlisted as WASD duplicates');
+  }
 });

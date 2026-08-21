@@ -4,6 +4,7 @@ import {
 } from '../networking/accepted-snapshot-store.js';
 import { getLocalSessionId } from '../networking/state-listener.js';
 import {
+  HUD_CONTROL_HINTS,
   HudModel,
   type HudCameraMode,
   type HudLocalPresentation,
@@ -132,6 +133,18 @@ export function createHUD(): void {
     </div>
 
     <p class="hud-chip hud-chip--camera" id="hud-camera" aria-label="Camera: unavailable"></p>
+
+    <section class="hud-controls" id="hud-controls" aria-label="Controls">
+      <ul class="hud-controls-list">
+        ${HUD_CONTROL_HINTS.map(({ keys, action, ariaLabel }) => `
+        <li class="hud-control" aria-label="${ariaLabel}">
+          <span class="hud-control-keys" aria-hidden="true">${
+  keys.map((key) => `<kbd>${key}</kbd>`).join('<i>/</i>')
+}</span>
+          <span class="hud-control-action" aria-hidden="true">${action}</span>
+        </li>`).join('')}
+      </ul>
+    </section>
 
     <div class="hud-boost" id="hud-boost-gauge" role="progressbar" aria-label="Boost" aria-valuemin="0" aria-valuemax="100" aria-valuetext="Boost unavailable">
       <div class="hud-boost-dial" aria-hidden="true">
@@ -340,6 +353,78 @@ export function createHUD(): void {
       left: max(20px, env(safe-area-inset-left));
     }
 
+    /*
+     * The control strip is centred between the camera chip on the left and the
+     * boost dial on the right, and it is inset from both so the three never
+     * overlap at any supported width.
+     */
+    .hud-controls {
+      position: absolute;
+      bottom: max(22px, calc(env(safe-area-inset-bottom) + 2px));
+      left: 50%;
+      max-width: min(68vw, 840px);
+      transform: translateX(-50%);
+      opacity: 0.78;
+    }
+
+    .hud-controls-list {
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px 7px;
+      justify-content: center;
+      list-style: none;
+    }
+
+    .hud-control {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border: 1px solid var(--hud-line);
+      border-radius: 4px;
+      background: var(--hud-panel);
+      backdrop-filter: blur(10px);
+      white-space: nowrap;
+    }
+
+    .hud-control-keys {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      color: var(--hud-ink);
+    }
+
+    .hud-control-keys kbd {
+      min-width: 15px;
+      padding: 2px 4px;
+      border: 1px solid rgba(188, 211, 225, 0.4);
+      border-bottom-width: 2px;
+      border-radius: 3px;
+      background: rgba(30, 43, 54, 0.95);
+      font-family: inherit;
+      font-size: clamp(0.5rem, 0.6vw, 0.6rem);
+      font-weight: 850;
+      letter-spacing: 0.06em;
+      line-height: 1;
+      text-align: center;
+    }
+
+    .hud-control-keys i {
+      color: var(--hud-muted);
+      font-size: 0.5rem;
+      font-style: normal;
+    }
+
+    .hud-control-action {
+      color: var(--hud-muted);
+      font-size: clamp(0.48rem, 0.58vw, 0.58rem);
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      line-height: 1;
+    }
+
     .hud-ball-indicator {
       position: absolute;
       top: 0;
@@ -449,12 +534,23 @@ export function createHUD(): void {
         bottom: max(14px, env(safe-area-inset-bottom));
         width: 78px;
       }
+      /* Narrow widths cannot fit the strip beside the dial, so it moves above. */
+      .hud-controls {
+        bottom: max(104px, calc(env(safe-area-inset-bottom) + 92px));
+        max-width: min(92vw, 520px);
+      }
     }
 
     @media (max-height: 620px) {
       .hud-scoreboard { top: max(8px, env(safe-area-inset-top)); }
       .hud-center { top: max(76px, calc(env(safe-area-inset-top) + 64px)); }
       .hud-boost { bottom: max(12px, env(safe-area-inset-bottom)); width: 76px; }
+      .hud-controls { bottom: max(14px, calc(env(safe-area-inset-bottom) + 2px)); }
+    }
+
+    /* A pointer-only device has no keys to press, so the reference is noise. */
+    @media (hover: none) and (pointer: coarse) {
+      .hud-controls { display: none; }
     }
 
     @media (prefers-reduced-motion: reduce) {
