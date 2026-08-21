@@ -28,19 +28,22 @@ function onPad(descriptor: BoostPadDescriptor): { x: number; y: number; z: numbe
   };
 }
 
-// Validates: Requirements 14.15-14.16 (authoritative large boost pads)
+// Validates: Requirements 14.15-14.16 (authoritative boost pads, both classes)
 
-test('the seeded pad table resolves to the six registry positions', () => {
+test('the seeded pad table resolves both registry classes, large first', () => {
   const descriptors = resolveBoostPadDescriptors();
-  assert.equal(descriptors.length, 6);
+
+  // Rocket League's full complement: six large, twenty-eight small.
+  assert.equal(descriptors.length, 34);
   assert.deepEqual(
     descriptors.map(({ id }) => id),
-    [...TUNING_IDS.boostPads.largePositions],
+    [
+      ...TUNING_IDS.boostPads.largePositions,
+      ...TUNING_IDS.boostPads.smallPositions,
+    ],
   );
 
   for (const descriptor of descriptors) {
-    assert.equal(descriptor.boostAmount, 100, 'a large pad fills the tank');
-    assert.equal(descriptor.respawnSeconds, 10, 'a large pad takes ten seconds to return');
     assert.ok(descriptor.position.every(Number.isFinite));
     assert.ok(descriptor.halfExtents.every((value) => value > 0));
     // The window has to clear a car climbing the ramp band, measured at 1.093 m
@@ -52,8 +55,25 @@ test('the seeded pad table resolves to the six registry positions', () => {
     assert.equal(Object.isFrozen(descriptor), true);
   }
 
+  const large = descriptors.filter(({ kind }) => kind === 'large');
+  const small = descriptors.filter(({ kind }) => kind === 'small');
+  assert.equal(large.length, 6);
+  assert.equal(small.length, 28);
+
+  for (const descriptor of large) {
+    assert.equal(descriptor.boostAmount, 100, 'a large pad fills the tank');
+    assert.equal(descriptor.respawnSeconds, 10, 'a large pad takes ten seconds to return');
+  }
+  for (const descriptor of small) {
+    assert.equal(descriptor.boostAmount, 12, 'a small pad is worth twelve units');
+    assert.equal(descriptor.respawnSeconds, 5, 'a small pad returns on the shorter cycle');
+    // A smaller pad has to have a smaller catch area, or the two classes would be
+    // indistinguishable to drive over.
+    assert.ok(descriptor.halfExtents[0] < large[0]!.halfExtents[0]);
+  }
+
   // Positions must be distinct, or two pads would occupy one sensor.
-  assert.equal(new Set(descriptors.map(({ position }) => position.join(','))).size, 6);
+  assert.equal(new Set(descriptors.map(({ position }) => position.join(','))).size, 34);
 });
 
 test('a malformed registry drops pads instead of inventing positions', () => {
@@ -66,8 +86,84 @@ test('a malformed registry drops pads instead of inventing positions', () => {
   } as unknown as typeof DEFAULT_TUNING_REGISTRY_SNAPSHOT;
 
   const descriptors = resolveBoostPadDescriptors(broken);
-  assert.equal(descriptors.length, 5, 'the non-finite pad is dropped');
+  assert.equal(descriptors.length, 33, 'the non-finite pad is dropped');
   assert.equal(descriptors.some(({ id }) => id === TUNING_IDS.boostPads.largePositions[0]), false);
+
+  // An unreadable sensor footprint drops that whole class rather than borrowing
+  // the other one's, because a small pad given a large catch area would pay out
+  // where nothing is drawn.
+  const brokenExtents = {
+    get: (id: string) => (
+      id === TUNING_IDS.boostPads.smallSensorHalfExtents
+        ? { kind: 'vector', value: [0, 0.2, 0.8] }
+        : DEFAULT_TUNING_REGISTRY_SNAPSHOT.get(id)
+    ),
+  } as unknown as typeof DEFAULT_TUNING_REGISTRY_SNAPSHOT;
+
+  const withoutSmall = resolveBoostPadDescriptors(brokenExtents);
+  assert.equal(withoutSmall.length, 6);
+  assert.equal(withoutSmall.every(({ kind }) => kind === 'large'), true);
+});
+
+test('a small pad grants twelve and returns on its own shorter cycle', () => {
+  const descriptors = resolveBoostPadDescriptors();
+  const target = descriptors.find(({ kind }) => kind === 'small')!;
+  const away = collector('a', { x: 0, y: 0.15, z: 48 }, 0);
+
+  const taken = stepBoostPads(
+    descriptors,
+    createBoostPadStates(descriptors),
+    [collector('a', onPad(target), 0)],
+    STEP,
+    MAX_BOOST,
+  );
+  assert.deepEqual(taken.grants[0], {
+    collectorId: 'a',
+    padId: target.id,
+    boostAmount: 12,
+  });
+
+  // Five seconds, not the large pad's ten: the classes keep their own clocks.
+  // Measured by stepping until it returns rather than asserting an exact step
+  // count, because three hundred subtractions of 1/60 do not land exactly on zero
+  // and an exact count would be testing float accumulation, not the respawn rule.
+  const expectedSteps = Math.ceil(target.respawnSeconds / STEP);
+  const largePad = descriptors.find(({ kind }) => kind === 'large')!;
+  assert.ok(
+    expectedSteps < Math.ceil(largePad.respawnSeconds / STEP),
+    'the small cycle must be shorter than the large one',
+  );
+
+  let pads = taken.pads;
+  let steps = 0;
+  while (steps < expectedSteps + 4
+    && pads.find(({ id }) => id === target.id)!.available === false) {
+    pads = stepBoostPads(descriptors, pads, [away], STEP, MAX_BOOST).pads;
+    steps += 1;
+  }
+  assert.ok(
+    Math.abs(steps - expectedSteps) <= 1,
+    `the small pad returned after ${steps} steps, expected about ${expectedSteps}`,
+  );
+
+  const returning = stepBoostPads(
+    descriptors,
+    pads,
+    [collector('a', onPad(target), 0)],
+    STEP,
+    MAX_BOOST,
+  );
+  assert.equal(returning.grants.length, 1, 'the returned small pad is collectable');
+
+  // A nearly full tank takes only the shortfall, and never overfills.
+  const topUp = stepBoostPads(
+    descriptors,
+    createBoostPadStates(descriptors),
+    [collector('a', onPad(target), 95)],
+    STEP,
+    MAX_BOOST,
+  );
+  assert.equal(topUp.grants[0]!.boostAmount, 5, 'the twelve-unit grant clamps to the cap');
 });
 
 test('a fresh pad table starts fully available', () => {

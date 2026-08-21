@@ -128,9 +128,10 @@ const padPosition = (
   id: string,
   index: number,
   position: readonly [number, number, number],
+  size: 'Large' | 'Small' = 'Large',
 ): VectorTuningEntry => vector(
   id,
-  `Large boost pad ${index + 1} position`,
+  `${size} boost pad ${index + 1} position`,
   'm [x,y,z]',
   position,
   [
@@ -139,6 +140,49 @@ const padPosition = (
     { min: -51.2, max: 51.2 },
   ],
 );
+
+/**
+ * Rocket League's small pad layout, converted once.
+ *
+ * The arena is a clean hundredth of Rocket League's: `40.96 / 4096` and
+ * `51.2 / 5120` both give `0.01`, so a source coordinate in Unreal units becomes
+ * metres by moving the decimal point two places and nothing is being approximated
+ * here. Every one of these lands on flat floor, clear of the `2.56 m` ramp band
+ * and clear of the chamfered corners, so none of them sit on a slope the way the
+ * two side large pads do.
+ *
+ * The `y` matches the large pads: the pad slab sits just above the turf.
+ */
+const SMALL_PAD_POSITIONS: readonly (readonly [number, number, number])[] = Object.freeze([
+  [0, 0.15, -42.4],
+  [-17.92, 0.15, -41.84],
+  [17.92, 0.15, -41.84],
+  [-9.4, 0.15, -33.08],
+  [9.4, 0.15, -33.08],
+  [0, 0.15, -28.16],
+  [-35.84, 0.15, -24.84],
+  [35.84, 0.15, -24.84],
+  [-17.88, 0.15, -23],
+  [17.88, 0.15, -23],
+  [-20.48, 0.15, -10.36],
+  [0, 0.15, -10.24],
+  [20.48, 0.15, -10.36],
+  [-10.24, 0.15, 0],
+  [10.24, 0.15, 0],
+  [-20.48, 0.15, 10.36],
+  [0, 0.15, 10.24],
+  [20.48, 0.15, 10.36],
+  [-17.88, 0.15, 23],
+  [17.88, 0.15, 23],
+  [-35.84, 0.15, 24.84],
+  [35.84, 0.15, 24.84],
+  [0, 0.15, 28.16],
+  [-9.4, 0.15, 33.08],
+  [9.4, 0.15, 33.08],
+  [-17.92, 0.15, 41.84],
+  [17.92, 0.15, 41.84],
+  [0, 0.15, 42.4],
+] as const);
 
 /**
  * Checked-in finite staging seeds. Every uncertain value remains explicitly
@@ -252,6 +296,16 @@ export const SEEDED_TUNING_ENTRIES: readonly TuningEntry[] = deepFreeze([
   padPosition(TUNING_IDS.boostPads.largePositions[4], 4, [-30, 0.15, 35]),
   padPosition(TUNING_IDS.boostPads.largePositions[5], 5, [30, 0.15, 35]),
   vector(TUNING_IDS.boostPads.largeSensorHalfExtents, 'Large boost pad sensor half extents', 'm [x,y,z]', [1.5, 0.3, 1.5], pointRanges(3, { min: 0.05, max: 3 })),
+  // Rocket League's small pads are worth twelve units on a roughly five second
+  // cycle, which is what turns midfield boost into a decision.
+  scalar(TUNING_IDS.boostPads.smallBoostAmount, 'Small boost pad grant', 'boost units', 12, 12, 12),
+  scalar(TUNING_IDS.boostPads.smallRespawnSeconds, 'Small boost pad respawn', 's', 5, 5, 5),
+  ...TUNING_IDS.boostPads.smallPositions.map((id, index) => padPosition(
+    id,
+    index,
+    SMALL_PAD_POSITIONS[index] ?? [0, 0.15, 0],
+    'Small',
+  )),
   vector(TUNING_IDS.boostPads.smallSensorHalfExtents, 'Small boost pad sensor half extents', 'm [x,y,z]', [0.8, 0.2, 0.8], pointRanges(3, { min: 0.05, max: 2 })),
   scalar(TUNING_IDS.camera.ball.distance, 'Ball camera distance', 'm', 12, 5, 25, 'unverified-hypothesis', ['camera', 'perceived-control']),
   scalar(TUNING_IDS.camera.ball.height, 'Ball camera height', 'm', 3.6, 1, 12, 'unverified-hypothesis', ['camera', 'perceived-control']),
@@ -547,12 +601,15 @@ export function validateTuningEntries(
       issues.push(issue('cross-entry-invariant', id, 'Pad sensor half extents must be three positive values.'));
     }
   }
-  for (const id of TUNING_IDS.boostPads.largePositions) {
+  for (const id of [
+    ...TUNING_IDS.boostPads.largePositions,
+    ...TUNING_IDS.boostPads.smallPositions,
+  ]) {
     const position = vectorValue(id);
     if (position !== undefined && (position.length !== 3
       || Math.abs(position[0]!) > 40.96 || position[1]! < 0 || position[1]! > 2.56
       || Math.abs(position[2]!) > 51.2)) {
-      issues.push(issue('cross-entry-invariant', id, 'Large pad positions must stay inside the metric field bounds.'));
+      issues.push(issue('cross-entry-invariant', id, 'Pad positions must stay inside the metric field bounds.'));
     }
   }
 

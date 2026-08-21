@@ -232,6 +232,7 @@ const REGISTRY_REFERENCES: ArenaRegistryReferences = {
   boostPads: [
     ...TUNING_IDS.boostPads.largePositions,
     TUNING_IDS.boostPads.largeSensorHalfExtents,
+    ...TUNING_IDS.boostPads.smallPositions,
     TUNING_IDS.boostPads.smallSensorHalfExtents,
   ],
   camera: [

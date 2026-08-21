@@ -128,6 +128,7 @@ test('support, pad, and camera mechanics are registry references rather than are
   assert.deepEqual(references.boostPads, [
     ...TUNING_IDS.boostPads.largePositions,
     TUNING_IDS.boostPads.largeSensorHalfExtents,
+    ...TUNING_IDS.boostPads.smallPositions,
     TUNING_IDS.boostPads.smallSensorHalfExtents,
   ]);
   assert.ok(references.camera.includes(TUNING_IDS.camera.ball.distance));

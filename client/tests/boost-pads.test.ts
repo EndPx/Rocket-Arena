@@ -5,21 +5,25 @@ import {
   VISUAL,
   resolveBoostPadDescriptors,
   type BoostPadDescriptor,
+  type BoostPadKind,
 } from '@rocket-arena/shared';
 import { createBoostPadVisuals } from '../src/renderer/boost-pads.js';
 
 function descriptor(
   id: string,
   position: readonly [number, number, number],
+  kind: BoostPadKind = 'large',
 ): BoostPadDescriptor {
+  const large = kind === 'large';
   return {
     id,
+    kind,
     position,
-    halfExtents: [1.5, 0.3, 1.5],
+    halfExtents: large ? [1.5, 0.3, 1.5] : [0.8, 0.2, 0.8],
     pickupHeight: 1.6,
     onRampBand: false,
-    boostAmount: 100,
-    respawnSeconds: 10,
+    boostAmount: large ? 100 : 12,
+    respawnSeconds: large ? 10 : 5,
   };
 }
 
@@ -141,6 +145,40 @@ test('disposal releases every owned resource exactly once and is idempotent', ()
   ]);
   assert.equal(visuals.object.parent, null);
   assert.equal(visuals.object.children.length, 0);
+});
+
+test('the two pad classes get their own footprint rather than the first one seen', () => {
+  // Sizing every pad from `descriptors[0]` drew small pads at large-pad size,
+  // which told a player the catch area was somewhere it is not.
+  const visuals = createBoostPadVisuals([
+    descriptor('small.0', [0, 0.15, 10.24], 'small'),
+    descriptor('large.0', [39, 0.15, 0], 'large'),
+    descriptor('small.1', [10.24, 0.15, 0], 'small'),
+    descriptor('large.1', [-39, 0.15, 0], 'large'),
+  ]);
+
+  const radiusOf = (padId: string): number => {
+    const pad = visuals.object.getObjectByName(`boost-pad:${padId}`);
+    const rim = pad?.getObjectByName('boost-pad-rim');
+    assert.ok(rim instanceof THREE.Mesh);
+    const parameters = (rim.geometry as THREE.RingGeometry).parameters;
+    return parameters.outerRadius;
+  };
+
+  // Footprints follow the descriptor: 1.5 for large, 0.8 for small.
+  assert.equal(radiusOf('large.0'), 1.5);
+  assert.equal(radiusOf('large.1'), 1.5);
+  assert.equal(radiusOf('small.0'), 0.8);
+  assert.equal(radiusOf('small.1'), 0.8);
+
+  // One resource set per class present, shared within the class, distinct across.
+  const discs = collectMeshes(visuals.object, 'boost-pad-disc');
+  const geometries = new Set(discs.map((mesh) => mesh.geometry));
+  const materials = new Set(discs.map((mesh) => mesh.material));
+  assert.equal(geometries.size, 2);
+  assert.equal(materials.size, 2);
+
+  visuals.dispose();
 });
 
 test('the renderer draws exactly the shared pad table the room grants from', () => {

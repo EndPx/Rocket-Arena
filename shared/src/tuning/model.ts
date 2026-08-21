@@ -273,6 +273,46 @@ export const TUNING_IDS = deepFreeze({
       'boost-pad.large.5.position',
     ],
     largeSensorHalfExtents: 'boost-pad.large.sensor-half-extents',
+    /**
+     * Inventory a small pad grants, and its shorter spent window.
+     *
+     * Rocket League runs two pad classes: six large pads that fill the tank and
+     * take about ten seconds, and twenty-eight small ones worth twelve units on
+     * roughly a five second cycle. The small ones are what make midfield boost
+     * management a decision rather than a trip to a corner.
+     */
+    smallBoostAmount: 'boost-pad.small.boost-amount',
+    smallRespawnSeconds: 'boost-pad.small.respawn-seconds',
+    smallPositions: [
+      'boost-pad.small.0.position',
+      'boost-pad.small.1.position',
+      'boost-pad.small.2.position',
+      'boost-pad.small.3.position',
+      'boost-pad.small.4.position',
+      'boost-pad.small.5.position',
+      'boost-pad.small.6.position',
+      'boost-pad.small.7.position',
+      'boost-pad.small.8.position',
+      'boost-pad.small.9.position',
+      'boost-pad.small.10.position',
+      'boost-pad.small.11.position',
+      'boost-pad.small.12.position',
+      'boost-pad.small.13.position',
+      'boost-pad.small.14.position',
+      'boost-pad.small.15.position',
+      'boost-pad.small.16.position',
+      'boost-pad.small.17.position',
+      'boost-pad.small.18.position',
+      'boost-pad.small.19.position',
+      'boost-pad.small.20.position',
+      'boost-pad.small.21.position',
+      'boost-pad.small.22.position',
+      'boost-pad.small.23.position',
+      'boost-pad.small.24.position',
+      'boost-pad.small.25.position',
+      'boost-pad.small.26.position',
+      'boost-pad.small.27.position',
+    ],
     smallSensorHalfExtents: 'boost-pad.small.sensor-half-extents',
   },
   camera: {

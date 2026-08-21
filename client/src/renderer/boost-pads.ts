@@ -1,15 +1,15 @@
 import * as THREE from 'three';
-import { VISUAL, type BoostPadDescriptor } from '@rocket-arena/shared';
+import { VISUAL, type BoostPadDescriptor, type BoostPadKind } from '@rocket-arena/shared';
 
 /**
  * Boost pad visuals.
  *
  * Presentation only, and descriptor-driven: it draws exactly the pads it is
- * handed, at the transforms they carry, and an empty list is a complete valid
- * no-op rather than a reason to invent decoration. It owns no pickup, inventory,
- * respawn, collision, or sensor behaviour; those live in the authoritative room,
- * and both sides read the same shared pad table so the drawn pads cannot drift
- * away from the ones that pay out.
+ * handed, at the transforms and footprints they carry, and an empty list is a
+ * complete valid no-op rather than a reason to invent decoration. It owns no
+ * pickup, inventory, respawn, collision, or sensor behaviour; those live in the
+ * authoritative room, and both sides read the same shared pad table so the drawn
+ * pads cannot drift away from the ones that pay out.
  *
  * The pads are drawn as available. Pad availability is authoritative state that
  * the snapshot envelope does not carry yet, so rather than animate a guess these
@@ -21,46 +21,68 @@ export interface BoostPadVisuals {
   dispose(): void;
 }
 
+/** Presentation weight per class, so a full refill does not read as twelve units. */
+const KIND_STYLE: Readonly<Record<BoostPadKind, {
+  readonly discOpacity: number;
+  readonly rimOpacity: number;
+  readonly innerRatio: number;
+}>> = Object.freeze({
+  large: { discOpacity: 0.34, rimOpacity: 0.72, innerRatio: 0.82 },
+  small: { discOpacity: 0.24, rimOpacity: 0.54, innerRatio: 0.74 },
+});
+
+interface KindResources {
+  readonly discGeometry: THREE.CircleGeometry;
+  readonly rimGeometry: THREE.RingGeometry;
+  readonly discMaterial: THREE.MeshBasicMaterial;
+  readonly rimMaterial: THREE.MeshBasicMaterial;
+}
+
 export function createBoostPadVisuals(
   descriptors: readonly BoostPadDescriptor[],
 ): BoostPadVisuals {
   const object = new THREE.Group();
   object.name = 'boost-pads';
 
-  if (descriptors.length === 0) {
-    return {
-      object,
-      padCount: 0,
-      dispose: (): void => {
-        object.removeFromParent();
-      },
+  // One geometry and material set per class present, not per pad, and keyed on the
+  // class rather than on the first descriptor: the two classes have different
+  // footprints, and sizing every pad from `descriptors[0]` would have drawn small
+  // pads at large-pad size and lied about where the catch area is.
+  const resourcesByKind = new Map<BoostPadKind, KindResources>();
+
+  const resourcesFor = (descriptor: BoostPadDescriptor): KindResources => {
+    const existing = resourcesByKind.get(descriptor.kind);
+    if (existing !== undefined) return existing;
+
+    const style = KIND_STYLE[descriptor.kind];
+    const [halfX, , halfZ] = descriptor.halfExtents;
+    const radius = Math.min(halfX, halfZ);
+    const created: KindResources = {
+      discGeometry: new THREE.CircleGeometry(radius * style.innerRatio, 32),
+      rimGeometry: new THREE.RingGeometry(radius * style.innerRatio, radius, 32, 1),
+      discMaterial: new THREE.MeshBasicMaterial({
+        color: VISUAL.PALETTE.WARM_LIGHT,
+        transparent: true,
+        opacity: style.discOpacity,
+        depthWrite: false,
+        fog: false,
+        side: THREE.DoubleSide,
+      }),
+      rimMaterial: new THREE.MeshBasicMaterial({
+        color: VISUAL.PALETTE.WARM_LIGHT,
+        transparent: true,
+        opacity: style.rimOpacity,
+        depthWrite: false,
+        fog: false,
+        side: THREE.DoubleSide,
+      }),
     };
-  }
-
-  // One geometry and one material set for every pad, however many there are.
-  const [halfX, , halfZ] = descriptors[0]!.halfExtents;
-  const radius = Math.min(halfX, halfZ);
-  const discGeometry = new THREE.CircleGeometry(radius * 0.82, 32);
-  const rimGeometry = new THREE.RingGeometry(radius * 0.82, radius, 32, 1);
-
-  const discMaterial = new THREE.MeshBasicMaterial({
-    color: VISUAL.PALETTE.WARM_LIGHT,
-    transparent: true,
-    opacity: 0.34,
-    depthWrite: false,
-    fog: false,
-    side: THREE.DoubleSide,
-  });
-  const rimMaterial = new THREE.MeshBasicMaterial({
-    color: VISUAL.PALETTE.WARM_LIGHT,
-    transparent: true,
-    opacity: 0.72,
-    depthWrite: false,
-    fog: false,
-    side: THREE.DoubleSide,
-  });
+    resourcesByKind.set(descriptor.kind, created);
+    return created;
+  };
 
   for (const descriptor of descriptors) {
+    const resources = resourcesFor(descriptor);
     const pad = new THREE.Group();
     pad.name = `boost-pad:${descriptor.id}`;
     // Lift clear of the turf and its markings, the same allowance the ball's
@@ -71,11 +93,11 @@ export function createBoostPadVisuals(
       descriptor.position[2],
     );
 
-    const disc = new THREE.Mesh(discGeometry, discMaterial);
+    const disc = new THREE.Mesh(resources.discGeometry, resources.discMaterial);
     disc.name = 'boost-pad-disc';
     disc.rotation.x = -Math.PI / 2;
     disc.renderOrder = 2;
-    const rim = new THREE.Mesh(rimGeometry, rimMaterial);
+    const rim = new THREE.Mesh(resources.rimGeometry, resources.rimMaterial);
     rim.name = 'boost-pad-rim';
     rim.rotation.x = -Math.PI / 2;
     rim.renderOrder = 3;
@@ -93,10 +115,13 @@ export function createBoostPadVisuals(
       disposed = true;
       object.removeFromParent();
       object.clear();
-      discGeometry.dispose();
-      rimGeometry.dispose();
-      discMaterial.dispose();
-      rimMaterial.dispose();
+      for (const resources of resourcesByKind.values()) {
+        resources.discGeometry.dispose();
+        resources.rimGeometry.dispose();
+        resources.discMaterial.dispose();
+        resources.rimMaterial.dispose();
+      }
+      resourcesByKind.clear();
     },
   };
 }
