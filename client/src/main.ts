@@ -4,11 +4,15 @@
  * Bootstraps renderer, connects to server, and presents synchronized entities.
  */
 
-import { RESOLVED_ARENA_GEOMETRY } from '@rocket-arena/shared';
+import {
+  RESOLVED_ARENA_GEOMETRY,
+  resolveBoostPadDescriptors,
+} from '@rocket-arena/shared';
 import { initScene } from './renderer/scene.js';
 import { createLighting } from './renderer/lighting.js';
 import { createArena } from './renderer/arena.js';
 import { createBallFieldMarker } from './renderer/ball-field-marker.js';
+import { createBoostPadVisuals } from './renderer/boost-pads.js';
 import { getRoom } from './networking/client.js';
 import {
   getBallMesh,
@@ -47,6 +51,10 @@ createLighting(scene, resolvedArenaGeometry);
 const arena = createArena(scene, resolvedArenaGeometry);
 const ballFieldMarker = createBallFieldMarker();
 scene.add(ballFieldMarker.object);
+// Descriptor-driven and read from the same shared table the room grants from, so
+// a drawn pad is always a pad that pays out.
+const boostPads = createBoostPadVisuals(resolveBoostPadDescriptors());
+scene.add(boostPads.object);
 createHUD();
 initializeAudio();
 
@@ -177,6 +185,7 @@ function animate(): void {
 
 const disposeClient = (): void => {
   destroyPauseMenu();
+  boostPads.dispose();
   ballFieldMarker.dispose();
   arena.dispose();
   destroyHUD();
