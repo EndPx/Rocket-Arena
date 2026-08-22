@@ -17,6 +17,24 @@ const LOCAL_RIGHT = new THREE.Vector3(1, 0, 0);
  * from vertical. Below that the projection direction is dominated by noise.
  */
 const HEADING_PROJECTION_MINIMUM_LENGTH_SQUARED = 0.2;
+/**
+ * Least speed, in metres per second, that counts as deliberately driving a
+ * surface when the chassis nose is too steep to give a ground heading.
+ *
+ * Below this the car is tumbling, parked, or nose-up in the air, none of which
+ * should move the camera off the world-horizontal chase it already had. This is
+ * measured from how far the car actually travelled, so a stationary car can
+ * never engage it however it is rotated.
+ */
+const SURFACE_CHASE_MINIMUM_SPEED = 3;
+/** How quickly the chase basis swings between world-up and surface-relative. */
+const SURFACE_CHASE_RESPONSE = 5;
+/**
+ * The camera never drops below this world height. Chasing along the travel
+ * direction points the offset down the wall while climbing, and without a floor
+ * the camera would be placed under the pitch early in a climb.
+ */
+const CAMERA_MINIMUM_WORLD_HEIGHT = 0.4;
 const FLIP_CAMERA_PULLBACK_DISTANCE = 3;
 const FLIP_CAMERA_PULLBACK_RESPONSE = 8;
 const MAX_DELTA_SECONDS = 0.1;
@@ -338,6 +356,20 @@ export class CameraController {
   private readonly rightDerivedForwardCandidate = new THREE.Vector3(0, 0, 1);
   private readonly lastForward = new THREE.Vector3(0, 0, 1);
   private readonly lastCarPosition = new THREE.Vector3();
+  private readonly chassisForward = new THREE.Vector3(0, 0, 1);
+  private readonly chassisRoof = new THREE.Vector3(0, 1, 0);
+  private chassisForwardProjectable = true;
+  /** Unit direction from the car towards the camera. */
+  private readonly chaseBehind = new THREE.Vector3(0, 0, -1);
+  /** Unit direction the camera's height offset is taken along. */
+  private readonly chaseUp = new THREE.Vector3(0, 1, 0);
+  private readonly chaseBehindTarget = new THREE.Vector3(0, 0, -1);
+  private readonly chaseUpTarget = new THREE.Vector3(0, 1, 0);
+  private readonly motionDirection = new THREE.Vector3();
+  /** 0 while the chase is world-up, 1 once it is fully surface-relative. */
+  private surfaceChaseAlpha = 0;
+  private readonly clampOffset = new THREE.Vector3();
+  private readonly clampLateral = new THREE.Vector3();
   private readonly targetPosition = new THREE.Vector3();
   private readonly targetLookAt = new THREE.Vector3();
   private readonly smoothedLookAt = new THREE.Vector3();
@@ -459,6 +491,7 @@ export class CameraController {
       && this.lastCarPosition.distanceToSquared(this.carPosition)
         > VISUAL.CAMERA.TELEPORT_DISTANCE ** 2;
     const rebase = this.historyNeedsRebase || !this.historyInitialized || teleported;
+    this.resolveChaseBasis(deltaSeconds, rebase);
 
     if (this.modeValue === 'ball' && input.ball !== null) {
       copyFinitePosition(this.ballPosition, input.ball.position);
@@ -493,10 +526,20 @@ export class CameraController {
     this.temporaryQuaternion.copy(car.quaternion);
     if (!finiteQuaternion(this.temporaryQuaternion)) {
       this.forward.copy(this.lastForward);
+      // A rotation this broken must not be allowed to hand the camera a
+      // surface-relative basis, so leave the chase on its world-up path.
+      this.chassisForwardProjectable = true;
       return;
     }
 
     this.temporaryQuaternion.normalize();
+
+    // Kept in three dimensions as well, because the surface-relative chase needs
+    // the axes themselves rather than their ground projections.
+    this.chassisForward.copy(LOCAL_FORWARD).applyQuaternion(this.temporaryQuaternion);
+    this.chassisRoof.copy(LOCAL_UP).applyQuaternion(this.temporaryQuaternion);
+    if (this.chassisForward.lengthSq() > VECTOR_EPSILON_SQUARED) this.chassisForward.normalize();
+    if (this.chassisRoof.lengthSq() > VECTOR_EPSILON_SQUARED) this.chassisRoof.normalize();
 
     // The chase heading must come from whichever chassis axis is currently the
     // most horizontal, because that is the axis whose ground projection is
@@ -519,6 +562,7 @@ export class CameraController {
     const forwardValid = Number.isFinite(forwardLengthSquared)
       && forwardLengthSquared > HEADING_PROJECTION_MINIMUM_LENGTH_SQUARED;
     if (forwardValid) this.forwardCandidate.normalize();
+    this.chassisForwardProjectable = forwardValid;
 
     this.rightDerivedForwardCandidate
       .copy(LOCAL_RIGHT)
@@ -557,6 +601,115 @@ export class CameraController {
     if (this.forward.dot(this.lastForward) < 0) this.forward.negate();
   }
 
+  /**
+   * Resolve where the camera sits relative to the car, and which way is up for it.
+   *
+   * On the floor this is the world-horizontal chase heading with a world-up
+   * height offset, which is what every framing rule here is written against.
+   *
+   * Driving up a wall breaks that. The nose points at the sky, so the ground
+   * heading is undefined and the projected fallback is derived from the chassis
+   * right axis, which sits at a right angle to the direction of travel. The
+   * camera was swung out perpendicular to the wall as a result, watching the car
+   * from the side instead of following it up.
+   *
+   * When the nose is that steep and the car is genuinely travelling, the chase
+   * follows the travel direction in full three dimensions and takes its height
+   * from the chassis roof, which is the axis pointing away from whatever surface
+   * the car is on. Gating on measured travel rather than on orientation alone is
+   * what keeps a tumbling or parked car on the world-up path.
+   *
+   * The basis is damped rather than switched, so crossing the ramp onto the wall
+   * swings the camera round instead of cutting to the new framing.
+   */
+  private resolveChaseBasis(deltaSeconds: number, rebase: boolean): void {
+    this.chaseBehindTarget.copy(this.forward).negate();
+    this.chaseUpTarget.copy(WORLD_UP);
+
+    const travelled = this.temporaryVector.copy(this.carPosition).sub(this.lastCarPosition);
+    const travelledLength = travelled.length();
+    const speed = deltaSeconds > 0 && this.historyInitialized && !rebase
+      ? travelledLength / deltaSeconds
+      : 0;
+
+    // Car Camera only. Ball Camera aims at the ball, so with the car on a wall
+    // and the ball out on the pitch the two directions are around 150 degrees
+    // apart and no chase position can hold both. Trailing the climb there only
+    // trades one view that cannot show the car for another, and drags the camera
+    // down to the floor on the way, so Ball Camera keeps its world-up framing.
+    if (
+      this.modeValue === 'car'
+      && !this.chassisForwardProjectable
+      && Number.isFinite(speed)
+      && speed >= SURFACE_CHASE_MINIMUM_SPEED
+      && travelledLength > VECTOR_EPSILON
+    ) {
+      this.motionDirection.copy(travelled).divideScalar(travelledLength);
+      this.chaseBehindTarget.copy(this.motionDirection).negate();
+      this.chaseUpTarget.copy(this.chassisRoof);
+      this.chaseUpTarget.addScaledVector(
+        this.chaseBehindTarget,
+        -this.chaseUpTarget.dot(this.chaseBehindTarget),
+      );
+      if (this.chaseUpTarget.lengthSq() > VECTOR_EPSILON_SQUARED) {
+        this.chaseUpTarget.normalize();
+      } else {
+        // Travelling straight along the roof axis leaves no plane to hold a
+        // height offset in, so keep the world-up framing for this frame.
+        this.chaseBehindTarget.copy(this.forward).negate();
+        this.chaseUpTarget.copy(WORLD_UP);
+      }
+    }
+
+    if (rebase || !this.historyInitialized) {
+      this.chaseBehind.copy(this.chaseBehindTarget);
+      this.chaseUp.copy(this.chaseUpTarget);
+    } else {
+      const alpha = dampingAlpha(SURFACE_CHASE_RESPONSE, deltaSeconds);
+      this.chaseBehind.lerp(this.chaseBehindTarget, alpha);
+      this.chaseUp.lerp(this.chaseUpTarget, alpha);
+    }
+
+    // Damping between two unit vectors can pass through the origin, and the
+    // basis has to stay orthonormal for the framing rules to mean anything.
+    if (this.chaseBehind.lengthSq() <= VECTOR_EPSILON_SQUARED) {
+      this.chaseBehind.copy(this.chaseBehindTarget);
+    }
+    this.chaseBehind.normalize();
+    this.chaseUp.addScaledVector(this.chaseBehind, -this.chaseUp.dot(this.chaseBehind));
+    if (this.chaseUp.lengthSq() <= VECTOR_EPSILON_SQUARED) {
+      this.chaseUp
+        .copy(WORLD_UP)
+        .addScaledVector(this.chaseBehind, -WORLD_UP.dot(this.chaseBehind));
+      if (this.chaseUp.lengthSq() <= VECTOR_EPSILON_SQUARED) this.chaseUp.set(0, 1, 0);
+    }
+    this.chaseUp.normalize();
+
+    // How far the basis has tilted off world up, which is also how much the
+    // follow offsets need reinterpreting. Derived from the basis rather than
+    // damped separately, so it can never disagree with it.
+    this.surfaceChaseAlpha = THREE.MathUtils.clamp(
+      1 - Math.abs(this.chaseUp.dot(WORLD_UP)),
+      0,
+      1,
+    );
+  }
+
+  /**
+   * Follow distance for the current basis.
+   *
+   * The configured distance is measured for open floor, where it points
+   * backwards across the pitch and nothing is in the way. Pointed down a wall it
+   * drives the camera through the floor within the first few metres of a climb,
+   * which pins it at the floor clearance and leaves it sliding along the ground.
+   * Surface-relative chases therefore trail by the much shorter height instead,
+   * which keeps the camera tucked just below the car and against the wall it is
+   * climbing.
+   */
+  private chaseDistance(distance: number, height: number): number {
+    return THREE.MathUtils.lerp(distance, height, this.surfaceChaseAlpha);
+  }
+
   private updateBallCamera(
     camera: THREE.PerspectiveCamera,
     deltaSeconds: number,
@@ -566,10 +719,11 @@ export class CameraController {
     this.targetPosition
       .copy(this.carPosition)
       .addScaledVector(
-        this.forward,
-        -(config.distance + FLIP_CAMERA_PULLBACK_DISTANCE * this.flipPullbackAlpha),
-      );
-    this.targetPosition.y += config.height;
+        this.chaseBehind,
+        this.chaseDistance(config.distance, config.height)
+          + FLIP_CAMERA_PULLBACK_DISTANCE * this.flipPullbackAlpha,
+      )
+      .addScaledVector(this.chaseUp, config.height);
     this.targetLookAt.copy(this.ballPosition);
     clampVectorComponents(this.targetPosition);
     clampVectorComponents(this.targetLookAt);
@@ -621,13 +775,14 @@ export class CameraController {
     this.targetPosition
       .copy(this.carPosition)
       .addScaledVector(
-        this.forward,
-        -(config.distance + FLIP_CAMERA_PULLBACK_DISTANCE * this.flipPullbackAlpha),
-      );
-    this.targetPosition.y += config.height;
+        this.chaseBehind,
+        this.chaseDistance(config.distance, config.height)
+          + FLIP_CAMERA_PULLBACK_DISTANCE * this.flipPullbackAlpha,
+      )
+      .addScaledVector(this.chaseUp, config.height);
     this.targetLookAt
       .copy(this.carPosition)
-      .addScaledVector(this.forward, config.lookAhead);
+      .addScaledVector(this.chaseBehind, -config.lookAhead);
     clampVectorComponents(this.targetPosition);
     clampVectorComponents(this.targetLookAt);
 
@@ -668,20 +823,28 @@ export class CameraController {
     );
   }
 
+  /**
+   * Hold the framing rules in the chase basis rather than against world axes.
+   *
+   * While `chaseUp` is world up these are exactly the horizontal follow clamp and
+   * world-up height clamp they have always been. Once the chase goes
+   * surface-relative on a wall, the same rules apply around that surface, which
+   * is what lets the camera sit behind a climbing car instead of being shoved
+   * back up level with it by a world-up floor.
+   */
   private clampPositionAroundCar(position: THREE.Vector3, configuredDistance: number): void {
     clampVectorComponents(position);
-    const offsetX = position.x - this.carPosition.x;
-    const offsetZ = position.z - this.carPosition.z;
-    const horizontalDistance = Math.hypot(offsetX, offsetZ);
+    const offset = this.clampOffset.copy(position).sub(this.carPosition);
+    const alongUp = offset.dot(this.chaseUp);
+    const lateral = this.clampLateral.copy(offset).addScaledVector(this.chaseUp, -alongUp);
+    const lateralDistance = lateral.length();
     const maxDistance = Math.max(
       CAMERA_CONFIGURATION_RANGES.ball.distance.max,
       CAMERA_CONFIGURATION_RANGES.ball.lookAhead.max,
       CAMERA_CONFIGURATION_RANGES.car.distance.max,
     );
-    if (Number.isFinite(horizontalDistance) && horizontalDistance > maxDistance) {
-      const scale = maxDistance / horizontalDistance;
-      position.x = this.carPosition.x + offsetX * scale;
-      position.z = this.carPosition.z + offsetZ * scale;
+    if (Number.isFinite(lateralDistance) && lateralDistance > maxDistance) {
+      lateral.multiplyScalar(maxDistance / lateralDistance);
     }
 
     // Reversing drives the car towards its own chase target, so the spring lag
@@ -691,22 +854,20 @@ export class CameraController {
       : 0;
     if (
       minimumDistance > 0
-      && Number.isFinite(horizontalDistance)
-      && horizontalDistance < minimumDistance
+      && Number.isFinite(lateralDistance)
+      && lateralDistance < minimumDistance
     ) {
       // Push straight out along the direction the camera already sits, so it
       // keeps its side of the car instead of snapping behind the heading. The
       // heading is the only sane fallback when the camera is right on top.
-      let directionX = offsetX;
-      let directionZ = offsetZ;
-      if (horizontalDistance <= VECTOR_EPSILON) {
-        directionX = -this.forward.x;
-        directionZ = -this.forward.z;
+      if (lateralDistance <= VECTOR_EPSILON) {
+        lateral
+          .copy(this.chaseBehind)
+          .addScaledVector(this.chaseUp, -this.chaseBehind.dot(this.chaseUp));
       }
-      const length = Math.hypot(directionX, directionZ);
+      const length = lateral.length();
       if (Number.isFinite(length) && length > VECTOR_EPSILON) {
-        position.x = this.carPosition.x + (directionX / length) * minimumDistance;
-        position.z = this.carPosition.z + (directionZ / length) * minimumDistance;
+        lateral.multiplyScalar(minimumDistance / length);
       }
     }
 
@@ -714,11 +875,13 @@ export class CameraController {
       CAMERA_CONFIGURATION_RANGES.ball.height.max,
       CAMERA_CONFIGURATION_RANGES.car.height.max,
     );
-    position.y = THREE.MathUtils.clamp(
-      position.y,
-      this.carPosition.y,
-      this.carPosition.y + maxHeight,
-    );
+    position
+      .copy(this.carPosition)
+      .add(lateral)
+      .addScaledVector(this.chaseUp, THREE.MathUtils.clamp(alongUp, 0, maxHeight));
+    // Chasing along the travel direction points the offset down the wall during a
+    // climb, which without this would place the camera under the pitch.
+    position.y = Math.max(position.y, CAMERA_MINIMUM_WORLD_HEIGHT);
     clampVectorComponents(position);
   }
 

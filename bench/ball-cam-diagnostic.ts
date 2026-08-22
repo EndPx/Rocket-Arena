@@ -30,6 +30,12 @@ interface Sample {
   readonly viewPitchDegrees: number;
   readonly cameraAzimuthDegrees: number;
   readonly cameraPosition: THREE.Vector3;
+  /**
+   * How well the camera sits behind the direction of travel. One means directly
+   * behind, zero means off at a right angle to it, which is what a wall climb
+   * used to produce.
+   */
+  readonly behindAlignment: number;
 }
 
 /** Orientation whose roof is `up` and whose nose is `forward`. */
@@ -48,6 +54,7 @@ function measure(
   car: THREE.Object3D,
   ball: THREE.Object3D,
   frame: number,
+  travel: THREE.Vector3 = new THREE.Vector3(),
 ): Sample {
   controller.update({
     camera,
@@ -63,6 +70,9 @@ function measure(
   const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
   const view = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
   const offset = camera.position.clone().sub(car.position);
+  const behindAlignment = offset.lengthSq() > 1e-8 && travel.lengthSq() > 1e-8
+    ? offset.clone().normalize().dot(travel.clone().normalize().negate())
+    : 0;
   return {
     frame,
     carY: car.position.y,
@@ -70,21 +80,30 @@ function measure(
     viewPitchDegrees: Math.asin(THREE.MathUtils.clamp(view.y, -1, 1)) * 180 / Math.PI,
     cameraAzimuthDegrees: Math.atan2(offset.z, offset.x) * 180 / Math.PI,
     cameraPosition: camera.position.clone(),
+    behindAlignment,
   };
 }
 
 function report(label: string, samples: readonly Sample[]): void {
   console.log(`\n${label}`);
-  console.log('frame  carY   roll   viewPitch  camAzimuth  camPos');
+  console.log('frame  carY   roll   viewPitch  behind  camPos');
   for (const s of samples) {
     if (s.frame % 15 !== 0) continue;
     console.log(
       `${String(s.frame).padStart(5)} ${s.carY.toFixed(2).padStart(6)}`
       + ` ${s.rollDegrees.toFixed(2).padStart(7)} ${s.viewPitchDegrees.toFixed(1).padStart(10)}`
-      + ` ${s.cameraAzimuthDegrees.toFixed(1).padStart(11)}`
+      + ` ${s.behindAlignment.toFixed(3).padStart(7)}`
       + `  (${s.cameraPosition.x.toFixed(2)}, ${s.cameraPosition.y.toFixed(2)},`
       + ` ${s.cameraPosition.z.toFixed(2)})`,
     );
+  }
+  const settled = samples.slice(Math.floor(samples.length / 2));
+  const worstBehind = settled.reduce(
+    (worst, s) => Math.min(worst, s.behindAlignment),
+    Number.POSITIVE_INFINITY,
+  );
+  if (Number.isFinite(worstBehind)) {
+    console.log(`  worst behind-travel alignment over the second half: ${worstBehind.toFixed(3)}`);
   }
   const worstRoll = samples.reduce(
     (worst, s) => (Math.abs(s.rollDegrees) > Math.abs(worst) ? s.rollDegrees : worst),
@@ -115,14 +134,35 @@ function run(): void {
     car.quaternion.identity();
     ball.position.set(0, 1.8, 10);
     const samples: Sample[] = [];
+    const travel = new THREE.Vector3(0, 0, 0.25);
     for (let frame = 0; frame < 60; frame += 1) {
-      car.position.z += 0.25;
-      samples.push(measure(controller, camera, car, ball, frame));
+      car.position.z += travel.z;
+      samples.push(measure(controller, camera, car, ball, frame, travel));
     }
     report('control: driving along the floor toward the ball', samples);
   }
 
-  // Driving up the east wall: roof faces -X, nose faces +Y.
+  // Driving up the east wall in Car Camera: roof faces -X, nose faces +Y. This is
+  // the mode the surface-relative chase applies to, because it looks along the
+  // car rather than at the ball.
+  {
+    const controller = new CameraController();
+    controller.setGameplayMode('car');
+    car.position.set(40.5, 2, 0);
+    car.quaternion.copy(
+      orientation(new THREE.Vector3(-1, 0, 0), new THREE.Vector3(0, 1, 0)),
+    );
+    ball.position.set(0, 1.8, 0);
+    const samples: Sample[] = [];
+    const travel = new THREE.Vector3(0, 0.18, 0);
+    for (let frame = 0; frame < 90; frame += 1) {
+      car.position.y = 2 + frame * travel.y;
+      samples.push(measure(controller, camera, car, ball, frame, travel));
+    }
+    report('Car Camera climbing the east wall', samples);
+  }
+
+  // The same climb in Ball Camera, which deliberately keeps the world-up framing.
   {
     const controller = new CameraController();
     controller.setGameplayMode('ball');
@@ -132,11 +172,12 @@ function run(): void {
     );
     ball.position.set(0, 1.8, 0);
     const samples: Sample[] = [];
+    const travel = new THREE.Vector3(0, 0.18, 0);
     for (let frame = 0; frame < 90; frame += 1) {
-      car.position.y = 2 + frame * 0.18;
-      samples.push(measure(controller, camera, car, ball, frame));
+      car.position.y = 2 + frame * travel.y;
+      samples.push(measure(controller, camera, car, ball, frame, travel));
     }
-    report('climbing the east wall, ball on the floor at centre', samples);
+    report('Ball Camera climbing the east wall, unchanged world-up framing', samples);
   }
 
   // Parked on the wall at a fixed height, so nothing but the camera moves.
