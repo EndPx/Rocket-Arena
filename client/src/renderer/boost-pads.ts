@@ -1,5 +1,10 @@
 import * as THREE from 'three';
-import { VISUAL, type BoostPadDescriptor, type BoostPadKind } from '@rocket-arena/shared';
+import {
+  VISUAL,
+  type BoostPadCooldownSnapshot,
+  type BoostPadDescriptor,
+  type BoostPadKind,
+} from '@rocket-arena/shared';
 
 /**
  * Boost pad visuals.
@@ -16,15 +21,25 @@ import { VISUAL, type BoostPadDescriptor, type BoostPadKind } from '@rocket-aren
  * nothing more. A large pad adds a floating orb above that plate, which is what
  * makes a full refill visible from across the arena and worth driving to.
  *
- * The pads are drawn as available. Pad availability is authoritative state that
- * the snapshot envelope does not carry yet, so rather than animate a guess these
- * mark where boost is, which is the half a player cannot work out for themselves.
+ * Availability is animated from authoritative state rather than guessed. A client
+ * cannot know that another player took a pad, so the room reports which pads are
+ * spent and how long each has left, and this only draws what it is told.
  */
 export interface BoostPadVisuals {
   readonly object: THREE.Group;
   readonly padCount: number;
-  /** Advance the floating orbs. Safe to call with any finite elapsed time. */
-  update(elapsedSeconds: number): void;
+  /**
+   * Advance the pads.
+   *
+   * `cooldowns` is the authoritative list of spent pads from the accepted
+   * snapshot, keyed by index into the same table these visuals were built from.
+   * An omitted list means nothing is spent, so a caller with no snapshot yet
+   * draws every pad available rather than guessing.
+   */
+  update(
+    elapsedSeconds: number,
+    cooldowns?: readonly BoostPadCooldownSnapshot[],
+  ): void;
   dispose(): void;
 }
 
@@ -36,6 +51,19 @@ const ORB = Object.freeze({
   BOB_AMPLITUDE: 0.16,
   BOB_RATE: 1.6,
   SPIN_RATE: 0.5,
+});
+
+/**
+ * How a recharging plate reads.
+ *
+ * The plate scales back up inside a rim that stays put, so the pad's position is
+ * never lost while it is spent and the fill itself carries the progress. It never
+ * reaches zero, because a pad that vanishes looks like a pad that is not there.
+ */
+const RECHARGE = Object.freeze({
+  MINIMUM_PLATE_SCALE: 0.12,
+  /** Fraction of the cooldown after which the orb starts returning. */
+  ORB_RETURN_AT: 0.82,
 });
 
 /** Presentation weight per class, so a full refill does not read as twelve units. */
@@ -54,16 +82,27 @@ interface KindResources {
   readonly rimGeometry: THREE.RingGeometry;
   readonly plateMaterial: THREE.MeshBasicMaterial;
   readonly rimMaterial: THREE.MeshBasicMaterial;
+  readonly spentPlateMaterial: THREE.MeshBasicMaterial;
+  readonly spentRimMaterial: THREE.MeshBasicMaterial;
   readonly coreGeometry: THREE.SphereGeometry | null;
   readonly haloGeometry: THREE.SphereGeometry | null;
   readonly coreMaterial: THREE.MeshBasicMaterial | null;
   readonly haloMaterial: THREE.MeshBasicMaterial | null;
 }
 
-interface Orb {
-  readonly object: THREE.Object3D;
-  readonly baseY: number;
+interface Pad {
+  /** Index into the shared table, which is how the room names it too. */
+  readonly index: number;
+  readonly respawnSeconds: number;
+  readonly plate: THREE.Mesh;
+  readonly rim: THREE.Mesh;
+  readonly orb: THREE.Object3D | null;
+  readonly resources: KindResources;
   readonly phase: number;
+}
+
+function clamp01(value: number): number {
+  return value < 0 ? 0 : value > 1 ? 1 : value;
 }
 
 export function createBoostPadVisuals(
@@ -77,7 +116,7 @@ export function createBoostPadVisuals(
   // footprints, and sizing every pad from `descriptors[0]` would have drawn small
   // pads at large-pad size and lied about where the catch area is.
   const resourcesByKind = new Map<BoostPadKind, KindResources>();
-  const orbs: Orb[] = [];
+  const pads: Pad[] = [];
 
   const resourcesFor = (descriptor: BoostPadDescriptor): KindResources => {
     const existing = resourcesByKind.get(descriptor.kind);
@@ -102,6 +141,25 @@ export function createBoostPadVisuals(
         color: VISUAL.PALETTE.WARM_LIGHT,
         transparent: true,
         opacity: style.rimOpacity,
+        depthWrite: false,
+        fog: false,
+        side: THREE.DoubleSide,
+      }),
+      // A spent pad goes cool and faint rather than warm and bright. Swapping
+      // between two shared materials keeps every pad of a class sharing one pair,
+      // which cloning a material per pad to fade it would have thrown away.
+      spentPlateMaterial: new THREE.MeshBasicMaterial({
+        color: VISUAL.PALETTE.GLASS,
+        transparent: true,
+        opacity: style.plateOpacity * 0.5,
+        depthWrite: false,
+        fog: false,
+        side: THREE.DoubleSide,
+      }),
+      spentRimMaterial: new THREE.MeshBasicMaterial({
+        color: VISUAL.PALETTE.GLASS,
+        transparent: true,
+        opacity: style.rimOpacity * 0.45,
         depthWrite: false,
         fog: false,
         side: THREE.DoubleSide,
@@ -159,42 +217,110 @@ export function createBoostPadVisuals(
     rim.renderOrder = 3;
     pad.add(plate, rim);
 
+    let orb: THREE.Object3D | null = null;
     if (
       resources.coreGeometry !== null
       && resources.haloGeometry !== null
       && resources.coreMaterial !== null
       && resources.haloMaterial !== null
     ) {
-      const orb = new THREE.Group();
-      orb.name = 'boost-pad-orb';
-      orb.position.y = ORB.HOVER_HEIGHT;
+      const group = new THREE.Group();
+      group.name = 'boost-pad-orb';
+      group.position.y = ORB.HOVER_HEIGHT;
 
       const core = new THREE.Mesh(resources.coreGeometry, resources.coreMaterial);
       core.name = 'boost-pad-orb-core';
       const halo = new THREE.Mesh(resources.haloGeometry, resources.haloMaterial);
       halo.name = 'boost-pad-orb-halo';
       halo.renderOrder = 4;
-      orb.add(core, halo);
-      pad.add(orb);
-
-      // A per-pad phase from the index, so the orbs breathe independently while
-      // staying deterministic rather than depending on creation timing.
-      orbs.push({ object: orb, baseY: ORB.HOVER_HEIGHT, phase: index * 0.7 });
+      group.add(core, halo);
+      pad.add(group);
+      orb = group;
     }
 
+    pads.push({
+      index,
+      respawnSeconds: descriptor.respawnSeconds,
+      plate,
+      rim,
+      orb,
+      resources,
+      // A per-pad phase from the index, so the orbs breathe independently while
+      // staying deterministic rather than depending on creation timing.
+      phase: index * 0.7,
+    });
     object.add(pad);
   });
 
+  const remaining = new Map<number, number>();
+  let lastElapsedSeconds = 0;
   let disposed = false;
+
   return {
     object,
     padCount: descriptors.length,
-    update: (elapsedSeconds: number): void => {
-      if (disposed || !Number.isFinite(elapsedSeconds)) return;
-      for (const orb of orbs) {
-        orb.object.position.y = orb.baseY
-          + Math.sin(elapsedSeconds * ORB.BOB_RATE + orb.phase) * ORB.BOB_AMPLITUDE;
-        orb.object.rotation.y = elapsedSeconds * ORB.SPIN_RATE + orb.phase;
+    update: (
+      elapsedSeconds: number,
+      cooldowns?: readonly BoostPadCooldownSnapshot[],
+    ): void => {
+      if (disposed) return;
+      // A hostile clock holds the previous pose rather than producing a NaN
+      // transform, and must not stop the availability update from applying.
+      if (Number.isFinite(elapsedSeconds)) lastElapsedSeconds = elapsedSeconds;
+      const time = lastElapsedSeconds;
+
+      remaining.clear();
+      if (cooldowns !== undefined) {
+        for (const entry of cooldowns) {
+          if (
+            Number.isSafeInteger(entry.index)
+            && Number.isFinite(entry.secondsRemaining)
+            && entry.secondsRemaining > 0
+          ) {
+            remaining.set(entry.index, entry.secondsRemaining);
+          }
+        }
+      }
+
+      for (const pad of pads) {
+        const secondsLeft = remaining.get(pad.index);
+
+        if (secondsLeft === undefined) {
+          pad.plate.material = pad.resources.plateMaterial;
+          pad.rim.material = pad.resources.rimMaterial;
+          pad.plate.scale.set(1, 1, 1);
+          if (pad.orb !== null) {
+            pad.orb.visible = true;
+            pad.orb.scale.set(1, 1, 1);
+            pad.orb.position.y = ORB.HOVER_HEIGHT
+              + Math.sin(time * ORB.BOB_RATE + pad.phase) * ORB.BOB_AMPLITUDE;
+            pad.orb.rotation.y = time * ORB.SPIN_RATE + pad.phase;
+          }
+          continue;
+        }
+
+        // Progress is read from the authoritative remaining time, so a client
+        // that joins part-way through a cooldown is immediately correct instead
+        // of restarting the sweep.
+        const progress = pad.respawnSeconds > 0
+          ? clamp01(1 - secondsLeft / pad.respawnSeconds)
+          : 1;
+
+        pad.plate.material = pad.resources.spentPlateMaterial;
+        pad.rim.material = pad.resources.spentRimMaterial;
+        const fill = RECHARGE.MINIMUM_PLATE_SCALE
+          + (1 - RECHARGE.MINIMUM_PLATE_SCALE) * progress;
+        pad.plate.scale.set(fill, fill, 1);
+
+        if (pad.orb !== null) {
+          // The orb is the payout, so it stays away until the pad is nearly back.
+          const returning = clamp01(
+            (progress - RECHARGE.ORB_RETURN_AT) / (1 - RECHARGE.ORB_RETURN_AT),
+          );
+          pad.orb.visible = returning > 0;
+          pad.orb.scale.set(returning, returning, returning);
+          pad.orb.position.y = ORB.HOVER_HEIGHT;
+        }
       }
     },
     dispose: (): void => {
@@ -202,12 +328,15 @@ export function createBoostPadVisuals(
       disposed = true;
       object.removeFromParent();
       object.clear();
-      orbs.length = 0;
+      pads.length = 0;
+      remaining.clear();
       for (const resources of resourcesByKind.values()) {
         resources.plateGeometry.dispose();
         resources.rimGeometry.dispose();
         resources.plateMaterial.dispose();
         resources.rimMaterial.dispose();
+        resources.spentPlateMaterial.dispose();
+        resources.spentRimMaterial.dispose();
         resources.coreGeometry?.dispose();
         resources.haloGeometry?.dispose();
         resources.coreMaterial?.dispose();

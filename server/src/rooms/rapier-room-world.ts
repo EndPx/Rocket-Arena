@@ -274,6 +274,21 @@ export async function initializeAuthoritativeRapierWorld(
        * the grants it returns, so which car wins a shared pad is decided by
        * roster order rather than by map iteration.
        */
+      /**
+       * Report the spent pads for presentation.
+       *
+       * Read straight off the same state `afterFixedStep` maintains, so what a
+       * client animates is what the room will actually pay out. Only spent pads
+       * are listed, which is usually a short list and often an empty one.
+       */
+      projectBoostPadCooldowns: () => Object.freeze(
+        boostPadStates.flatMap((pad, index) => (
+          pad.available || !(pad.respawnSecondsRemaining > 0)
+            ? []
+            : [Object.freeze({ index, secondsRemaining: pad.respawnSecondsRemaining })]
+        )),
+      ),
+
       afterFixedStep: ({ state, fixedStepSeconds, activePlay, kickoffEpoch }) => {
         if (boostPadDescriptors.length === 0) return;
 

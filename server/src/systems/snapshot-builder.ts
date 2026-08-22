@@ -16,6 +16,7 @@ import {
   getScalarTuningValue,
   validateRoomPolicy,
   type BallSnapshot,
+  type BoostPadCooldownSnapshot,
   type CarSnapshot,
   type CountdownKind,
   type GoalResult,
@@ -112,6 +113,11 @@ export interface SnapshotBuildInput {
   readonly roster: readonly Readonly<RosterEntry>[];
   readonly cars: ReadonlyMap<string, Readonly<SnapshotCarBodyInput>>;
   readonly ball: Readonly<SnapshotBallBodyInput>;
+  /**
+   * Spent boost pads only. Optional because an arena with no pads, and any
+   * adapter that does not own pad state, both correctly report nothing spent.
+   */
+  readonly boostPadCooldowns?: readonly Readonly<BoostPadCooldownSnapshot>[];
 }
 
 export interface SnapshotGoalTransitionInput {
@@ -763,6 +769,9 @@ export class SnapshotBuilder {
           rotation: ball.rotation,
           linearVelocity: ball.linearVelocity,
         } satisfies BallSnapshot),
+        // Passed straight through and validated by the contract, not rebuilt here.
+        // The builder owns sequences, transitions, and recovery, not pad rules.
+        boostPadCooldowns: input.boostPadCooldowns ?? [],
       });
     } catch (cause) {
       if (cause instanceof SnapshotBuildError) throw cause;

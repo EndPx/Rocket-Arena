@@ -14,6 +14,7 @@ import { createArena } from './renderer/arena.js';
 import { createBallFieldMarker } from './renderer/ball-field-marker.js';
 import { createBoostPadVisuals } from './renderer/boost-pads.js';
 import { getRoom } from './networking/client.js';
+import { acceptedSnapshotStore } from './networking/accepted-snapshot-store.js';
 import {
   getBallMesh,
   getCarMeshes,
@@ -120,7 +121,10 @@ function animate(): void {
   const deltaSeconds = Math.min(Math.max(time - previousFrameTime, 0), 0.1);
   previousFrameTime = time;
   arena.update(deltaSeconds, time);
-  boostPads.update(time);
+  // Pad cooldowns are authoritative, so they are read from the acceptance
+  // boundary rather than timed locally. No accepted snapshot means nothing is
+  // known to be spent, which draws every pad available.
+  boostPads.update(time, acceptedSnapshotStore.getSnapshot()?.boostPadCooldowns);
   const room = getRoom();
   sendInput(room);
 

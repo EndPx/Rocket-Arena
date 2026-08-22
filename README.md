@@ -174,13 +174,17 @@ Pad pickup, inventory, and respawn are authoritative and stepped on the server.
 Positions come from one shared table that the room grants from and the renderer
 draws, so a drawn pad is always a pad that pays out.
 
-Two deliberate divergences from Rocket League, both recorded in the tuning
-registry rather than hidden in code. Boost starts at `100` instead of `33`, by
-project decision, and is classified as a hypothesis across the full `0`–`100`
-range rather than pinned. Pad availability is not yet carried by the snapshot
-envelope, so pads are drawn as always available; they mark where boost is, which
-is the half a player cannot work out alone, and no attempt is made to animate a
-guess about whether a given pad is currently spent.
+Pad availability is authoritative and carried by the snapshot, so a spent pad is
+drawn spent and recharges on screen. The snapshot lists only the pads currently on
+cooldown, with the seconds each has left, which keeps the usual cost near zero and
+means a client that joins part-way through a cooldown shows the correct progress
+immediately instead of restarting the sweep. A client is never asked to guess: it
+cannot know that another player took a pad.
+
+One deliberate divergence from Rocket League, recorded in the tuning registry
+rather than hidden in code: boost starts at `100` instead of `33`, by project
+decision, and is classified as a hypothesis across the full `0`–`100` range rather
+than pinned.
 
 ## Architecture
 
@@ -302,8 +306,6 @@ The required staging path includes expanded room capacity, eight-car transport, 
 The following remain optional final-fidelity increments until evidence is approved:
 
 - Proximity-sensitive kickoff selection.
-- Authoritative pad availability in the snapshot envelope, so a spent pad can be
-  drawn as spent.
 - Full Surface Driving across walls, corners, ceiling transitions, and ceiling.
 - Final evidence/approval promotion from Hackathon Staging to Mechanics Fidelity Release.
 

@@ -17,6 +17,7 @@ import {
   type SnapshotEnvelopeV2,
   type Vector3Tuple,
   type VersionedTuningRegistry,
+  type BoostPadCooldownSnapshot,
 } from '@rocket-arena/shared';
 import {
   DeterministicKickoffAssignmentService,
@@ -230,6 +231,15 @@ export interface AuthoritativeRoomWorldBundle<TWorld, TCar, TBall> {
    * two cars on the same pad collects it. It runs after commits so it sees final
    * inventories, and it is optional so existing adapters are unaffected.
    */
+  /**
+   * Report which boost pads are currently spent, for presentation only.
+   *
+   * Optional, and a bundle that owns no pads correctly reports nothing. This is a
+   * read of state the bundle already keeps for `afterFixedStep`; the core does not
+   * mirror it, because a second copy is a second thing that can fall out of step.
+   */
+  readonly projectBoostPadCooldowns?: () => readonly Readonly<BoostPadCooldownSnapshot>[];
+
   readonly afterFixedStep?: (
     context: AuthoritativeFixedStepContext<TWorld, TCar, TBall>,
   ) => void;
@@ -1368,6 +1378,9 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
         winner: projection.winner,
         roster,
         cars,
+        // Pad state is owned by the world bundle, so the core asks for it rather
+        // than tracking a second copy it would have to keep in step.
+        boostPadCooldowns: this.worldBundle?.projectBoostPadCooldowns?.() ?? [],
         ball: Object.freeze({
           position: projection.ball.position,
           rotation: projection.ball.rotation,

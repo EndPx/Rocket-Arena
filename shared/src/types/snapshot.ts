@@ -44,6 +44,32 @@ export interface BallSnapshot {
   readonly linearVelocity: Vector3Tuple;
 }
 
+/**
+ * One boost pad that is currently spent, and how long until it returns.
+ *
+ * Availability is authoritative: a client cannot work out that another player
+ * took a pad, so presentation cannot honestly animate a recharge without being
+ * told. Sending the remaining time rather than a bare spent flag means a client
+ * that joins or reconnects part-way through a cooldown shows the correct progress
+ * immediately instead of restarting the sweep from zero.
+ *
+ * Only spent pads are listed. Most of the time that is a short list or an empty
+ * one, so the usual cost of carrying this is close to nothing, and the worst case
+ * is bounded by the pad count.
+ *
+ * `index` is a position in the shared pad table that both the room and the
+ * renderer resolve, which is the same table the room grants from. A positional
+ * key is safe precisely because there is only one table; the protocol version
+ * guards against a client whose table has a different length.
+ */
+export interface BoostPadCooldownSnapshot {
+  readonly index: number;
+  readonly secondsRemaining: number;
+}
+
+/** Bound on listed cooldowns, comfortably above the seeded pad count of 24. */
+export const MAX_BOOST_PAD_COOLDOWNS = 64 as const;
+
 export const MATCH_TRANSITION_KINDS = Object.freeze([
   'countdown',
   'regulation-goal-reset',
@@ -83,6 +109,8 @@ export interface SnapshotEnvelopeV2 {
   readonly latestTransition: MatchTransitionSnapshot | null;
   readonly cars: readonly CarSnapshot[];
   readonly ball: BallSnapshot;
+  /** Spent boost pads only; an empty list means every pad is available. */
+  readonly boostPadCooldowns: readonly BoostPadCooldownSnapshot[];
 }
 
 export class SnapshotContractError extends TypeError {
@@ -214,6 +242,44 @@ function terminalResultAt(value: unknown, path: string): Readonly<TerminalResult
 
 function sameValue(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function boostPadCooldownsAt(
+  value: unknown,
+  path: string,
+): readonly Readonly<BoostPadCooldownSnapshot>[] {
+  // Absent reads as nothing on cooldown. That is the truthful interpretation of a
+  // snapshot that carries no pad state, and it keeps this field additive rather
+  // than invalidating every envelope produced before it existed.
+  if (value === undefined || value === null) return Object.freeze([]);
+  if (!Array.isArray(value)) fail(path, 'expected an array');
+  if (value.length > MAX_BOOST_PAD_COOLDOWNS) {
+    fail(path, `at most ${MAX_BOOST_PAD_COOLDOWNS} pads may be listed`);
+  }
+
+  const seen = new Set<number>();
+  const entries = value.map((entry, position) => {
+    const entryPath = `${path}[${position}]`;
+    const record = recordAt(entry, entryPath);
+    const index = safeIntegerAt(record.index, `${entryPath}.index`);
+    if (index >= MAX_BOOST_PAD_COOLDOWNS) fail(`${entryPath}.index`, 'pad index is out of range');
+    // Two entries for one pad would leave presentation choosing between them.
+    if (seen.has(index)) fail(`${entryPath}.index`, 'duplicate pad index');
+    seen.add(index);
+    const secondsRemaining = finiteNumberAt(
+      record.secondsRemaining,
+      `${entryPath}.secondsRemaining`,
+      0,
+    );
+    // A pad with nothing remaining is available, so listing it is a contradiction.
+    if (secondsRemaining <= 0) {
+      fail(`${entryPath}.secondsRemaining`, 'a listed pad must still be on cooldown');
+    }
+    return Object.freeze({ index, secondsRemaining });
+  });
+
+  // Ordered by pad, so two envelopes describing the same state serialize alike.
+  return Object.freeze([...entries].sort((left, right) => left.index - right.index));
 }
 
 function transitionAt(value: unknown, path: string): Readonly<MatchTransitionSnapshot> {
@@ -431,6 +497,10 @@ export function parseSnapshotEnvelopeV2(value: unknown): Readonly<SnapshotEnvelo
       : transitionAt(record.latestTransition, 'snapshot.latestTransition'),
     cars,
     ball: ballAt(record.ball, 'snapshot.ball'),
+    boostPadCooldowns: boostPadCooldownsAt(
+      record.boostPadCooldowns,
+      'snapshot.boostPadCooldowns',
+    ),
   });
 
   assertMatchCoherence(snapshot);

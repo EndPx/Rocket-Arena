@@ -457,6 +457,10 @@ function adaptLegacySnapshotV1OrThrow(
     latestTransition: null,
     cars,
     ball,
+    // The legacy wire format carries no pad state at all, so nothing is reported
+    // as spent. Presentation then draws every pad available, which is the honest
+    // reading of a snapshot that cannot say otherwise.
+    boostPadCooldowns: Object.freeze([]),
     wireFormat: 'legacy-v1',
     validationEvidence: LEGACY_VALIDATION_EVIDENCE,
   });

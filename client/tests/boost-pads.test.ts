@@ -276,3 +276,83 @@ test('orb motion is bounded, deterministic, and inert once disposed', () => {
   visuals.update(7);
   assert.equal(first.position.y, atThree);
 });
+
+test('a spent pad reads as spent and recharges from the authoritative remaining time', () => {
+  const visuals = createBoostPadVisuals([
+    descriptor('large.0', [-39, 0.15, 0], 'large'),
+    descriptor('small.0', [0, 0.15, 10.24], 'small'),
+  ]);
+  const padAt = (id: string): THREE.Object3D => visuals.object
+    .getObjectByName(`boost-pad:${id}`)!;
+  const plateOf = (id: string): THREE.Mesh => padAt(id)
+    .getObjectByName('boost-pad-plate') as THREE.Mesh;
+  const orbOf = (id: string): THREE.Object3D => padAt(id)
+    .getObjectByName('boost-pad-orb')!;
+
+  visuals.update(0, []);
+  const availablePlateMaterial = plateOf('large.0').material;
+  assert.equal(plateOf('large.0').scale.x, 1);
+  assert.equal(orbOf('large.0').visible, true);
+
+  // Freshly spent: the plate is dimmed to a different shared material, shrunk to
+  // its floor rather than to nothing, and the orb is gone.
+  visuals.update(1, [{ index: 0, secondsRemaining: 10 }]);
+  const spentPlateMaterial = plateOf('large.0').material;
+  assert.notEqual(spentPlateMaterial, availablePlateMaterial, 'a spent pad must not look available');
+  assert.ok(plateOf('large.0').scale.x > 0, 'a pad that vanishes reads as a pad that is not there');
+  assert.ok(plateOf('large.0').scale.x < 0.2);
+  assert.equal(orbOf('large.0').visible, false, 'the payout must not hover over a spent pad');
+
+  // The untouched pad is unaffected: cooldown is per pad, not global.
+  assert.equal(plateOf('small.0').scale.x, 1);
+
+  // Halfway through, the fill is halfway back. Progress comes from the reported
+  // remaining time, so a client joining mid-cooldown is correct immediately
+  // rather than restarting the sweep from zero.
+  visuals.update(2, [{ index: 0, secondsRemaining: 5 }]);
+  const halfway = plateOf('large.0').scale.x;
+  assert.ok(halfway > 0.5 && halfway < 0.62, `halfway fill was ${halfway}`);
+
+  // Nearly back: the orb starts returning only at the end of the cooldown.
+  visuals.update(3, [{ index: 0, secondsRemaining: 0.5 }]);
+  assert.equal(orbOf('large.0').visible, true);
+  assert.ok(orbOf('large.0').scale.x < 1, 'the orb should still be growing back');
+
+  // Available again: everything returns to full, including the shared material.
+  visuals.update(4, []);
+  assert.equal(plateOf('large.0').scale.x, 1);
+  assert.equal(plateOf('large.0').material, availablePlateMaterial);
+  assert.equal(orbOf('large.0').visible, true);
+  assert.equal(orbOf('large.0').scale.x, 1);
+
+  visuals.dispose();
+});
+
+test('cooldown entries that cannot be honoured are ignored rather than trusted', () => {
+  const visuals = createBoostPadVisuals([
+    descriptor('large.0', [-39, 0.15, 0], 'large'),
+  ]);
+  const plate = visuals.object.getObjectByName('boost-pad:large.0')!
+    .getObjectByName('boost-pad-plate') as THREE.Mesh;
+
+  // An index no pad has, a non-finite remaining time, and a non-positive one all
+  // leave the table alone. A pad drawn spent because of a malformed entry would
+  // be telling a player boost is unavailable when the room will still pay it.
+  for (const hostile of [
+    [{ index: 99, secondsRemaining: 5 }],
+    [{ index: 0, secondsRemaining: Number.NaN }],
+    [{ index: 0, secondsRemaining: Number.POSITIVE_INFINITY }],
+    [{ index: 0, secondsRemaining: 0 }],
+    [{ index: 0, secondsRemaining: -3 }],
+    [{ index: 1.5, secondsRemaining: 5 }],
+  ]) {
+    visuals.update(1, hostile);
+    assert.equal(plate.scale.x, 1, `entry ${JSON.stringify(hostile)} should have been ignored`);
+  }
+
+  // A hostile clock must not stop availability from being applied.
+  visuals.update(Number.NaN, [{ index: 0, secondsRemaining: 5 }]);
+  assert.ok(plate.scale.x < 1, 'availability must apply even when the clock is unusable');
+
+  visuals.dispose();
+});

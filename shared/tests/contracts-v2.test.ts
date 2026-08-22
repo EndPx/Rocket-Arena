@@ -17,6 +17,7 @@ import {
   type TerminalResult,
 } from '../src/types/room.js';
 import {
+  MAX_BOOST_PAD_COOLDOWNS,
   SNAPSHOT_PROTOCOL_VERSION,
   SnapshotContractError,
   assertStableTerminalSnapshots,
@@ -886,4 +887,60 @@ test('schema terminal goal equality is independent of object key insertion order
   assert.doesNotThrow(() => {
     state.applyAuthoritativeProjection(makeEndedProjectionForTransition(terminal, transition));
   });
+});
+
+test('boost pad cooldowns are validated, ordered, and optional', () => {
+  // Any valid envelope will do; the field under test is independent of phase.
+  const base = makeEndedSnapshot() as Record<string, unknown>;
+
+  // Absent reads as nothing spent, so every envelope written before this field
+  // existed still parses instead of being rejected as malformed.
+  const { boostPadCooldowns: _omitted, ...withoutField } = base;
+  assert.deepEqual(parseSnapshotEnvelopeV2(withoutField).boostPadCooldowns, []);
+  assert.deepEqual(
+    parseSnapshotEnvelopeV2({ ...base, boostPadCooldowns: null }).boostPadCooldowns,
+    [],
+  );
+
+  // Listed pads are sorted by index, so two envelopes describing one state
+  // serialize identically and a diff cannot be caused by ordering alone.
+  const unordered = parseSnapshotEnvelopeV2({
+    ...base,
+    boostPadCooldowns: [
+      { index: 7, secondsRemaining: 2 },
+      { index: 1, secondsRemaining: 9.5 },
+      { index: 4, secondsRemaining: 0.25 },
+    ],
+  });
+  assert.deepEqual(unordered.boostPadCooldowns.map(({ index }) => index), [1, 4, 7]);
+  assert.equal(unordered.boostPadCooldowns[0]!.secondsRemaining, 9.5);
+  assert.equal(Object.isFrozen(unordered.boostPadCooldowns), true);
+  assert.equal(Object.isFrozen(unordered.boostPadCooldowns[0]), true);
+
+  for (const invalid of [
+    // A pad with nothing left is available, so listing it is a contradiction.
+    [{ index: 0, secondsRemaining: 0 }],
+    [{ index: 0, secondsRemaining: -1 }],
+    [{ index: 0, secondsRemaining: Number.NaN }],
+    [{ index: 0, secondsRemaining: Number.POSITIVE_INFINITY }],
+    // Two entries for one pad would leave presentation choosing between them.
+    [{ index: 3, secondsRemaining: 1 }, { index: 3, secondsRemaining: 2 }],
+    [{ index: -1, secondsRemaining: 1 }],
+    [{ index: 1.5, secondsRemaining: 1 }],
+    [{ index: MAX_BOOST_PAD_COOLDOWNS, secondsRemaining: 1 }],
+    [{ secondsRemaining: 1 }],
+    [{ index: 0 }],
+    ['not a record'],
+    'not an array',
+    Array.from({ length: MAX_BOOST_PAD_COOLDOWNS + 1 }, (_, index) => ({
+      index,
+      secondsRemaining: 1,
+    })),
+  ]) {
+    assert.throws(
+      () => parseSnapshotEnvelopeV2({ ...base, boostPadCooldowns: invalid }),
+      SnapshotContractError,
+      `expected rejection for ${JSON.stringify(invalid)}`,
+    );
+  }
 });
