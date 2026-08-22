@@ -36,8 +36,26 @@ interface RegistryEntry {
   readonly metadata: RegisteredArenaSurface;
 }
 
-/** Advanced support stays unavailable until its later capability wave. */
-export const ADVANCED_SURFACE_GROUNDING_ENABLED = false as const;
+/**
+ * Full-surface support: the walls, horizontal corners, wall-ceiling
+ * transitions, and ceiling carry a car just like the floor does.
+ *
+ * Enabling this only makes those surfaces eligible. Whether one actually
+ * supports a car is still decided per step by the speed-gated slope policy in
+ * `resolveDriveableSlopeDegrees`, so a slow car cannot stand itself against a
+ * wall; it has to carry speed into it.
+ */
+export const ADVANCED_SURFACE_GROUNDING_ENABLED = true as const;
+
+/**
+ * Whether a capability tier is eligible for driving support at all.
+ *
+ * Registration resolves this once so the ray filters can test the stored
+ * `groundingEnabled` flag alone instead of restating the capability policy.
+ */
+function capabilitySupportsGrounding(capability: SurfaceCapability): boolean {
+  return capability === 'core' || ADVANCED_SURFACE_GROUNDING_ENABLED;
+}
 
 /** Collider handles are scoped to this registry's one owning Rapier world. */
 export class ArenaSurfaceRegistry {
@@ -55,7 +73,7 @@ export class ArenaSurfaceRegistry {
   register(
     collider: RAPIER.Collider,
     descriptor: ArenaSurfaceDescriptor,
-    groundingEnabled: boolean = descriptor.capability === 'core',
+    groundingEnabled: boolean = capabilitySupportsGrounding(descriptor.capability),
   ): RegisteredArenaSurface {
     if (!collider.isValid()) throw new TypeError('Cannot register an invalid arena collider.');
     if (this.#entriesByHandle.has(collider.handle)) {
@@ -66,7 +84,7 @@ export class ArenaSurfaceRegistry {
       surfaceId: descriptor.id,
       kind: descriptor.kind,
       capability: descriptor.capability,
-      groundingEnabled: descriptor.capability === 'core' && groundingEnabled,
+      groundingEnabled: capabilitySupportsGrounding(descriptor.capability) && groundingEnabled,
     });
     this.#entriesByHandle.set(collider.handle, { metadata });
     return metadata;
@@ -410,8 +428,7 @@ export function probeRideHeight(
         return collider.isValid()
           && collider.isEnabled()
           && !collider.isSensor()
-          && surface?.capability === 'core'
-          && surface.groundingEnabled;
+          && surface?.groundingEnabled === true;
       },
     );
     if (hit === null || !Number.isFinite(hit.timeOfImpact)) continue;
@@ -490,8 +507,7 @@ export function detectGroundSupport(
         return collider.isValid()
           && collider.isEnabled()
           && !collider.isSensor()
-          && surface?.capability === 'core'
-          && surface.groundingEnabled;
+          && surface?.groundingEnabled === true;
       },
     );
     if (hit === null || !Number.isFinite(hit.timeOfImpact)) continue;
@@ -518,6 +534,11 @@ export function detectGroundSupport(
   // Use one tightly bounded world-down center probe whose length is the rounded
   // body's projected support extent plus 5 cm. This recovers near-contact floor
   // and ramp support without reaching genuinely airborne cars or vertical walls.
+  //
+  // This probe stays Core-only on purpose, unlike the support rays above. It
+  // exists to stand a beached car back up on ground below it, so letting it
+  // latch onto a wall or the ceiling would self-right cars against surfaces
+  // they are merely flying past.
   if (acceptedHits.length === 0) {
     const halfWidth = resolveScalar(
       tuning,

@@ -97,7 +97,7 @@ const REJECTION_CATEGORIES = Object.freeze([
   'reject-sensor',
   'reject-disabled-collider',
   'reject-disabled-core-metadata',
-  'reject-advanced-surface',
+  'reject-disabled-advanced-metadata',
   'reject-untagged-fixed',
   'reject-all-miss',
 ] as const);
@@ -861,12 +861,16 @@ function createRejectionFixture(
       assert.equal(metadata.groundingEnabled, false);
       break;
     }
-    case 'reject-advanced-surface': {
+    case 'reject-disabled-advanced-metadata': {
+      // Advanced surfaces now carry cars, so the only thing that still keeps one
+      // out of grounding is an explicit opt-out at registration. That per-collider
+      // veto has to outrank the capability tier, otherwise nothing could ever be
+      // excluded once its tier is enabled.
       collider = createAlignedSupportPlane(world, generated, transform);
-      const metadata = registry.register(collider, descriptor('field.ceiling'), true);
+      const metadata = registry.register(collider, descriptor('field.ceiling'), false);
       assert.equal(metadata.capability, 'advanced');
       assert.equal(metadata.groundingEnabled, false);
-      assert.equal(ADVANCED_SURFACE_GROUNDING_ENABLED, false);
+      assert.equal(ADVANCED_SURFACE_GROUNDING_ENABLED, true);
       break;
     }
     case 'reject-untagged-fixed': {
@@ -1185,7 +1189,7 @@ test(
     assert.equal(CORE_SURFACES.length, 15, 'the canonical v1 spec must expose all 15 Core surfaces');
     assert.equal(CATEGORY_KEYS.length, 24, 'each cycle must cover 24 semantic categories');
     assert.equal(GENERATED_CASE_COUNT % CATEGORY_KEYS.length, 0);
-    assert.equal(ADVANCED_SURFACE_GROUNDING_ENABLED, false);
+    assert.equal(ADVANCED_SURFACE_GROUNDING_ENABLED, true);
     assertDeterministicNormalFallback();
 
     const originalCases = generateCases({

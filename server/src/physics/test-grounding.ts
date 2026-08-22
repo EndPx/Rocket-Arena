@@ -179,12 +179,25 @@ function runArenaSupportCases(): void {
     ]) {
       assert.ok(entries.some((entry) => entry.surfaceId === id && entry.groundingEnabled), `${id} must be enabled Core metadata`);
     }
-    assert.equal(ADVANCED_SURFACE_GROUNDING_ENABLED, false);
+    assert.equal(ADVANCED_SURFACE_GROUNDING_ENABLED, true);
+    const advancedEntries = entries.filter((entry) => entry.capability === 'advanced');
+    assert.ok(advancedEntries.length > 0, 'the canonical spec must expose Advanced surfaces');
     assert.ok(
-      entries.filter((entry) => entry.capability === 'advanced')
-        .every((entry) => entry.groundingEnabled === false),
-      'all present Advanced surfaces must be capability-disabled',
+      advancedEntries.every((entry) => entry.groundingEnabled === true),
+      'all present Advanced surfaces must be capability-enabled',
     );
+    for (const id of [
+      'field.wall.west',
+      'field.wall.east',
+      'field.wall.blue-end',
+      'field.wall.orange-end',
+      'field.ceiling',
+    ]) {
+      assert.ok(
+        entries.some((entry) => entry.surfaceId === id && entry.groundingEnabled),
+        `${id} must be enabled Advanced metadata`,
+      );
+    }
 
     const floorProbe = createProbe(world, { x: 0, y: CAR_HALF_HEIGHT + 0.02, z: 0 });
     world.updateSceneQueries();
@@ -229,6 +242,22 @@ function runArenaSupportCases(): void {
     assert.equal(ramp.grounded, true, 'rotated car must ground on lower ramp');
     assert.ok(ramp.acceptedHits.some((hit) => hit.surfaceId === 'field.ramp.east'));
     assertFiniteResultGeometry(ramp);
+
+    // Half way up the arena, which is unambiguously the wall rather than the
+    // ramp that curves away from the floor below it. Grounding itself accepts
+    // any slope; whether a car is fast enough to earn this support is decided
+    // by the room's speed-gated slope policy, not here.
+    const wallNormal = { x: -1, y: 0, z: 0 };
+    const wallProbe = createProbe(world, {
+      x: arenaHalfWidth + wallNormal.x * (CAR_HALF_HEIGHT + 0.02),
+      y: ARENA_COLLISION_GEOMETRY.bounds.max[1]! / 2,
+      z: 0,
+    }, rotationAroundZ(Math.PI / 2));
+    world.updateSceneQueries();
+    const wall = detectGroundSupport(world, wallProbe, registry);
+    assert.equal(wall.grounded, true, 'rotated car must ground on the arena wall');
+    assert.ok(wall.acceptedHits.some((hit) => hit.surfaceId === 'field.wall.east'));
+    assertFiniteResultGeometry(wall);
 
     const orangeGoal = ARENA_COLLISION_GEOMETRY.goals.find(({ id }) => id === 'orange-goal')!;
     const goalCenterZ = (orangeGoal.goalLineZ + orangeGoal.backWallZ) / 2;
@@ -581,9 +610,11 @@ function runFilteringCases(): void {
     collider.setEnabled(false);
     registry.register(collider, descriptor('field.floor'));
   });
+  // The capability tier is enabled, so this covers the remaining exclusion:
+  // an explicit per-collider opt-out at registration still wins.
   assertRejectedSurface('disabled Advanced surface', (world, registry) => {
     const collider = createFloorCollider(world);
-    const metadata = registry.register(collider, descriptor('field.ceiling'), true);
+    const metadata = registry.register(collider, descriptor('field.ceiling'), false);
     assert.equal(metadata.capability, 'advanced');
     assert.equal(metadata.groundingEnabled, false);
   });

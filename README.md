@@ -319,13 +319,26 @@ No external services, API keys, accounts, database, or runtime asset download ar
 
 ## Staging and Fidelity Boundaries
 
-The required staging path includes expanded room capacity, eight-car transport, deterministic kickoff, scripted controller mechanics, Core surface grounding, metric arena and goals, finalized match flow, six Large boost pads, cameras, HUD/accessibility, and baseline regression coverage.
+The required staging path includes expanded room capacity, eight-car transport, deterministic kickoff, scripted controller mechanics, full surface grounding, metric arena and goals, finalized match flow, six Large boost pads, cameras, HUD/accessibility, and baseline regression coverage.
 
 The following remain optional final-fidelity increments until evidence is approved:
 
 - Proximity-sensitive kickoff selection.
-- Full Surface Driving across walls, corners, ceiling transitions, and ceiling.
 - Final evidence/approval promotion from Hackathon Staging to Mechanics Fidelity Release.
+
+Full Surface Driving has since landed. The walls, horizontal corners, wall-ceiling
+transitions, and ceiling now support a car exactly as the floor does, so you can
+drive up a wall, and jump while you are up there. Support stays earned rather than
+free: the speed-gated slope policy only widens the accepted surface angle while the
+car is above the engage speed and drops it again below the release speed, so a slow
+car cannot stand itself against a wall.
+
+Both halves are measured rather than asserted, by `bench/wall-drive-diagnostic.ts`
+and `bench/wall-jump-diagnostic.ts`. Enabling the tier moved a boosted climb from
+6 supported steps to 97, and held the chassis within half a degree of the wall
+normal instead of letting it tumble to 90 degrees while momentum carried it. The
+jump probe reports support at 6.1 m up the wall and a velocity change of 3.15 m/s
+away from the surface against the 2.92 m/s the tuning registry specifies.
 
 Both boost-pad classes have since landed: the six Large pads and a Small-Boost-Pad
 layout are seeded, authoritative, and drawn. The Small layout carries `18` of
