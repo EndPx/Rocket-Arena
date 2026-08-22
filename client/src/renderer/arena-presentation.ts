@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+﻿import * as THREE from 'three';
 import {
   VISUAL,
   type ResolvedArenaGeometry,
@@ -520,6 +520,94 @@ function createGoalGrid(
   return grid;
 }
 
+/** Frame proportions, chosen against the opening rather than as absolutes. */
+const GOAL_FRAME = Object.freeze({
+  TUBE_RADIUS: 0.3,
+  /** Corner radius of the rounded rectangle the frame traces. */
+  CORNER_RADIUS: 1.5,
+  CORNER_SAMPLES: 10,
+  TUBULAR_SEGMENTS: 180,
+  RADIAL_SEGMENTS: 14,
+});
+
+/**
+ * The goal mouth frame: one continuous rounded tube around the opening.
+ *
+ * This replaced a square crossbar and two square posts meeting at right angles,
+ * which is what made the mouth read as snapping shut rather than curving. Rocket
+ * League frames its goals with a single bent tube whose top corners carry a large
+ * radius, so the uprights flow into the crossbar instead of butting against it,
+ * and that shape is the whole reason the mouth looks like it opens into the goal.
+ *
+ * Presentation only, like everything else in this module: the opening's collision
+ * geometry is untouched, and the frame is drawn just outside the aperture so it
+ * cannot narrow the mouth a ball has to pass through.
+ */
+function createGoalFrame(
+  goal: ResolvedArenaGoalRegion,
+  prefix: string,
+  teamColor: number,
+  resources: ArenaPresentationResources,
+): THREE.Mesh {
+  const halfWidth = goal.opening.width / 2;
+  const centerX = goal.opening.centerX;
+  const bottomY = goal.opening.bottomY;
+  const radius = GOAL_FRAME.TUBE_RADIUS;
+  // The centreline sits one tube radius clear of the aperture on every side, so
+  // the drawn tube touches the opening edge without ever crossing it.
+  const railX = halfWidth + radius;
+  const railTopY = bottomY + goal.opening.height + radius;
+  // Clamped, so a small opening cannot ask for a corner larger than it has room
+  // for and turn the frame inside out.
+  const corner = Math.min(GOAL_FRAME.CORNER_RADIUS, railX * 0.8, (railTopY - bottomY) * 0.8);
+
+  const points: THREE.Vector3[] = [];
+  const at = (x: number, y: number): void => {
+    points.push(new THREE.Vector3(centerX + x, y, goal.goalLineZ));
+  };
+
+  at(-railX, bottomY);
+  at(-railX, railTopY - corner);
+  for (let step = 1; step < GOAL_FRAME.CORNER_SAMPLES; step += 1) {
+    const angle = Math.PI - (step / GOAL_FRAME.CORNER_SAMPLES) * (Math.PI / 2);
+    at(-railX + corner + Math.cos(angle) * corner, railTopY - corner + Math.sin(angle) * corner);
+  }
+  at(-railX + corner, railTopY);
+  at(railX - corner, railTopY);
+  for (let step = 1; step < GOAL_FRAME.CORNER_SAMPLES; step += 1) {
+    const angle = (Math.PI / 2) * (1 - step / GOAL_FRAME.CORNER_SAMPLES);
+    at(railX - corner + Math.cos(angle) * corner, railTopY - corner + Math.sin(angle) * corner);
+  }
+  at(railX, railTopY - corner);
+  at(railX, bottomY);
+
+  const frame = new THREE.Mesh(
+    resources.ownGeometry(new THREE.TubeGeometry(
+      // Centripetal, because a uniform Catmull-Rom overshoots where the straight
+      // rails meet the corner arcs and puts a visible kink in the tube.
+      new THREE.CatmullRomCurve3(points, false, 'centripetal', 0.5),
+      GOAL_FRAME.TUBULAR_SEGMENTS,
+      radius,
+      GOAL_FRAME.RADIAL_SEGMENTS,
+      false,
+    )),
+    resources.ownMaterial(new THREE.MeshStandardMaterial({
+      name: `${prefix}-goal-frame-material`,
+      color: teamColor,
+      emissive: teamColor,
+      // Lit rather than a light source, and kept low: pushed harder, the emissive
+      // term swamps the base colour and the frame turns pale instead of reading as
+      // the team's own.
+      emissiveIntensity: 0.3,
+      roughness: 0.3,
+      metalness: 0.55,
+    })),
+  );
+  frame.name = `${prefix}-goal-frame`;
+  frame.castShadow = true;
+  return frame;
+}
+
 function createGoalPresentation(
   root: THREE.Group,
   goal: ResolvedArenaGoalRegion,
@@ -560,25 +648,16 @@ function createGoalPresentation(
   const frameDepth = 0.32;
   const fieldFaceZ = goal.goalLineZ - goal.zDirection * (frameDepth / 2 + 0.012);
 
-  addBox(
-    root,
-    unitBox,
-    `${prefix}-goal-dark-crossbar`,
-    new THREE.Vector3(goal.opening.width + frameThickness * 2, frameThickness, frameDepth),
-    new THREE.Vector3(centerX, topY + frameThickness / 2, goal.goalLineZ),
-    darkMetal,
-    true,
-  );
+  // The saturated team colour, not the light one the strips use. The pale variant
+  // plus emissive washed the frame out to cream and lost whose goal it was.
+  root.add(createGoalFrame(
+    goal,
+    prefix,
+    isBlue ? ARENA_PRESENTATION_STYLE.blue : ARENA_PRESENTATION_STYLE.orange,
+    resources,
+  ));
+
   for (const xSign of [-1, 1] as const) {
-    addBox(
-      root,
-      unitBox,
-      `${prefix}-goal-dark-post`,
-      new THREE.Vector3(frameThickness, goal.opening.height, frameDepth),
-      new THREE.Vector3(centerX + xSign * (halfWidth + frameThickness / 2), bottomY + goal.opening.height / 2, goal.goalLineZ),
-      darkMetal,
-      true,
-    );
     addBox(
       root,
       unitBox,

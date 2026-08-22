@@ -1,4 +1,4 @@
-import assert from 'node:assert/strict';
+﻿import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as THREE from 'three';
 import {
@@ -281,4 +281,59 @@ test('updates stay bounded and disposal is idempotent', () => {
     geometries.size,
     'a repeated disposal must not release anything twice',
   );
+});
+
+test('each goal is framed by one continuous rounded tube outside its aperture', () => {
+  withArena((arena) => {
+    for (const goal of RESOLVED_ARENA_GEOMETRY.goals) {
+      const prefix = goal.defendingTeam === 'blue' ? 'blue' : 'orange';
+      const frame = arena.getObjectByName(`${prefix}-goal-frame`);
+      assert.ok(frame instanceof THREE.Mesh, `${prefix} goal must carry a frame`);
+
+      // One mesh, not three: the uprights and the crossbar are a single swept tube,
+      // which is what lets the corners be round instead of butt joints.
+      frame.geometry.computeBoundingBox();
+      const bounds = frame.geometry.boundingBox!;
+      const halfWidth = goal.opening.width / 2;
+      const topY = goal.opening.bottomY + goal.opening.height;
+
+      // It sits outside the aperture on every side, so it can never narrow the
+      // opening a ball has to pass through.
+      assert.ok(
+        bounds.min.x <= goal.opening.centerX - halfWidth + 1e-6,
+        'the frame must not intrude on the mouth from the west',
+      );
+      assert.ok(
+        bounds.max.x >= goal.opening.centerX + halfWidth - 1e-6,
+        'the frame must not intrude on the mouth from the east',
+      );
+      assert.ok(bounds.max.y >= topY - 1e-6, 'the frame must clear the crossbar height');
+
+      // Yet it stays close: a frame standing metres off the opening would read as
+      // scaffolding rather than as the goal.
+      assert.ok(
+        Math.abs(bounds.min.x - (goal.opening.centerX - halfWidth)) < 1.2,
+        `frame west edge is ${bounds.min.x}, too far from the aperture`,
+      );
+      assert.ok(Math.abs(bounds.max.y - topY) < 1.2, `frame top is ${bounds.max.y}`);
+
+      // It reaches the floor at both feet and lies in the goal-line plane.
+      assert.ok(Math.abs(bounds.min.y - goal.opening.bottomY) < 0.35, 'the frame must reach the floor');
+      const centreZ = (bounds.min.z + bounds.max.z) / 2;
+      assert.ok(
+        Math.abs(centreZ - goal.goalLineZ) < 0.05,
+        `frame sits at z ${centreZ}, expected the goal line at ${goal.goalLineZ}`,
+      );
+      assert.ok(bounds.max.z - bounds.min.z < 1, 'the frame is a flat hoop, not a tunnel');
+
+      // The square posts and crossbar it replaced must be gone, or the mouth would
+      // carry both a rounded frame and the right angles it was meant to remove.
+      assert.equal(arena.getObjectByName(`${prefix}-goal-dark-post`), undefined);
+      assert.equal(arena.getObjectByName(`${prefix}-goal-dark-crossbar`), undefined);
+    }
+
+    // Decoration, so it stays out of the authoritative root and changes no geometry.
+    assert.equal(arena.authoritativeBoundaries.getObjectByName('blue-goal-frame'), undefined);
+    assert.equal(arena.geometry.identity.fingerprint, RESOLVED_ARENA_GEOMETRY.identity.fingerprint);
+  });
 });
