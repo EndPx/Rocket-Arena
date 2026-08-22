@@ -33,7 +33,12 @@ export const GAMEPLAY_CODES = new Set([
 ]);
 
 /**
- * Which held-key axes this client reads backwards.
+ * Which airborne axes this client reads backwards.
+ *
+ * Inversion is air-only. Driving and steering on the ground are never flipped,
+ * because that is not what anyone means by inverting a flight axis, and it needs
+ * no grounded flag to arrange: the server consults pitch, roll, and yaw only while
+ * a car is off the ground, so flipping those three is air-only by construction.
  *
  * This is a local input-mapping preference and nothing more. It is applied to the
  * command this client builds, so the server keeps one sign convention and never
@@ -44,17 +49,17 @@ export const GAMEPLAY_CODES = new Set([
  * direction than the other.
  */
 export interface AxisInversion {
-  /** The W/S axis, which this client also uses for air pitch. */
-  readonly drive: boolean;
-  /** The A/D axis, which this client also uses for air roll. */
-  readonly steer: boolean;
-  /** The Q/E air-yaw axis. */
+  /** Air pitch, taken from the W/S keys. */
+  readonly pitch: boolean;
+  /** Air roll, taken from the A/D keys. */
+  readonly roll: boolean;
+  /** Air yaw, taken from the Q/E keys. */
   readonly airYaw: boolean;
 }
 
 export const NO_AXIS_INVERSION: AxisInversion = Object.freeze({
-  drive: false,
-  steer: false,
+  pitch: false,
+  roll: false,
   airYaw: false,
 });
 
@@ -98,12 +103,12 @@ export class InputController {
    */
   setAxisInversion(inversion: Partial<AxisInversion>): void {
     const next = Object.freeze({
-      drive: inversion.drive === true,
-      steer: inversion.steer === true,
+      pitch: inversion.pitch === true,
+      roll: inversion.roll === true,
       airYaw: inversion.airYaw === true,
     });
-    if (next.drive === this.axisInversion.drive
-      && next.steer === this.axisInversion.steer
+    if (next.pitch === this.axisInversion.pitch
+      && next.roll === this.axisInversion.roll
       && next.airYaw === this.axisInversion.airYaw) {
       return;
     }
@@ -163,17 +168,23 @@ export class InputController {
     // ground axis they are read from; a player who inverts W/S gets an inverted
     // nose in the air too, because it is the same physical axis. The zero guards
     // keep a neutral axis at exactly 0 rather than -0.
-    if (this.axisInversion.drive && throttle !== 0) throttle = -throttle;
-    if (this.axisInversion.steer && steer !== 0) steer = -steer;
+    // Inversion lands on the airborne axes only, which needs no knowledge of
+    // whether the car is grounded: the server reads pitch, roll, and yaw solely
+    // while a car is off the ground, so flipping them is air-only for free.
+    // Throttle and steer are deliberately left alone, because inverted steering on
+    // the ground is not what anyone is asking for when they invert a flight axis.
+    // The zero guards keep a neutral axis at exactly 0 rather than -0.
+    const pitch = this.axisInversion.pitch && throttle !== 0 ? -throttle : throttle;
+    const roll = this.axisInversion.roll && steer !== 0 ? -steer : steer;
     if (this.axisInversion.airYaw && yaw !== 0) yaw = -yaw;
 
     return Object.freeze({
       protocolVersion: INPUT_PROTOCOL_VERSION,
       throttle,
       steer,
-      pitch: throttle,
+      pitch,
       yaw,
-      roll: steer,
+      roll,
       jumpHeld: this.heldCodes.has('Space'),
       jumpSequence: this.jumpSequence,
       boostHeld: this.heldCodes.has('ShiftLeft') || this.heldCodes.has('ShiftRight'),

@@ -21,11 +21,13 @@ export interface ClientSettings {
   readonly showBallMarker: boolean;
   /** Show the on-screen control reference along the bottom edge. */
   readonly showControlHints: boolean;
-  /** Read W/S backwards, which also inverts air pitch. */
-  readonly invertDrive: boolean;
-  /** Read A/D backwards, which also inverts air roll. */
-  readonly invertSteer: boolean;
-  /** Read Q/E air yaw backwards. */
+  /** Cast shadows. Off by default; one key light over a 102 m field is expensive. */
+  readonly shadows: boolean;
+  /** Invert air pitch, taken from W/S. Driving on the ground is unaffected. */
+  readonly invertAirPitch: boolean;
+  /** Invert air roll, taken from A/D. Steering on the ground is unaffected. */
+  readonly invertAirRoll: boolean;
+  /** Invert air yaw, taken from Q/E. */
   readonly invertAirYaw: boolean;
 }
 
@@ -39,8 +41,9 @@ export interface ClientSettings {
 export const PERSISTED_SETTING_KEYS = Object.freeze([
   'showBallMarker',
   'showControlHints',
-  'invertDrive',
-  'invertSteer',
+  'shadows',
+  'invertAirPitch',
+  'invertAirRoll',
   'invertAirYaw',
 ] as const);
 
@@ -55,9 +58,15 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = Object.freeze({
   muted: false,
   showBallMarker: true,
   showControlHints: true,
+  // Off by default, and offered rather than forced. One directional key light over
+  // a 102 m field produced large blocky blobs that read as dirt on the turf and
+  // competed with the ball's floor circle for the same cue, which is why this was
+  // turned off in the first place. It costs a whole render pass, so a player who
+  // wants it should be the one asking for it.
+  shadows: false,
   // Inversion is opt-in: the shipped mapping is the one the control hints show.
-  invertDrive: false,
-  invertSteer: false,
+  invertAirPitch: false,
+  invertAirRoll: false,
   invertAirYaw: false,
 });
 
@@ -123,8 +132,9 @@ export function composeClientSettings(
     muted: audio.muted === true,
     showBallMarker: persisted.showBallMarker === true,
     showControlHints: persisted.showControlHints === true,
-    invertDrive: persisted.invertDrive === true,
-    invertSteer: persisted.invertSteer === true,
+    shadows: persisted.shadows === true,
+    invertAirPitch: persisted.invertAirPitch === true,
+    invertAirRoll: persisted.invertAirRoll === true,
     invertAirYaw: persisted.invertAirYaw === true,
   });
 }

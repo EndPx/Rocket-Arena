@@ -4,6 +4,7 @@ import {
   setAudioVolume,
 } from '../audio/audio-manager.js';
 import { setControlHintsVisible } from '../hud/hud.js';
+import { setShadowsEnabled } from '../renderer/scene.js';
 import { isEditableTarget } from '../input/input-controller.js';
 import { setAxisInversion, setInputSuspended } from '../input/keyboard-handler.js';
 import {
@@ -22,14 +23,18 @@ const MENU_ID = 'pause-menu';
 const MENU_STYLE_ID = 'rocket-arena-pause-menu-styles';
 
 /**
- * The axis-inversion rows, named by the keys they affect rather than by an
- * abstraction, because that is how a player recognises the one they want. Driven
- * from a list so the markup, the click wiring, and the reset cannot disagree.
+ * The remaining boolean rows, driven from a list so the markup, the click wiring,
+ * and the reset cannot disagree about which settings exist.
+ *
+ * The inversion rows name the keys they read alongside what they do, because a
+ * player recognises "W / S" faster than "pitch", but the label leads with "air" to
+ * say plainly that driving on the ground is not affected.
  */
 const INVERSION_ROWS = Object.freeze([
-  { id: 'pause-invert-drive', key: 'invertDrive', label: 'Invert W / S (drive)' },
-  { id: 'pause-invert-steer', key: 'invertSteer', label: 'Invert A / D (steer)' },
-  { id: 'pause-invert-airyaw', key: 'invertAirYaw', label: 'Invert Q / E (air yaw)' },
+  { id: 'pause-shadows', key: 'shadows', label: 'Shadows' },
+  { id: 'pause-invert-pitch', key: 'invertAirPitch', label: 'Invert air pitch (W / S)' },
+  { id: 'pause-invert-roll', key: 'invertAirRoll', label: 'Invert air roll (A / D)' },
+  { id: 'pause-invert-airyaw', key: 'invertAirYaw', label: 'Invert air yaw (Q / E)' },
 ] as const satisfies readonly {
   readonly id: string;
   readonly key: PersistedSettingKey;
@@ -79,9 +84,10 @@ function applySettings(next: ClientSettings): void {
   setAudioVolume(next.soundVolume);
   setControlHintsVisible(next.showControlHints);
   hooks?.applyBallMarkerVisible(next.showBallMarker);
+  setShadowsEnabled(next.shadows);
   setAxisInversion({
-    drive: next.invertDrive,
-    steer: next.invertSteer,
+    pitch: next.invertAirPitch,
+    roll: next.invertAirRoll,
     airYaw: next.invertAirYaw,
   });
 }

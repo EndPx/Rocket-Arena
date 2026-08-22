@@ -44,10 +44,13 @@ function persistedWith(overrides: Partial<PersistedClientSettings> = {}): Persis
 test('defaults are complete, visibility on, inversion off', () => {
   assert.equal(DEFAULT_CLIENT_SETTINGS.showBallMarker, true);
   assert.equal(DEFAULT_CLIENT_SETTINGS.showControlHints, true);
-  // Inversion is opt-in, so the shipped mapping is the one the hints describe.
-  assert.equal(DEFAULT_CLIENT_SETTINGS.invertDrive, false);
-  assert.equal(DEFAULT_CLIENT_SETTINGS.invertSteer, false);
+  // Inversion is opt-in, so the shipped mapping is the one the hints describe, and
+  // it only ever touches the air axes.
+  assert.equal(DEFAULT_CLIENT_SETTINGS.invertAirPitch, false);
+  assert.equal(DEFAULT_CLIENT_SETTINGS.invertAirRoll, false);
   assert.equal(DEFAULT_CLIENT_SETTINGS.invertAirYaw, false);
+  // Shadows are offered but not on: one key light over a 102 m field read as dirt.
+  assert.equal(DEFAULT_CLIENT_SETTINGS.shadows, false);
   assert.equal(DEFAULT_CLIENT_SETTINGS.muted, false);
   assert.equal(DEFAULT_CLIENT_SETTINGS.soundVolume, AUDIO.MASTER.DEFAULT_VOLUME);
   assert.equal(Object.isFrozen(DEFAULT_CLIENT_SETTINGS), true);
@@ -73,8 +76,8 @@ test('any malformed candidate normalizes to the defaults it cannot read', () => 
     'showBallMarker',
     [],
     {},
-    { showBallMarker: 'yes', showControlHints: 0, invertDrive: 1 },
-    { showBallMarker: null, invertSteer: 'true' },
+    { showBallMarker: 'yes', showControlHints: 0, invertAirPitch: 1 },
+    { showBallMarker: null, invertAirRoll: 'true', shadows: 'on' },
   ]) {
     assert.deepEqual(
       normalizePersistedSettings(candidate),
@@ -99,7 +102,8 @@ test('settings round-trip through storage and survive a corrupt entry', () => {
   const saved = persistedWith({
     showBallMarker: false,
     showControlHints: false,
-    invertDrive: true,
+    shadows: true,
+    invertAirPitch: true,
     invertAirYaw: true,
   });
   savePersistedSettings(store, saved);
@@ -132,21 +136,22 @@ test('a storage that throws never breaks the session', () => {
   assert.deepEqual(loadPersistedSettings(hostile), defaultPersistedSettings());
   assert.doesNotThrow(() => savePersistedSettings(hostile, persistedWith({
     showBallMarker: false,
-    invertSteer: true,
+    invertAirRoll: true,
   })));
 });
 
 test('the composed view takes sound from the audio owner and clamps it', () => {
-  const persisted = persistedWith({ showBallMarker: false, invertSteer: true });
+  const persisted = persistedWith({ showBallMarker: false, invertAirRoll: true });
 
   const composed = composeClientSettings(persisted, { volume: 0.5, muted: true });
   assert.equal(composed.muted, true);
   assert.equal(composed.soundVolume, 0.5);
   assert.equal(composed.showBallMarker, false);
   assert.equal(composed.showControlHints, true);
-  assert.equal(composed.invertSteer, true);
-  assert.equal(composed.invertDrive, false);
+  assert.equal(composed.invertAirRoll, true);
+  assert.equal(composed.invertAirPitch, false);
   assert.equal(composed.invertAirYaw, false);
+  assert.equal(composed.shadows, false);
   assert.equal(Object.isFrozen(composed), true);
 
   // Out-of-range volume from a stale store is clamped, not trusted.

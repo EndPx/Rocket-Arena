@@ -25,10 +25,12 @@ export function initScene(container: HTMLElement): {
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = DAYLIGHT_SCENE_STYLE.exposure;
-  // Shadows are off by request. One directional key light over a 102 m field
-  // produced large blocky blobs that read as dirt on the turf and competed with
-  // the ball ground marker for the same cue. Disabling the map here skips the
-  // whole shadow pass, so the per-mesh castShadow flags stay harmless and the
+  // Shadows start off. One directional key light over a 102 m field produced large
+  // blocky blobs that read as dirt on the turf and competed with the ball ground
+  // marker for the same cue, so this is the default rather than the only option:
+  // `setShadowsEnabled` turns the pass on for a player who wants it. Disabling the
+  // map here skips the whole shadow pass, so the per-mesh castShadow flags stay
+  // harmless and the
   // treatment can be restored by flipping this one line back on.
   renderer.shadowMap.enabled = false;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -62,6 +64,35 @@ export function initScene(container: HTMLElement): {
   });
 
   return { renderer, scene, camera };
+}
+
+/**
+ * Turn the shadow pass on or off at runtime.
+ *
+ * Shadows ship off, for the reasons recorded where the map is configured, but they
+ * are now a setting rather than a decision made for the player.
+ *
+ * Flipping `shadowMap.enabled` is not enough on its own: whether a material samples
+ * a shadow map is baked into its compiled program, so every material already in the
+ * scene has to be marked for recompilation or the toggle appears to do nothing until
+ * something else happens to invalidate it. That is why this walks the scene instead
+ * of setting one flag. It runs on a settings change, not per frame.
+ */
+export function setShadowsEnabled(enabled: boolean): void {
+  if (!renderer || renderer.shadowMap.enabled === enabled) return;
+  renderer.shadowMap.enabled = enabled;
+
+  scene?.traverse((object) => {
+    const candidate = (object as Partial<THREE.Mesh>).material;
+    if (!candidate) return;
+    for (const material of Array.isArray(candidate) ? candidate : [candidate]) {
+      material.needsUpdate = true;
+    }
+  });
+}
+
+export function areShadowsEnabled(): boolean {
+  return renderer?.shadowMap.enabled === true;
 }
 
 export function getRenderer(): THREE.WebGLRenderer {

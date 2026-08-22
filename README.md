@@ -126,8 +126,8 @@ The same key list is rendered along the bottom edge in-match, generated from the
 real bindings rather than maintained by hand, and can be hidden in Settings.
 
 Air pitch and air roll are read from the ground axes: while airborne, W/S pitches
-the nose and A/D rolls the car. They are the same physical axes, so an inversion
-applied to one applies to the other.
+the nose and A/D rolls the car. The inversion settings act on the airborne half
+only, so a player can fly nose-down without steering backwards on the ground.
 
 ## Match Menu and Settings
 
@@ -151,13 +151,24 @@ defaults rather than failing.
 | Mute sound | Off | As above |
 | Ball floor marker | On | The floor disc that reports where the ball is |
 | Control hints | On | The on-screen key reference |
-| Invert W / S (drive) | Off | Also inverts air pitch |
-| Invert A / D (steer) | Off | Also inverts air roll |
-| Invert Q / E (air yaw) | Off | |
+| Shadows | Off | Costs a render pass; see below |
+| Invert air pitch (W / S) | Off | Airborne only; driving is unaffected |
+| Invert air roll (A / D) | Off | Airborne only; steering is unaffected |
+| Invert air yaw (Q / E) | Off | |
 | Reset to Defaults | — | Disabled while nothing differs from the shipped defaults |
 
-Inversion is applied to the command this client builds and to nothing else. The
-server keeps one sign convention and is never told that a player flipped an axis.
+Inversion is airborne only. Driving and steering on the ground are never flipped,
+and arranging that needs no grounded flag: the server consults pitch, roll, and yaw
+only while a car is off the ground, so flipping those three is air-only by
+construction. It is also applied to the command this client builds and to nothing
+else, so the server keeps one sign convention and is never told an axis was
+reversed.
+
+Shadows ship off rather than absent. One directional key light over a 102 m field
+produced large blocky blobs that read as dirt on the turf and competed with the
+ball's floor circle for the same cue, so the default is off and the toggle is there
+for a player who wants them. Turning them on recompiles the affected materials,
+because whether a material samples a shadow map is baked into its program.
 
 ## Boost
 

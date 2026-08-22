@@ -1,4 +1,4 @@
-import assert from 'node:assert/strict';
+﻿import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   INPUT_PROTOCOL_VERSION,
@@ -173,11 +173,11 @@ test('128 generated press streams advance each edge exactly once despite duplica
   }
 });
 
-test('axis inversion is off by default and each axis flips independently', () => {
+test('inversion is off by default and each air axis flips independently', () => {
   const controller = new InputController();
   assert.deepEqual(controller.getAxisInversion(), {
-    drive: false,
-    steer: false,
+    pitch: false,
+    roll: false,
     airYaw: false,
   });
 
@@ -185,60 +185,70 @@ test('axis inversion is off by default and each axis flips independently', () =>
   controller.handleKeyDown('KeyA');
   controller.handleKeyDown('KeyE');
   const upright = controller.getPayload();
-  assert.equal(upright.throttle, 1);
-  assert.equal(upright.steer, 1);
+  assert.equal(upright.pitch, 1);
+  assert.equal(upright.roll, 1);
   assert.equal(upright.yaw, 1);
 
-  // Drive only: steer and yaw must be untouched.
-  controller.setAxisInversion({ drive: true });
-  const driveFlipped = controller.getPayload();
-  assert.equal(driveFlipped.throttle, -1);
-  assert.equal(driveFlipped.steer, 1);
-  assert.equal(driveFlipped.yaw, 1);
+  // Pitch only: roll and yaw untouched.
+  controller.setAxisInversion({ pitch: true });
+  const pitchFlipped = controller.getPayload();
+  assert.equal(pitchFlipped.pitch, -1);
+  assert.equal(pitchFlipped.roll, 1);
+  assert.equal(pitchFlipped.yaw, 1);
 
-  // Steer only.
-  controller.setAxisInversion({ steer: true });
-  const steerFlipped = controller.getPayload();
-  assert.equal(steerFlipped.throttle, 1);
-  assert.equal(steerFlipped.steer, -1);
-  assert.equal(steerFlipped.yaw, 1);
+  controller.setAxisInversion({ roll: true });
+  const rollFlipped = controller.getPayload();
+  assert.equal(rollFlipped.pitch, 1);
+  assert.equal(rollFlipped.roll, -1);
+  assert.equal(rollFlipped.yaw, 1);
 
-  // Air yaw only.
   controller.setAxisInversion({ airYaw: true });
   const yawFlipped = controller.getPayload();
-  assert.equal(yawFlipped.throttle, 1);
-  assert.equal(yawFlipped.steer, 1);
+  assert.equal(yawFlipped.pitch, 1);
+  assert.equal(yawFlipped.roll, 1);
   assert.equal(yawFlipped.yaw, -1);
 
-  // All three at once, and a partial argument means the omitted axes are off.
-  controller.setAxisInversion({ drive: true, steer: true, airYaw: true });
+  // All three, and a partial argument means the omitted axes are off.
+  controller.setAxisInversion({ pitch: true, roll: true, airYaw: true });
   const allFlipped = controller.getPayload();
-  assert.equal(allFlipped.throttle, -1);
-  assert.equal(allFlipped.steer, -1);
+  assert.equal(allFlipped.pitch, -1);
+  assert.equal(allFlipped.roll, -1);
   assert.equal(allFlipped.yaw, -1);
 });
 
-test('air pitch and roll follow the same physical axis they are read from', () => {
+test('inverting the air axes never touches driving or steering on the ground', () => {
   const controller = new InputController();
-  controller.handleKeyDown('KeyS');
-  controller.handleKeyDown('KeyD');
+  controller.setAxisInversion({ pitch: true, roll: true, airYaw: true });
 
-  const upright = controller.getPayload();
-  assert.equal(upright.pitch, upright.throttle);
-  assert.equal(upright.roll, upright.steer);
+  // This is the whole point of the setting being air-only, and it needs no
+  // grounded flag to arrange: the server reads pitch, roll, and yaw solely while a
+  // car is airborne, so flipping those three cannot reach a car on the ground.
+  for (const [keys, throttle, steer] of [
+    [['KeyW'], 1, 0],
+    [['KeyS'], -1, 0],
+    [['KeyA'], 0, 1],
+    [['KeyD'], 0, -1],
+  ] as const) {
+    controller.resetHeldKeys();
+    for (const key of keys) controller.handleKeyDown(key);
+    const payload = controller.getPayload();
+    assert.equal(payload.throttle, throttle, `${keys.join('+')} must drive as labelled`);
+    assert.equal(payload.steer, steer, `${keys.join('+')} must steer as labelled`);
+  }
 
-  // Inverting W/S inverts the nose too, because it is one axis, not two.
-  controller.setAxisInversion({ drive: true, steer: true });
-  const flipped = controller.getPayload();
-  assert.equal(flipped.throttle, 1);
-  assert.equal(flipped.steer, 1);
-  assert.equal(flipped.pitch, flipped.throttle);
-  assert.equal(flipped.roll, flipped.steer);
+  // And the air axes really are reversed relative to the ground ones they share
+  // keys with, which is what a player asked for.
+  controller.resetHeldKeys();
+  controller.handleKeyDown('KeyW');
+  controller.handleKeyDown('KeyA');
+  const payload = controller.getPayload();
+  assert.equal(payload.pitch, -payload.throttle);
+  assert.equal(payload.roll, -payload.steer);
 });
 
 test('an inverted but unheld axis reports exactly zero rather than negative zero', () => {
   const controller = new InputController();
-  controller.setAxisInversion({ drive: true, steer: true, airYaw: true });
+  controller.setAxisInversion({ pitch: true, roll: true, airYaw: true });
 
   const payload = controller.getPayload();
   for (const value of [
@@ -260,25 +270,26 @@ test('flipping an axis mid-hold reverses it without dropping the press', () => {
 
   controller.handleKeyDown('KeyW');
   assert.equal(controller.send(sink, 0), true);
-  assert.equal(sink.payloads[0]!.throttle, 1);
+  assert.equal(sink.payloads[0]!.pitch, 1);
 
   // Nothing changed, so the transport dedupe must swallow this one.
   assert.equal(controller.send(sink, 1), false);
 
   // A flip changes the payload without any key event; it must still go out, and
   // the key must still be held rather than flushed.
-  controller.setAxisInversion({ drive: true });
+  controller.setAxisInversion({ pitch: true });
   assert.equal(controller.send(sink, 2), true);
   assert.equal(sink.payloads.length, 2);
-  assert.equal(sink.payloads[1]!.throttle, -1);
+  assert.equal(sink.payloads[1]!.pitch, -1);
+  assert.equal(sink.payloads[1]!.throttle, 1, 'driving is untouched by an air flip');
 
   // Setting the same inversion again is not a change and must not resend.
-  controller.setAxisInversion({ drive: true });
+  controller.setAxisInversion({ pitch: true });
   assert.equal(controller.send(sink, 3), false);
   assert.equal(sink.payloads.length, 2);
 
   // Returning to the shipped mapping is itself a change.
   controller.setAxisInversion({});
   assert.equal(controller.send(sink, 4), true);
-  assert.equal(sink.payloads[2]!.throttle, 1);
+  assert.equal(sink.payloads[2]!.pitch, 1);
 });
