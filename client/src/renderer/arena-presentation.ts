@@ -5,6 +5,7 @@ import {
   type ResolvedArenaGoalRegion,
 } from '@rocket-arena/shared';
 import { ARENA_PRESENTATION_STYLE, DAYLIGHT_SCENE_STYLE } from './arena-style.js';
+import { glslColor, glslFloat, withWorldPattern } from './world-pattern.js';
 
 export interface ArenaPresentationResources {
   readonly geometries: Set<THREE.BufferGeometry>;
@@ -93,7 +94,10 @@ function configureRepeatTexture(texture: THREE.DataTexture, repeatX: number, rep
   texture.needsUpdate = true;
 }
 
-function createTurfMaterial(resources: ArenaPresentationResources): THREE.MeshStandardMaterial {
+function createTurfMaterial(
+  resources: ArenaPresentationResources,
+  anchors: StadiumPresentationAnchors,
+): THREE.MeshStandardMaterial {
   const style = ARENA_PRESENTATION_STYLE.turf;
   const colorData = new Uint8Array(style.size * style.size * 4);
   const roughnessData = new Uint8Array(style.size * style.size * 4);
@@ -149,7 +153,86 @@ function createTurfMaterial(resources: ArenaPresentationResources): THREE.MeshSt
     polygonOffsetFactor: -2,
     polygonOffsetUnits: -2,
   }));
-  return material;
+  // The texture supplies fibre and a fine checker, which is all a repeating map
+  // can honestly do: anything larger tiles visibly across a 102 m pitch. Anything
+  // measured against the arena itself is painted in world space on top.
+  return withWorldPattern(material, turfPattern(anchors));
+}
+
+/**
+ * What the turf carries beyond grass fibre.
+ *
+ * All of it is keyed to the arena rather than to the texture's UV repeat, which is
+ * the whole reason it is here and not in the bitmap: mow bands that run the true
+ * length of the pitch, a team split that falls exactly on the centre line, and an
+ * apron sized to the real goal mouth. It multiplies the existing albedo rather
+ * than replacing it, so the fibre detail survives underneath.
+ */
+function turfPattern(anchors: StadiumPresentationAnchors): string {
+  const halfWidth = anchors.halfWidth;
+  const halfLength = anchors.halfLength;
+  // Bands run lengthwise, so they are periodic across x. The two mow periods are
+  // deliberately different from each other and from the lane spacing, or the
+  // three would beat together into one coarse stripe.
+  const mowWidth = (halfWidth * 2) / 20;
+  const crossWidth = (halfLength * 2) / 26;
+  const laneSpacing = halfWidth / 3;
+  const gridSpacing = VISUAL.STADIUM.FIELD.GRID_SPACING;
+
+  return `
+  {
+    vec3 wp = vArenaWorld;
+    float acrossField = abs(wp.x) / ${glslFloat(halfWidth)};
+    float alongField = abs(wp.z) / ${glslFloat(halfLength)};
+
+    // Mown bands, plus a much subtler cross mow so it reads as a cut lawn rather
+    // than as blinds.
+    float mow = mod(floor(wp.x / ${glslFloat(mowWidth)}), 2.0);
+    float cross = mod(floor(wp.z / ${glslFloat(crossWidth)}), 2.0);
+    // Lifted overall as well as banded: the bare texture reads almost black-green
+    // under this lighting, which left everything painted on it blowing out.
+    vec3 turf = diffuseColor.rgb * 1.22 * mix(0.84, 1.16, mow) * mix(0.97, 1.03, cross);
+
+    // Team lanes down each half. Painted stripes, not light: the edges are tight
+    // and the colour sits between the muted field tint and the saturated team
+    // colour. A wide soft edge and the full UI colour read as a glowing beam
+    // lying on the grass, which is what this looked like first time round.
+    vec3 team = mix(
+      wp.z < 0.0
+        ? ${glslColor(VISUAL.PALETTE.FIELD_BLUE)}
+        : ${glslColor(VISUAL.PALETTE.FIELD_ORANGE)},
+      wp.z < 0.0
+        ? ${glslColor(VISUAL.PALETTE.BLUE)}
+        : ${glslColor(VISUAL.PALETTE.ORANGE)},
+      0.55
+    );
+    float lanePhase = abs(fract(abs(wp.x) / ${glslFloat(laneSpacing)}) - 0.5) * 2.0;
+    float lane = smoothstep(0.86, 0.94, lanePhase);
+    // Ends before the apron and starts clear of the centre line, so the halves
+    // meet cleanly and the paint does not run off the pitch.
+    float laneReach = smoothstep(0.06, 0.16, alongField)
+      * (1.0 - smoothstep(0.72, 0.80, alongField));
+    turf = mix(turf, team, lane * laneReach * 0.62);
+
+    // Fine technical grid, the same spacing the lane markings already use.
+    float gridX = abs(fract(wp.x / ${glslFloat(gridSpacing)}) - 0.5) * 2.0;
+    float gridZ = abs(fract(wp.z / ${glslFloat(gridSpacing)}) - 0.5) * 2.0;
+    float grid = max(smoothstep(0.955, 1.0, gridX), smoothstep(0.955, 1.0, gridZ));
+    turf = mix(turf, ${glslColor(VISUAL.PALETTE.FIELD_LINE)}, grid * 0.09);
+
+    // A dark apron in front of each goal, narrower than the field so the corners
+    // stay grass, which is how the reference arena reads from above.
+    float apron = smoothstep(0.78, 0.92, alongField)
+      * (1.0 - smoothstep(0.34, 0.66, acrossField));
+    turf = mix(turf, ${glslColor(VISUAL.PALETTE.STRUCTURE_DARK)}, apron * 0.72);
+    // One bright edge where the apron meets the grass, so it reads as a surface
+    // change rather than as a shadow.
+    float apronEdge = (1.0 - smoothstep(0.0, 0.012, abs(alongField - 0.79)))
+      * (1.0 - smoothstep(0.34, 0.62, acrossField));
+    turf = mix(turf, ${glslColor(VISUAL.PALETTE.FIELD_LINE)}, apronEdge * 0.34);
+
+    diffuseColor.rgb = turf;
+  }`;
 }
 
 function createCageOverlays(
@@ -600,7 +683,7 @@ export function createDaylightGameplayPresentation(
   unitBox: THREE.BoxGeometry,
   anchors: StadiumPresentationAnchors,
 ): readonly THREE.MeshStandardMaterial[] {
-  const turfMaterial = createTurfMaterial(resources);
+  const turfMaterial = createTurfMaterial(resources, anchors);
   for (const primitive of geometry.primitives) {
     if (primitive.semanticKind !== 'floor' || primitive.region !== 'field') continue;
     const floorGeometry = boundaryGeometries.get(primitive.id);

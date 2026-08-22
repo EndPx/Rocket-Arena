@@ -12,6 +12,7 @@ import {
   createDaylightGameplayPresentation,
   type ArenaPresentationResources,
 } from './arena-presentation.js';
+import { glslColor, glslFloat, withWorldPattern } from './world-pattern.js';
 
 export interface ArenaPadDescriptor {
   readonly id: string;
@@ -163,56 +164,6 @@ function geometryFromInwardSurface(
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
   return geometry;
-}
-
-/** Emit a GLSL float literal, so a baked constant always parses as source. */
-function glslFloat(value: number): string {
-  return (Number.isFinite(value) ? value : 0).toFixed(5);
-}
-
-/**
- * Emit a palette entry as a GLSL constructor.
- *
- * `THREE.Color` already converts a hex literal out of sRGB into the renderer's
- * working space, which is the same space `diffuseColor` is in, so these channels
- * can be written straight into the fragment without a second conversion.
- */
-function glslColor(hex: number): string {
-  const color = new THREE.Color(hex);
-  return `vec3(${glslFloat(color.r)}, ${glslFloat(color.g)}, ${glslFloat(color.b)})`;
-}
-
-/**
- * Inject a world-space pattern into a lit standard material.
- *
- * Replacing the material with a `ShaderMaterial` would have been less code, but
- * it would also have dropped the surface out of the stadium lighting and left it
- * reading as a flat sheet. Patching the standard shader keeps the lighting and
- * only replaces the albedo.
- *
- * Arena dimensions are baked into the source as literals rather than passed as
- * uniforms: they are fixed for the life of the material, and a literal cannot be
- * left stale by a missed update.
- */
-function withWorldPattern<T extends THREE.MeshStandardMaterial>(
-  material: T,
-  patternSource: string,
-): T {
-  material.onBeforeCompile = (shader): void => {
-    shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vArenaWorld;')
-      .replace(
-        '#include <begin_vertex>',
-        '#include <begin_vertex>\n  vArenaWorld = (modelMatrix * vec4(position, 1.0)).xyz;',
-      );
-    shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vArenaWorld;')
-      .replace('#include <color_fragment>', `#include <color_fragment>\n${patternSource}`);
-  };
-  // Two materials with identical source may still be patched differently, so the
-  // key has to change with the source rather than with the material type.
-  material.customProgramCacheKey = (): string => patternSource;
-  return material;
 }
 
 /**
