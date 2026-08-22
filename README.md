@@ -166,7 +166,7 @@ server keeps one sign convention and is never told that a player flipped an axis
 | Starting inventory | `100` |
 | Consumption | `33.3` units per second while held |
 | Large pads | `6`, each grants a full `100`, returns after `10` seconds |
-| Small pads | `28`, each grants `12`, returns after `5` seconds |
+| Small pads | `18`, each grants `12`, returns after `5` seconds |
 | Full tank | A pad is left standing rather than wasted |
 | Partial tank | A grant is clamped to the cap, so `95` boost takes `5` from a small pad |
 
@@ -307,8 +307,11 @@ The following remain optional final-fidelity increments until evidence is approv
 - Full Surface Driving across walls, corners, ceiling transitions, and ceiling.
 - Final evidence/approval promotion from Hackathon Staging to Mechanics Fidelity Release.
 
-Both boost-pad classes have since landed: the six Large pads and the complete
-28-Small-Boost-Pad layout are seeded, authoritative, and drawn.
+Both boost-pad classes have since landed: the six Large pads and a Small-Boost-Pad
+layout are seeded, authoritative, and drawn. The Small layout carries `18` of
+Rocket League's `28` rather than all of them, by project decision, because the full
+set read as clutter at this arena's scale. The eighteen are a mirrored subset of the
+real positions, so both halves stay identical and the spacing stays Rocket League's.
 
 Demolition remains deferred until it receives a separately approved behavior contract.
 

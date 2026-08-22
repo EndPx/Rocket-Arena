@@ -33,8 +33,9 @@ function onPad(descriptor: BoostPadDescriptor): { x: number; y: number; z: numbe
 test('the seeded pad table resolves both registry classes, large first', () => {
   const descriptors = resolveBoostPadDescriptors();
 
-  // Rocket League's full complement: six large, twenty-eight small.
-  assert.equal(descriptors.length, 34);
+  // Six large, eighteen small: Rocket League's six plus a mirrored subset of its
+  // twenty-eight, thinned by project decision rather than by accident.
+  assert.equal(descriptors.length, 24);
   assert.deepEqual(
     descriptors.map(({ id }) => id),
     [
@@ -58,7 +59,7 @@ test('the seeded pad table resolves both registry classes, large first', () => {
   const large = descriptors.filter(({ kind }) => kind === 'large');
   const small = descriptors.filter(({ kind }) => kind === 'small');
   assert.equal(large.length, 6);
-  assert.equal(small.length, 28);
+  assert.equal(small.length, 18);
 
   for (const descriptor of large) {
     assert.equal(descriptor.boostAmount, 100, 'a large pad fills the tank');
@@ -73,7 +74,36 @@ test('the seeded pad table resolves both registry classes, large first', () => {
   }
 
   // Positions must be distinct, or two pads would occupy one sensor.
-  assert.equal(new Set(descriptors.map(({ position }) => position.join(','))).size, 34);
+  assert.equal(new Set(descriptors.map(({ position }) => position.join(','))).size, 24);
+});
+
+test('the pad layout is mirrored in both axes, so neither team gets the better half', () => {
+  const descriptors = resolveBoostPadDescriptors();
+  const key = (x: number, z: number): string => `${x.toFixed(4)},${z.toFixed(4)}`;
+
+  // Checked per class: a large pad mirroring onto a small one would still leave
+  // one half of the arena cheaper to refuel in than the other.
+  for (const kind of ['large', 'small'] as const) {
+    const placed = new Set(
+      descriptors
+        .filter((descriptor) => descriptor.kind === kind)
+        .map(({ position }) => key(position[0], position[2])),
+    );
+    assert.ok(placed.size > 0, `no ${kind} pads resolved`);
+
+    for (const entry of placed) {
+      const [x, z] = entry.split(',').map(Number) as [number, number];
+      // Mirroring in z is the fairness one: it swaps the blue and orange halves.
+      assert.ok(placed.has(key(x, -z)), `${kind} pad at ${entry} has no z mirror`);
+      // Mirroring in x keeps each half symmetric about its own centre line.
+      assert.ok(placed.has(key(-x, z)), `${kind} pad at ${entry} has no x mirror`);
+    }
+
+    // Neither half may simply hold more pads than the other.
+    const blueHalf = [...placed].filter((entry) => Number(entry.split(',')[1]) < 0).length;
+    const orangeHalf = [...placed].filter((entry) => Number(entry.split(',')[1]) > 0).length;
+    assert.equal(blueHalf, orangeHalf, `${kind} pads are unevenly split between halves`);
+  }
 });
 
 test('a malformed registry drops pads instead of inventing positions', () => {
@@ -86,7 +116,7 @@ test('a malformed registry drops pads instead of inventing positions', () => {
   } as unknown as typeof DEFAULT_TUNING_REGISTRY_SNAPSHOT;
 
   const descriptors = resolveBoostPadDescriptors(broken);
-  assert.equal(descriptors.length, 33, 'the non-finite pad is dropped');
+  assert.equal(descriptors.length, 23, 'the non-finite pad is dropped');
   assert.equal(descriptors.some(({ id }) => id === TUNING_IDS.boostPads.largePositions[0]), false);
 
   // An unreadable sensor footprint drops that whole class rather than borrowing

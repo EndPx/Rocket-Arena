@@ -142,45 +142,47 @@ const padPosition = (
 );
 
 /**
- * Rocket League's small pad layout, converted once.
+ * The small pad layout: a mirrored subset of Rocket League's, converted once.
  *
- * The arena is a clean hundredth of Rocket League's: `40.96 / 4096` and
- * `51.2 / 5120` both give `0.01`, so a source coordinate in Unreal units becomes
- * metres by moving the decimal point two places and nothing is being approximated
- * here. Every one of these lands on flat floor, clear of the `2.56 m` ramp band
- * and clear of the chamfered corners, so none of them sit on a slope the way the
- * two side large pads do.
+ * The coordinates are not invented. This arena is a clean hundredth of Rocket
+ * League's: `40.96 / 4096` and `51.2 / 5120` both give `0.01`, so a source
+ * coordinate in Unreal units becomes metres by moving the decimal point two
+ * places, and nothing here is approximated.
+ *
+ * Eighteen of Rocket League's twenty-eight are used, by project decision, because
+ * the full set read as clutter at this arena's scale. Which eighteen is not
+ * arbitrary. Rocket League's small pads fall into mirrored groups that share a `z`
+ * band, and several of those bands sit almost on top of each other: `41.84` beside
+ * `42.4`, and `23` beside `24.84`. Dropping one group from each near-duplicate pair
+ * leaves one group per band, so what remains is spaced further apart rather than
+ * thinned unevenly. The bands kept are `42.4`, `33.08`, `28.16`, `24.84`, `10.36`,
+ * and the centre line, with `x` running from the centre out to `35.84`.
+ *
+ * Every group is mirrored in both `x` and `z`, so the two halves are identical and
+ * neither team gets the better layout. Every position lands on flat floor, clear of
+ * the `2.56 m` ramp band and clear of the chamfered corners, so unlike the two side
+ * large pads none of them sit on a slope.
  *
  * The `y` matches the large pads: the pad slab sits just above the turf.
  */
 const SMALL_PAD_POSITIONS: readonly (readonly [number, number, number])[] = Object.freeze([
   [0, 0.15, -42.4],
-  [-17.92, 0.15, -41.84],
-  [17.92, 0.15, -41.84],
   [-9.4, 0.15, -33.08],
   [9.4, 0.15, -33.08],
   [0, 0.15, -28.16],
   [-35.84, 0.15, -24.84],
   [35.84, 0.15, -24.84],
-  [-17.88, 0.15, -23],
-  [17.88, 0.15, -23],
   [-20.48, 0.15, -10.36],
-  [0, 0.15, -10.24],
   [20.48, 0.15, -10.36],
   [-10.24, 0.15, 0],
   [10.24, 0.15, 0],
   [-20.48, 0.15, 10.36],
-  [0, 0.15, 10.24],
   [20.48, 0.15, 10.36],
-  [-17.88, 0.15, 23],
-  [17.88, 0.15, 23],
   [-35.84, 0.15, 24.84],
   [35.84, 0.15, 24.84],
   [0, 0.15, 28.16],
   [-9.4, 0.15, 33.08],
   [9.4, 0.15, 33.08],
-  [-17.92, 0.15, 41.84],
-  [17.92, 0.15, 41.84],
   [0, 0.15, 42.4],
 ] as const);
 

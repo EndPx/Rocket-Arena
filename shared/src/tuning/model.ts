@@ -277,9 +277,15 @@ export const TUNING_IDS = deepFreeze({
      * Inventory a small pad grants, and its shorter spent window.
      *
      * Rocket League runs two pad classes: six large pads that fill the tank and
-     * take about ten seconds, and twenty-eight small ones worth twelve units on
-     * roughly a five second cycle. The small ones are what make midfield boost
-     * management a decision rather than a trip to a corner.
+     * take about ten seconds, and small ones worth twelve units on roughly a five
+     * second cycle. The small ones are what make midfield boost management a
+     * decision rather than a trip to a corner.
+     *
+     * Rocket League seeds twenty-eight of them. This arena carries eighteen, by
+     * project decision, because the full set read as clutter at this arena's scale.
+     * The eighteen are a mirrored subset of the real layout rather than a fresh
+     * arrangement, so both halves stay identical and the spacing stays Rocket
+     * League's.
      */
     smallBoostAmount: 'boost-pad.small.boost-amount',
     smallRespawnSeconds: 'boost-pad.small.respawn-seconds',
@@ -302,16 +308,6 @@ export const TUNING_IDS = deepFreeze({
       'boost-pad.small.15.position',
       'boost-pad.small.16.position',
       'boost-pad.small.17.position',
-      'boost-pad.small.18.position',
-      'boost-pad.small.19.position',
-      'boost-pad.small.20.position',
-      'boost-pad.small.21.position',
-      'boost-pad.small.22.position',
-      'boost-pad.small.23.position',
-      'boost-pad.small.24.position',
-      'boost-pad.small.25.position',
-      'boost-pad.small.26.position',
-      'boost-pad.small.27.position',
     ],
     smallSensorHalfExtents: 'boost-pad.small.sensor-half-extents',
   },
