@@ -39,6 +39,15 @@ export interface BallFieldMarker {
 const ARENA_FLOOR_Y = 0;
 
 /**
+ * Depth bias, more negative than anything else painted on the floor.
+ *
+ * The turf uses `-2` and the field markings `-3`, so this has to beat both to be
+ * drawn reliably rather than winning or losing the depth test depending on how far
+ * away the camera happens to be.
+ */
+const MARKER_POLYGON_OFFSET = -6;
+
+/**
  * The flat part of the floor, derived from the authoritative arena numbers.
  *
  * The arena outline is inset by the floor-wall ramp run, because inside that band
@@ -106,10 +115,25 @@ export function createBallFieldMarker(): BallFieldMarker {
 
   // Fog is off because this is a readability aid: the ball is most often chased
   // from the far end of a 102 m field, exactly where fog would wash it out.
+  //
+  // The polygon offset is why the circle stops flickering. Sitting physically
+  // higher than the floor stack is not enough on its own: the turf is drawn at
+  // `y = 0.012` with `polygonOffsetFactor -2` and the field markings at `0.0264`
+  // with `-3`, both of which bias their depth toward the camera, and the `38 mm`
+  // of real clearance this had over them stops resolving in the depth buffer at
+  // the far end of a 102 m arena. The turf then won the depth test and ate the
+  // circle, which is exactly the come-and-go a player sees. Biasing harder than
+  // anything else on the floor makes it win everywhere instead of by luck.
+  //
+  // Depth testing stays on deliberately. Turning it off would fix the floor
+  // fight too, but the circle would then draw over the ball and the cars.
   const shared = {
     transparent: true,
     opacity: 0,
     depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: MARKER_POLYGON_OFFSET,
+    polygonOffsetUnits: MARKER_POLYGON_OFFSET,
     fog: false,
     side: THREE.DoubleSide,
   } as const;

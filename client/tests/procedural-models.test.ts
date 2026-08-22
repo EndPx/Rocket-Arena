@@ -530,3 +530,47 @@ test('the ball field marker retreats onto flat floor over the perimeter ramp', (
     marker.dispose();
   }
 });
+
+test('the ball field marker outbiases the floor stack so it cannot flicker', () => {
+  const marker = createBallFieldMarker();
+  try {
+    marker.update(new THREE.Vector3(0, BALL.RADIUS, 0));
+
+    const meshes = ['ball-field-marker-disc', 'ball-field-marker-rim'].map((name) => {
+      const mesh = marker.object.getObjectByName(name);
+      assert.ok(mesh instanceof THREE.Mesh, `${name} must exist`);
+      return mesh;
+    });
+
+    for (const mesh of meshes) {
+      const material = mesh.material as THREE.MeshBasicMaterial;
+
+      // Sitting higher than the turf is not enough. The turf biases its depth by
+      // -2 and the field markings by -3, and the few centimetres of real clearance
+      // this has over them stop resolving in the depth buffer down the length of a
+      // 102 m arena, which is what made the circle come and go. It has to bias
+      // harder than everything else on the floor.
+      assert.equal(material.polygonOffset, true, `${mesh.name} needs a depth bias`);
+      assert.ok(
+        material.polygonOffsetFactor <= -4,
+        `${mesh.name} bias ${material.polygonOffsetFactor} does not beat the field markings`,
+      );
+      assert.ok(material.polygonOffsetUnits <= -4, `${mesh.name} unit bias is too weak`);
+
+      // Depth testing stays on: without it the circle would draw over the ball and
+      // the cars instead of only over the floor.
+      assert.equal(material.depthTest, true, `${mesh.name} must still be occluded by solids`);
+      assert.equal(material.depthWrite, false, `${mesh.name} must not occlude anything itself`);
+    }
+
+    // And it is still lifted clear of the floor, so the bias is a second defence
+    // rather than the only one.
+    assert.ok(marker.object.position.y >= VISUAL.BALL_MOTION.MARKER_FLOOR_CLEARANCE);
+    assert.ok(
+      marker.object.position.y > VISUAL.STADIUM.FIELD.MARKING_HEIGHT * 2.2,
+      'the marker must sit above the field markings it shares the floor with',
+    );
+  } finally {
+    marker.dispose();
+  }
+});
