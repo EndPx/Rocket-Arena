@@ -54,17 +54,58 @@ const ORB = Object.freeze({
 });
 
 /**
- * How a recharging plate reads.
+ * How a recharging pad reads: a clock wipe.
  *
- * The plate scales back up inside a rim that stays put, so the pad's position is
- * never lost while it is spent and the fill itself carries the progress. It never
- * reaches zero, because a pad that vanishes looks like a pad that is not there.
+ * The spent plate goes dark and a bright wedge sweeps around it, filling from
+ * twelve o'clock until the pad is back. It reads as a timer rather than as damage,
+ * which is the point: a player wants to know how long, not merely that it is gone.
+ *
+ * The plate keeps its full size throughout. An earlier version scaled it down and
+ * grew it back, which lost the pad's footprint exactly when a player was trying to
+ * judge whether it was worth waiting for.
  */
 const RECHARGE = Object.freeze({
-  MINIMUM_PLATE_SCALE: 0.12,
   /** Fraction of the cooldown after which the orb starts returning. */
   ORB_RETURN_AT: 0.82,
+  SWEEP_OPACITY: 0.7,
 });
+
+const SWEEP_VERTEX_SHADER = `
+varying vec2 vSweepUv;
+void main() {
+  vSweepUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`;
+
+/**
+ * Angular wipe over a unit-centred disc.
+ *
+ * `CircleGeometry` puts its centre at uv `0.5, 0.5`, so the fragment's angle about
+ * that point is the wipe coordinate. `atan(x, y)` rather than `atan(y, x)` starts
+ * the sweep at twelve o'clock and runs it clockwise, which is the direction a clock
+ * face trains people to read.
+ */
+const SWEEP_FRAGMENT_SHADER = `
+uniform vec3 uColor;
+uniform float uProgress;
+uniform float uOpacity;
+varying vec2 vSweepUv;
+
+void main() {
+  vec2 centred = vSweepUv - 0.5;
+  if (dot(centred, centred) > 0.25) discard;
+
+  float turn = atan(centred.x, centred.y) / 6.2831853;
+  if (turn < 0.0) turn += 1.0;
+  if (turn > uProgress) discard;
+
+  // The leading edge is brighter, so the wedge reads as sweeping rather than as a
+  // static slice that happens to be a different size each frame.
+  float lead = smoothstep(uProgress - 0.06, uProgress, turn);
+  gl_FragColor = vec4(uColor * (1.0 + lead * 0.9), uOpacity);
+}
+`;
 
 /** Presentation weight per class, so a full refill does not read as twelve units. */
 const KIND_STYLE: Readonly<Record<BoostPadKind, {
@@ -96,6 +137,14 @@ interface Pad {
   readonly respawnSeconds: number;
   readonly plate: THREE.Mesh;
   readonly rim: THREE.Mesh;
+  readonly sweep: THREE.Mesh;
+  /**
+   * Owned per pad, unlike every other material here, because each pad is at its
+   * own point in its own cooldown and a uniform is per material. One trivial
+   * unlit material per pad is a smaller price than sharing a wipe that would
+   * show every pad the same progress.
+   */
+  readonly sweepMaterial: THREE.ShaderMaterial;
   readonly orb: THREE.Object3D | null;
   readonly resources: KindResources;
   readonly phase: number;
@@ -215,7 +264,29 @@ export function createBoostPadVisuals(
     rim.name = 'boost-pad-rim';
     rim.rotation.x = -Math.PI / 2;
     rim.renderOrder = 3;
-    pad.add(plate, rim);
+
+    const sweepMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        uColor: { value: new THREE.Color(VISUAL.PALETTE.WHITE_LIGHT) },
+        uProgress: { value: 0 },
+        uOpacity: { value: RECHARGE.SWEEP_OPACITY },
+      },
+      vertexShader: SWEEP_VERTEX_SHADER,
+      fragmentShader: SWEEP_FRAGMENT_SHADER,
+      transparent: true,
+      depthWrite: false,
+      fog: false,
+      side: THREE.DoubleSide,
+    });
+    // Reuses the plate's geometry, so the wipe is exactly the size of the disc it
+    // is filling and cannot drift out of register with it.
+    const sweep = new THREE.Mesh(resources.plateGeometry, sweepMaterial);
+    sweep.name = 'boost-pad-sweep';
+    sweep.rotation.x = -Math.PI / 2;
+    sweep.renderOrder = 4;
+    sweep.visible = false;
+
+    pad.add(plate, rim, sweep);
 
     let orb: THREE.Object3D | null = null;
     if (
@@ -243,6 +314,8 @@ export function createBoostPadVisuals(
       respawnSeconds: descriptor.respawnSeconds,
       plate,
       rim,
+      sweep,
+      sweepMaterial,
       orb,
       resources,
       // A per-pad phase from the index, so the orbs breathe independently while
@@ -288,7 +361,7 @@ export function createBoostPadVisuals(
         if (secondsLeft === undefined) {
           pad.plate.material = pad.resources.plateMaterial;
           pad.rim.material = pad.resources.rimMaterial;
-          pad.plate.scale.set(1, 1, 1);
+          pad.sweep.visible = false;
           if (pad.orb !== null) {
             pad.orb.visible = true;
             pad.orb.scale.set(1, 1, 1);
@@ -306,11 +379,11 @@ export function createBoostPadVisuals(
           ? clamp01(1 - secondsLeft / pad.respawnSeconds)
           : 1;
 
+        // The plate goes dark at full size and the wipe carries the progress.
         pad.plate.material = pad.resources.spentPlateMaterial;
         pad.rim.material = pad.resources.spentRimMaterial;
-        const fill = RECHARGE.MINIMUM_PLATE_SCALE
-          + (1 - RECHARGE.MINIMUM_PLATE_SCALE) * progress;
-        pad.plate.scale.set(fill, fill, 1);
+        pad.sweep.visible = true;
+        pad.sweepMaterial.uniforms.uProgress!.value = progress;
 
         if (pad.orb !== null) {
           // The orb is the payout, so it stays away until the pad is nearly back.
@@ -328,6 +401,9 @@ export function createBoostPadVisuals(
       disposed = true;
       object.removeFromParent();
       object.clear();
+      // Per-pad materials are owned here, so they are released here. The shared
+      // per-class resources below are released once each.
+      for (const pad of pads) pad.sweepMaterial.dispose();
       pads.length = 0;
       remaining.clear();
       for (const resources of resourcesByKind.values()) {

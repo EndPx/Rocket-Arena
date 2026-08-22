@@ -289,38 +289,49 @@ test('a spent pad reads as spent and recharges from the authoritative remaining 
   const orbOf = (id: string): THREE.Object3D => padAt(id)
     .getObjectByName('boost-pad-orb')!;
 
+  const sweepOf = (id: string): THREE.Mesh => padAt(id)
+    .getObjectByName('boost-pad-sweep') as THREE.Mesh;
+  const progressOf = (id: string): number => (
+    (sweepOf(id).material as THREE.ShaderMaterial).uniforms.uProgress!.value as number
+  );
+
   visuals.update(0, []);
   const availablePlateMaterial = plateOf('large.0').material;
-  assert.equal(plateOf('large.0').scale.x, 1);
+  assert.equal(sweepOf('large.0').visible, false, 'an available pad shows no timer');
   assert.equal(orbOf('large.0').visible, true);
 
-  // Freshly spent: the plate is dimmed to a different shared material, shrunk to
-  // its floor rather than to nothing, and the orb is gone.
+  // Freshly spent: the plate dims to a different shared material, the clock wipe
+  // appears with nothing filled yet, and the orb is gone.
   visuals.update(1, [{ index: 0, secondsRemaining: 10 }]);
   const spentPlateMaterial = plateOf('large.0').material;
   assert.notEqual(spentPlateMaterial, availablePlateMaterial, 'a spent pad must not look available');
-  assert.ok(plateOf('large.0').scale.x > 0, 'a pad that vanishes reads as a pad that is not there');
-  assert.ok(plateOf('large.0').scale.x < 0.2);
+  assert.equal(sweepOf('large.0').visible, true);
+  assert.ok(progressOf('large.0') < 0.02, `fresh sweep was already at ${progressOf('large.0')}`);
   assert.equal(orbOf('large.0').visible, false, 'the payout must not hover over a spent pad');
 
-  // The untouched pad is unaffected: cooldown is per pad, not global.
-  assert.equal(plateOf('small.0').scale.x, 1);
+  // The untouched pad is unaffected: cooldown is per pad, not global, which is the
+  // whole reason each pad owns its own sweep material.
+  assert.equal(sweepOf('small.0').visible, false);
 
-  // Halfway through, the fill is halfway back. Progress comes from the reported
+  // Halfway through, the wipe is halfway round. Progress comes from the reported
   // remaining time, so a client joining mid-cooldown is correct immediately
   // rather than restarting the sweep from zero.
   visuals.update(2, [{ index: 0, secondsRemaining: 5 }]);
-  const halfway = plateOf('large.0').scale.x;
-  assert.ok(halfway > 0.5 && halfway < 0.62, `halfway fill was ${halfway}`);
+  assert.ok(
+    Math.abs(progressOf('large.0') - 0.5) < 0.02,
+    `halfway sweep was ${progressOf('large.0')}`,
+  );
 
-  // Nearly back: the orb starts returning only at the end of the cooldown.
+  // Nearly back: the wipe is almost closed and the orb starts returning only at
+  // the end of the cooldown.
   visuals.update(3, [{ index: 0, secondsRemaining: 0.5 }]);
+  assert.ok(progressOf('large.0') > 0.9);
   assert.equal(orbOf('large.0').visible, true);
   assert.ok(orbOf('large.0').scale.x < 1, 'the orb should still be growing back');
 
-  // Available again: everything returns to full, including the shared material.
+  // Available again: the timer goes away and the warm material comes back.
   visuals.update(4, []);
-  assert.equal(plateOf('large.0').scale.x, 1);
+  assert.equal(sweepOf('large.0').visible, false);
   assert.equal(plateOf('large.0').material, availablePlateMaterial);
   assert.equal(orbOf('large.0').visible, true);
   assert.equal(orbOf('large.0').scale.x, 1);
@@ -332,8 +343,8 @@ test('cooldown entries that cannot be honoured are ignored rather than trusted',
   const visuals = createBoostPadVisuals([
     descriptor('large.0', [-39, 0.15, 0], 'large'),
   ]);
-  const plate = visuals.object.getObjectByName('boost-pad:large.0')!
-    .getObjectByName('boost-pad-plate') as THREE.Mesh;
+  const sweep = visuals.object.getObjectByName('boost-pad:large.0')!
+    .getObjectByName('boost-pad-sweep') as THREE.Mesh;
 
   // An index no pad has, a non-finite remaining time, and a non-positive one all
   // leave the table alone. A pad drawn spent because of a malformed entry would
@@ -347,12 +358,16 @@ test('cooldown entries that cannot be honoured are ignored rather than trusted',
     [{ index: 1.5, secondsRemaining: 5 }],
   ]) {
     visuals.update(1, hostile);
-    assert.equal(plate.scale.x, 1, `entry ${JSON.stringify(hostile)} should have been ignored`);
+    assert.equal(
+      sweep.visible,
+      false,
+      `entry ${JSON.stringify(hostile)} should have been ignored`,
+    );
   }
 
   // A hostile clock must not stop availability from being applied.
   visuals.update(Number.NaN, [{ index: 0, secondsRemaining: 5 }]);
-  assert.ok(plate.scale.x < 1, 'availability must apply even when the clock is unusable');
+  assert.equal(sweep.visible, true, 'availability must apply even when the clock is unusable');
 
   visuals.dispose();
 });

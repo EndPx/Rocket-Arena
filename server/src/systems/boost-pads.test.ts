@@ -286,11 +286,14 @@ test('a spent pad returns after exactly its respawn delay and is collectable tha
   assert.equal(returning.grants[0]!.padId, target.id);
 });
 
-test('a full tank leaves the pad standing, and a partial tank tops up only to the cap', () => {
+test('a full tank still takes the pad, and a partial tank tops up only to the cap', () => {
   const descriptors = resolveBoostPadDescriptors();
   const target = descriptors[2]!;
   const pads = createBoostPadStates(descriptors);
 
+  // Deliberate divergence from Rocket League, which would leave this pad standing:
+  // driving over a pad always takes it, so the pad is spent and the grant is zero
+  // rather than the pad being skipped.
   const full = stepBoostPads(
     descriptors,
     pads,
@@ -298,8 +301,11 @@ test('a full tank leaves the pad standing, and a partial tank tops up only to th
     STEP,
     MAX_BOOST,
   );
-  assert.equal(full.grants.length, 0, 'a full car must not waste a pad');
-  assert.equal(full.pads.find(({ id }) => id === target.id)!.available, true);
+  assert.equal(full.grants.length, 1, 'a full car must still take the pad');
+  assert.equal(full.grants[0]!.boostAmount, 0, 'but the cap means it gains nothing');
+  const spentWhileFull = full.pads.find(({ id }) => id === target.id)!;
+  assert.equal(spentWhileFull.available, false);
+  assert.equal(spentWhileFull.respawnSecondsRemaining, target.respawnSeconds);
 
   const partial = stepBoostPads(
     descriptors,
@@ -355,7 +361,8 @@ test('one car can clear several pads in a step and still respects the cap', () =
   pads = takeFirst.pads;
   assert.equal(takeFirst.grants.length, 1);
 
-  // Already full from the first pad, so the next one is left alone.
+  // Already full from the first pad. The second is still taken, because a pad
+  // always responds to being driven over, but the cap means it pays nothing.
   const takeSecond = stepBoostPads(
     descriptors,
     pads,
@@ -363,8 +370,34 @@ test('one car can clear several pads in a step and still respects the cap', () =
     STEP,
     MAX_BOOST,
   );
-  assert.equal(takeSecond.grants.length, 0);
-  assert.equal(takeSecond.pads.find(({ id }) => id === descriptors[5]!.id)!.available, true);
+  assert.equal(takeSecond.grants.length, 1);
+  assert.equal(takeSecond.grants[0]!.boostAmount, 0, 'the cap is still respected');
+  assert.equal(takeSecond.pads.find(({ id }) => id === descriptors[5]!.id)!.available, false);
+});
+
+test('the cap holds across several pads taken in one step', () => {
+  // The running total matters because the guard that used to skip a full car is
+  // gone: nothing now stops a car standing on two pads, so the clamp is the only
+  // thing keeping inventory at the cap.
+  const descriptors = resolveBoostPadDescriptors();
+  const small = descriptors.filter(({ kind }) => kind === 'small');
+  const shared = { x: 0, y: 0.15, z: 0 };
+  const overlapping = small
+    .filter(({ position }) => position[0] === shared.x && position[2] === shared.z)
+    .length;
+  // The seeded layout keeps positions distinct, so this is exercised directly.
+  assert.equal(overlapping, 0);
+
+  const target = small[0]!;
+  const result = stepBoostPads(
+    descriptors,
+    createBoostPadStates(descriptors),
+    [collector('a', onPad(target), MAX_BOOST - 5)],
+    STEP,
+    MAX_BOOST,
+  );
+  assert.equal(result.grants.length, 1);
+  assert.equal(result.grants[0]!.boostAmount, 5, 'a twelve-unit pad cannot exceed the cap');
 });
 
 test('the sensor box is respected on every axis and hostile input is inert', () => {

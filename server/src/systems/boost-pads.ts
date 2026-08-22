@@ -143,11 +143,15 @@ export function stepBoostPads(
       if (!available) break;
       const already = claimed.get(collector.id) ?? 0;
       const boost = finiteNonNegative(collector.boost, 0) + already;
-      // A full tank leaves the pad standing rather than wasting it.
-      if (boost >= cap - 1e-9) continue;
       if (!withinSensor(descriptor, collector.position)) continue;
 
-      const granted = Math.min(descriptor.boostAmount, cap - boost);
+      // Driving over a pad always takes it, even on a full tank. Rocket League
+      // leaves a pad standing in that case; this is a deliberate project
+      // divergence, requested so a pad always responds to being driven over.
+      //
+      // The inventory cap still holds, so the grant here can legitimately be zero:
+      // the pad is spent and goes on cooldown while the car gains nothing.
+      const granted = Math.max(0, Math.min(descriptor.boostAmount, cap - boost));
       grants.push(Object.freeze({
         collectorId: collector.id,
         padId: descriptor.id,

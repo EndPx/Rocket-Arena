@@ -167,7 +167,7 @@ server keeps one sign convention and is never told that a player flipped an axis
 | Consumption | `33.3` units per second while held |
 | Large pads | `6`, each grants a full `100`, returns after `10` seconds |
 | Small pads | `18`, each grants `12`, returns after `5` seconds |
-| Full tank | A pad is left standing rather than wasted |
+| Full tank | The pad is still taken and goes on cooldown; the grant is `0` |
 | Partial tank | A grant is clamped to the cap, so `95` boost takes `5` from a small pad |
 
 Pad pickup, inventory, and respawn are authoritative and stepped on the server.
@@ -181,10 +181,17 @@ means a client that joins part-way through a cooldown shows the correct progress
 immediately instead of restarting the sweep. A client is never asked to guess: it
 cannot know that another player took a pad.
 
-One deliberate divergence from Rocket League, recorded in the tuning registry
-rather than hidden in code: boost starts at `100` instead of `33`, by project
-decision, and is classified as a hypothesis across the full `0`–`100` range rather
-than pinned.
+Two deliberate divergences from Rocket League, both by project decision and both
+stated rather than hidden. Boost starts at `100` instead of `33`, and is classified
+in the tuning registry as a hypothesis across the full `0`–`100` range rather than
+pinned. And driving over a pad always takes it: Rocket League leaves a pad standing
+when the tank is full, while here the pad is spent and goes on cooldown for a grant
+of zero, so a pad always responds to being driven over.
+
+A recharging pad shows a clock wipe: the plate goes dark and a bright wedge sweeps
+round from twelve o'clock until the pad returns. The progress is read from the
+authoritative remaining time rather than timed locally, so it is a timer a player
+can act on rather than a decoration.
 
 ## Architecture
 
