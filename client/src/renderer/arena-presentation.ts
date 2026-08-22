@@ -177,7 +177,6 @@ function turfPattern(anchors: StadiumPresentationAnchors): string {
   const mowWidth = (halfWidth * 2) / 20;
   const crossWidth = (halfLength * 2) / 26;
   const laneSpacing = halfWidth / 3;
-  const gridSpacing = VISUAL.STADIUM.FIELD.GRID_SPACING;
 
   return `
   {
@@ -213,12 +212,6 @@ function turfPattern(anchors: StadiumPresentationAnchors): string {
     float laneReach = smoothstep(0.06, 0.16, alongField)
       * (1.0 - smoothstep(0.72, 0.80, alongField));
     turf = mix(turf, team, lane * laneReach * 0.62);
-
-    // Fine technical grid, the same spacing the lane markings already use.
-    float gridX = abs(fract(wp.x / ${glslFloat(gridSpacing)}) - 0.5) * 2.0;
-    float gridZ = abs(fract(wp.z / ${glslFloat(gridSpacing)}) - 0.5) * 2.0;
-    float grid = max(smoothstep(0.955, 1.0, gridX), smoothstep(0.955, 1.0, gridZ));
-    turf = mix(turf, ${glslColor(VISUAL.PALETTE.FIELD_LINE)}, grid * 0.09);
 
     // A dark apron in front of each goal, narrower than the field so the corners
     // stay grass, which is how the reference arena reads from above.
