@@ -104,8 +104,15 @@ test('first Active Play frame forces Ball Camera from interpolated car and ball 
   });
 
   const config = controller.configuration.ball;
+  // Ball Camera sits on the far side of the car from the ball in plan view, not
+  // behind the car's own heading. Those coincide only while driving at the ball,
+  // and taking the heading instead put the camera between the ball and the car
+  // whenever the car pointed away, which aimed the view away from the car.
+  const awayFromBall = fixture.car.position.clone().sub(fixture.ball.position);
+  awayFromBall.y = 0;
+  awayFromBall.normalize();
   const expectedOrigin = fixture.car.position.clone()
-    .add(new THREE.Vector3(0, 0, -config.distance));
+    .addScaledVector(awayFromBall, config.distance);
   expectedOrigin.y += config.height;
   assert.equal(controller.mode, 'ball');
   assert.equal(controller.cameraModeTransitionCount, 0);
@@ -113,6 +120,23 @@ test('first Active Play frame forces Ball Camera from interpolated car and ball 
   assertVectorClose(fixture.camera.position, expectedOrigin);
   assertLooksAt(fixture.camera, fixture.ball.position);
   assert.equal(fixture.camera.fov, config.fieldOfViewDegrees);
+
+  // The framing rule itself. In plan view the car falls exactly on the line from
+  // the camera to the ball; the height offset then leaves it a little below that
+  // line, which is what puts the car low in the frame rather than over the ball.
+  const toCar = fixture.car.position.clone().sub(fixture.camera.position);
+  const toBall = fixture.ball.position.clone().sub(fixture.camera.position);
+  const toCarFlat = new THREE.Vector3(toCar.x, 0, toCar.z).normalize();
+  const toBallFlat = new THREE.Vector3(toBall.x, 0, toBall.z).normalize();
+  assert.ok(
+    toCarFlat.dot(toBallFlat) > 1 - 1e-6,
+    'the car must sit on the camera-to-ball line in plan view',
+  );
+  const offAxisDegrees = toCar.angleTo(toBall) * 180 / Math.PI;
+  assert.ok(
+    offAxisDegrees < config.fieldOfViewDegrees / 2,
+    `the car must stay on screen, was ${offAxisDegrees.toFixed(1)} degrees off axis`,
+  );
 });
 
 test('monotonic C-key edges toggle once while held, repeated, or released states do not', () => {

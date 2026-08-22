@@ -22,6 +22,8 @@ import * as THREE from 'three';
 import { CameraController } from '../client/src/renderer/camera-controller.js';
 
 const FRAME_SECONDS = 1 / 60;
+/** Ball camera runs a 65 degree field of view, so this is the on-screen limit. */
+const BALL_CAMERA_HALF_FOV_DEGREES = 65 / 2;
 
 interface Sample {
   readonly frame: number;
@@ -36,6 +38,16 @@ interface Sample {
    * used to produce.
    */
   readonly behindAlignment: number;
+  /**
+   * Angle between the view axis and the direction to the car. Anything past half
+   * the field of view means the car is not on screen at all, and anything past 90
+   * means it is behind the camera.
+   */
+  readonly carAngleFromViewDegrees: number;
+}
+
+function degreesBetween(left: THREE.Vector3, right: THREE.Vector3): number {
+  return Math.acos(THREE.MathUtils.clamp(left.dot(right), -1, 1)) * 180 / Math.PI;
 }
 
 /** Orientation whose roof is `up` and whose nose is `forward`. */
@@ -81,22 +93,29 @@ function measure(
     cameraAzimuthDegrees: Math.atan2(offset.z, offset.x) * 180 / Math.PI,
     cameraPosition: camera.position.clone(),
     behindAlignment,
+    carAngleFromViewDegrees: offset.lengthSq() > 1e-8
+      ? degreesBetween(view, offset.clone().normalize().negate())
+      : 0,
   };
 }
 
 function report(label: string, samples: readonly Sample[]): void {
   console.log(`\n${label}`);
-  console.log('frame  carY   roll   viewPitch  behind  camPos');
+  console.log('frame  carY   roll   viewPitch  behind  carOffAxis  camPos');
   for (const s of samples) {
     if (s.frame % 15 !== 0) continue;
     console.log(
       `${String(s.frame).padStart(5)} ${s.carY.toFixed(2).padStart(6)}`
       + ` ${s.rollDegrees.toFixed(2).padStart(7)} ${s.viewPitchDegrees.toFixed(1).padStart(10)}`
       + ` ${s.behindAlignment.toFixed(3).padStart(7)}`
+      + ` ${s.carAngleFromViewDegrees.toFixed(1).padStart(11)}`
       + `  (${s.cameraPosition.x.toFixed(2)}, ${s.cameraPosition.y.toFixed(2)},`
       + ` ${s.cameraPosition.z.toFixed(2)})`,
     );
   }
+  const offScreen = samples.filter((s) => s.carAngleFromViewDegrees > BALL_CAMERA_HALF_FOV_DEGREES);
+  console.log(`  frames with the car outside the ${(BALL_CAMERA_HALF_FOV_DEGREES * 2).toFixed(0)}`
+    + ` degree field of view: ${offScreen.length} of ${samples.length}`);
   const settled = samples.slice(Math.floor(samples.length / 2));
   const worstBehind = settled.reduce(
     (worst, s) => Math.min(worst, s.behindAlignment),
@@ -140,6 +159,23 @@ function run(): void {
       samples.push(measure(controller, camera, car, ball, frame, travel));
     }
     report('control: driving along the floor toward the ball', samples);
+  }
+
+  // The same flat floor, but driving away from the ball. Ball Camera is supposed
+  // to frame the car with the ball beyond it whichever way the car points.
+  {
+    const controller = new CameraController();
+    controller.setGameplayMode('ball');
+    car.position.set(0, 0.4, -10);
+    car.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+    ball.position.set(0, 1.8, 0);
+    const samples: Sample[] = [];
+    const travel = new THREE.Vector3(0, 0, -0.25);
+    for (let frame = 0; frame < 60; frame += 1) {
+      car.position.z += travel.z;
+      samples.push(measure(controller, camera, car, ball, frame, travel));
+    }
+    report('driving along the floor AWAY from the ball', samples);
   }
 
   // Driving up the east wall in Car Camera: roof faces -X, nose faces +Y. This is

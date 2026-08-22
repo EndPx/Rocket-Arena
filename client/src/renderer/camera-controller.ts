@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import {
+  ARENA_HALF_LENGTH_METERS,
+  ARENA_HALF_WIDTH_METERS,
   DEFAULT_TUNING_REGISTRY_SNAPSHOT,
   TUNING_IDS,
   VISUAL,
@@ -35,6 +37,14 @@ const SURFACE_CHASE_RESPONSE = 5;
  * the camera would be placed under the pitch early in a climb.
  */
 const CAMERA_MINIMUM_WORLD_HEIGHT = 0.4;
+/**
+ * Clearance held between the camera and the arena boundary. The camera's side of
+ * the car can point straight at a wall, and a camera outside the glass looks at
+ * the stands instead of the pitch.
+ */
+const CAMERA_ARENA_MARGIN = 1.5;
+const CAMERA_ARENA_LIMIT_X = ARENA_HALF_WIDTH_METERS - CAMERA_ARENA_MARGIN;
+const CAMERA_ARENA_LIMIT_Z = ARENA_HALF_LENGTH_METERS - CAMERA_ARENA_MARGIN;
 const FLIP_CAMERA_PULLBACK_DISTANCE = 3;
 const FLIP_CAMERA_PULLBACK_RESPONSE = 8;
 const MAX_DELTA_SECONDS = 0.1;
@@ -370,6 +380,7 @@ export class CameraController {
   private surfaceChaseAlpha = 0;
   private readonly clampOffset = new THREE.Vector3();
   private readonly clampLateral = new THREE.Vector3();
+  private readonly ballFramingOffset = new THREE.Vector3();
   private readonly targetPosition = new THREE.Vector3();
   private readonly targetLookAt = new THREE.Vector3();
   private readonly smoothedLookAt = new THREE.Vector3();
@@ -491,10 +502,13 @@ export class CameraController {
       && this.lastCarPosition.distanceToSquared(this.carPosition)
         > VISUAL.CAMERA.TELEPORT_DISTANCE ** 2;
     const rebase = this.historyNeedsRebase || !this.historyInitialized || teleported;
-    this.resolveChaseBasis(deltaSeconds, rebase);
+    // Read before the basis is resolved, because Ball Camera takes which side of
+    // the car it sits on from where the ball is.
+    const framingBall = this.modeValue === 'ball' ? input.ball : null;
+    if (framingBall !== null) copyFinitePosition(this.ballPosition, framingBall.position);
+    this.resolveChaseBasis(deltaSeconds, rebase, framingBall !== null);
 
-    if (this.modeValue === 'ball' && input.ball !== null) {
-      copyFinitePosition(this.ballPosition, input.ball.position);
+    if (framingBall !== null) {
       this.updateBallCamera(camera, deltaSeconds, rebase);
     } else {
       this.updateCarCamera(camera, deltaSeconds, rebase);
@@ -622,9 +636,29 @@ export class CameraController {
    * The basis is damped rather than switched, so crossing the ramp onto the wall
    * swings the camera round instead of cutting to the new framing.
    */
-  private resolveChaseBasis(deltaSeconds: number, rebase: boolean): void {
+  private resolveChaseBasis(
+    deltaSeconds: number,
+    rebase: boolean,
+    ballFraming: boolean,
+  ): void {
     this.chaseBehindTarget.copy(this.forward).negate();
     this.chaseUpTarget.copy(WORLD_UP);
+
+    if (ballFraming) {
+      // Ball Camera exists to show the car against the ball, so the camera belongs
+      // on the far side of the car from the ball rather than behind the car's own
+      // heading. The two coincide while driving at the ball, which is why this only
+      // showed up when driving away from it: the heading put the camera between the
+      // ball and the car, and aiming at the ball then aimed away from the car.
+      //
+      // Only the plan-view direction is taken, so a ball overhead cannot drop the
+      // camera underneath the car and the height offset stays world-up.
+      this.ballFramingOffset.copy(this.carPosition).sub(this.ballPosition);
+      this.ballFramingOffset.y = 0;
+      if (this.ballFramingOffset.lengthSq() > VECTOR_EPSILON_SQUARED) {
+        this.chaseBehindTarget.copy(this.ballFramingOffset).normalize();
+      }
+    }
 
     const travelled = this.temporaryVector.copy(this.carPosition).sub(this.lastCarPosition);
     const travelledLength = travelled.length();
@@ -710,6 +744,35 @@ export class CameraController {
     return THREE.MathUtils.lerp(distance, height, this.surfaceChaseAlpha);
   }
 
+  /**
+   * Largest offset along the chase direction that keeps the camera inside the
+   * arena, never more than what was asked for.
+   *
+   * Shortening the offset is deliberate rather than clamping the position after
+   * the fact. The Ball Camera framing depends on the camera holding its side of
+   * the car, and displacing it sideways to get back inside would put the car
+   * behind the camera again, which is the failure this path exists to remove. A
+   * car pinned against a wall with the ball beyond it therefore gets a close view
+   * of itself rather than a view of nothing.
+   *
+   * A car already outside a bound, which is any car inside a goal, is left alone
+   * on that axis so the goal interior keeps the framing it has always had.
+   */
+  private containedDistance(direction: THREE.Vector3, requested: number): number {
+    if (!Number.isFinite(requested) || requested <= 0) return 0;
+    let limit = requested;
+    const axes: readonly (readonly [number, number, number])[] = [
+      [this.carPosition.x, direction.x, CAMERA_ARENA_LIMIT_X],
+      [this.carPosition.z, direction.z, CAMERA_ARENA_LIMIT_Z],
+    ];
+    for (const [origin, component, bound] of axes) {
+      if (Math.abs(component) <= VECTOR_EPSILON) continue;
+      const available = ((component > 0 ? bound : -bound) - origin) / component;
+      if (Number.isFinite(available) && available > 0) limit = Math.min(limit, available);
+    }
+    return limit;
+  }
+
   private updateBallCamera(
     camera: THREE.PerspectiveCamera,
     deltaSeconds: number,
@@ -720,8 +783,11 @@ export class CameraController {
       .copy(this.carPosition)
       .addScaledVector(
         this.chaseBehind,
-        this.chaseDistance(config.distance, config.height)
-          + FLIP_CAMERA_PULLBACK_DISTANCE * this.flipPullbackAlpha,
+        this.containedDistance(
+          this.chaseBehind,
+          this.chaseDistance(config.distance, config.height)
+            + FLIP_CAMERA_PULLBACK_DISTANCE * this.flipPullbackAlpha,
+        ),
       )
       .addScaledVector(this.chaseUp, config.height);
     this.targetLookAt.copy(this.ballPosition);
@@ -776,8 +842,11 @@ export class CameraController {
       .copy(this.carPosition)
       .addScaledVector(
         this.chaseBehind,
-        this.chaseDistance(config.distance, config.height)
-          + FLIP_CAMERA_PULLBACK_DISTANCE * this.flipPullbackAlpha,
+        this.containedDistance(
+          this.chaseBehind,
+          this.chaseDistance(config.distance, config.height)
+            + FLIP_CAMERA_PULLBACK_DISTANCE * this.flipPullbackAlpha,
+        ),
       )
       .addScaledVector(this.chaseUp, config.height);
     this.targetLookAt
