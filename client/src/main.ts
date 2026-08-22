@@ -120,6 +120,7 @@ function animate(): void {
   const deltaSeconds = Math.min(Math.max(time - previousFrameTime, 0), 0.1);
   previousFrameTime = time;
   arena.update(deltaSeconds, time);
+  boostPads.update(time);
   const room = getRoom();
   sendInput(room);
 

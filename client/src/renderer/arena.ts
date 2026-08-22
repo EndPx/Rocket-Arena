@@ -253,13 +253,10 @@ function createContainmentMaterial(
     float seamPhase = fract(along / ${glslFloat(seamSpacing)});
     float seam = 1.0 - smoothstep(0.0, 0.045, min(seamPhase, 1.0 - seamPhase));
 
-    float rowPhase = fract(h * 3.0);
-    float row = 1.0 - smoothstep(0.0, 0.05, min(rowPhase, 1.0 - rowPhase));
-
     float teamWeight = smoothstep(0.18, 0.95, abs(wp.z) / ${glslFloat(anchors.halfLength)});
-    // Two strengths of the same identity. The deep tint stains the panels without
-    // lifting them off the dark base an arena wall needs; the bright one carries
-    // the stripe, because a dark tint mixed into a dark panel reads as no tint.
+    // Two strengths of the same identity. The deep tint colours the glass just
+    // enough to say whose half you are looking at; the bright one carries the
+    // lines, because a dark tint at low alpha reads as no tint at all.
     vec3 teamDeep = wp.z < 0.0
       ? ${glslColor(VISUAL.PALETTE.FIELD_BLUE)}
       : ${glslColor(VISUAL.PALETTE.FIELD_ORANGE)};
@@ -267,39 +264,55 @@ function createContainmentMaterial(
       ? ${glslColor(VISUAL.PALETTE.BLUE)}
       : ${glslColor(VISUAL.PALETTE.ORANGE)};
 
-    vec3 panel = mix(
-      ${glslColor(VISUAL.PALETTE.STRUCTURE_DARK)},
-      ${glslColor(VISUAL.PALETTE.STRUCTURE_MID)},
-      0.34 + 0.40 * h
+    // The glass itself: barely there, with a little of its half's colour so the
+    // pane is not simply absent. This is most of the wall by area.
+    vec3 tint = mix(
+      ${glslColor(VISUAL.PALETTE.GLASS)},
+      teamDeep,
+      0.30 + 0.42 * teamWeight
     );
-    panel = mix(panel, teamDeep, teamWeight * 0.55);
-    panel = mix(panel, panel * 0.42, seam * 0.85);
-    panel = mix(panel, panel * 0.70, row * 0.40);
+    float alpha = 0.11 + 0.05 * teamWeight;
 
-    // One continuous team stripe at a fixed height around the whole arena. This
-    // is the strongest identity cue on the wall and the easiest thing to read
-    // while sideways on it, so it brightens toward the end it belongs to but is
-    // never absent at midfield.
-    float stripe = 1.0 - smoothstep(0.0, 0.06, abs(h - 0.30));
-    panel = mix(panel, teamBright, stripe * 0.58 * (0.38 + 0.62 * teamWeight));
+    // Frame mullions between the panes. Visible enough to give the wall a scale
+    // to read position against, faint enough not to become a surface.
+    tint = mix(tint, ${glslColor(VISUAL.PALETTE.STRUCTURE_LIGHT)}, seam * 0.70);
+    alpha = mix(alpha, 0.32, seam);
 
-    float kick = 1.0 - smoothstep(0.0, 0.055, h);
-    float cap = smoothstep(0.88, 1.0, h);
-    panel = mix(
-      panel,
-      mix(${glslColor(VISUAL.PALETTE.FIELD_LINE)}, teamBright, teamWeight * 0.55),
-      kick * 0.74
+    // The line where the wall leaves the ramp: where a car starts climbing.
+    float kick = 1.0 - smoothstep(0.0, 0.05, h);
+    tint = mix(
+      tint,
+      mix(${glslColor(VISUAL.PALETTE.FIELD_LINE)}, teamBright, 0.45 + 0.35 * teamWeight),
+      kick * 0.92
     );
-    panel = mix(panel, ${glslColor(VISUAL.PALETTE.STRUCTURE_LIGHT)}, cap * 0.34);
+    alpha = mix(alpha, 0.78, kick);
 
-    diffuseColor.rgb = panel * mix(0.92, 1.14, h);
+    // The one thick band that stays solid. It is the strongest identity cue on
+    // the wall and the easiest thing to read while sideways on it, so it is the
+    // one thing here that is not glass.
+    float stripe = 1.0 - smoothstep(0.0, 0.055, abs(h - 0.30));
+    tint = mix(tint, teamBright * 1.45, stripe * 0.96);
+    alpha = mix(alpha, 0.97, stripe);
+
+    // A thin cap where the pane meets the ceiling curve.
+    float cap = smoothstep(0.93, 1.0, h);
+    tint = mix(tint, ${glslColor(VISUAL.PALETTE.STRUCTURE_LIGHT)}, cap * 0.55);
+    alpha = mix(alpha, 0.42, cap);
+
+    diffuseColor.rgb = tint * mix(0.96, 1.12, h);
+    diffuseColor.a = clamp(alpha, 0.0, 1.0);
   }`;
 
   return resources.ownMaterial(withWorldPattern(
     new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      roughness: 0.42,
-      metalness: 0.22,
+      roughness: 0.18,
+      metalness: 0.06,
+      // Per-fragment alpha is what makes one band solid inside a transparent
+      // pane, so the material has to be a blended one and must not write depth,
+      // or the glass would occlude the field behind it.
+      transparent: true,
+      depthWrite: false,
       side: THREE.FrontSide,
     }),
     pattern,
@@ -429,10 +442,10 @@ function createAuthoritativeBoundaries(
     const geometry = geometryFromInwardSurface(primitive, resources);
     const mesh = new THREE.Mesh(geometry, materials[primitive.materialRole]);
     mesh.name = `arena-boundary:${primitive.id}`;
-    // The ceiling is the only boundary still drawn as glass, so it is the only one
-    // that has to be held back for transparency sorting. The wall is opaque now
-    // and sorts with everything else.
-    const isGlass = primitive.materialRole === 'field-ceiling';
+    // The wall and the ceiling are both blended panes, so both have to be held
+    // back for transparency sorting and neither can take a shadow.
+    const isGlass = primitive.materialRole === 'field-containment'
+      || primitive.materialRole === 'field-ceiling';
     mesh.receiveShadow = !isGlass;
     mesh.renderOrder = isGlass ? 2 : 0;
     mesh.userData = Object.freeze({
