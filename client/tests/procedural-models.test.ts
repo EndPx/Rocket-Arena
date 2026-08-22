@@ -187,17 +187,18 @@ test('rigs carry team shape cues and an opt-in local marker', () => {
     assert.ok(orange.object.getObjectByName('team-crest-orange'));
     assert.equal(orange.object.getObjectByName('team-crest-blue-left'), undefined);
 
-    const marker = blue.object.getObjectByName('local-player-marker');
-    assert.ok(marker instanceof THREE.Mesh);
-    assert.equal(marker.visible, false, 'remote cars must not show the local marker');
+    // No ring floats over the local car. It read as a stray artefact rather than
+    // as information, and it was not carrying any: the camera already follows your
+    // own car. The flag survives because the acceptance boundary sets it.
+    assert.equal(blue.object.getObjectByName('local-player-marker'), undefined);
     assert.equal(blue.isLocal, false);
 
     blue.setLocal(true);
     assert.equal(blue.isLocal, true);
-    assert.equal(marker.visible, true);
+    assert.equal(blue.object.getObjectByName('local-player-marker'), undefined);
 
     blue.setLocal(false);
-    assert.equal(marker.visible, false);
+    assert.equal(blue.isLocal, false);
 
     assert.strictEqual(getCarVisualRig(blue.object), blue);
     assert.equal(getCarVisualRig(new THREE.Group()), null);

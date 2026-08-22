@@ -51,7 +51,15 @@ export interface CarVisualRig {
   readonly motion: CarRigMotionState;
   readonly isLocal: boolean;
   readonly isDisposed: boolean;
-  /** Show the local-player marker; presentation only. */
+  /**
+   * Record whether this rig is the local player's.
+   *
+   * No marker is drawn for it. A ring used to float over the local car and read as
+   * a stray artefact rather than as information, and it was not carrying any:
+   * the camera already follows your own car, which is how Rocket League leaves it.
+   * The flag stays because the acceptance boundary sets it and it is the hook a
+   * subtler cue would use.
+   */
   setLocal(isLocal: boolean): void;
   resetTemporalState(): void;
   /** Detach, free per-car effect materials, and release one shared reference. */
@@ -142,7 +150,6 @@ interface CarGeometrySet {
   blueCrest: THREE.BufferGeometry;
   /** A single wide chevron reads as Orange even without colour. */
   orangeCrest: THREE.BufferGeometry;
-  localMarker: THREE.TorusGeometry;
 }
 
 export type CarTeam = 'blue' | 'orange';
@@ -166,7 +173,6 @@ interface CarSharedMaterials {
   readonly glass: THREE.MeshPhysicalMaterial;
   readonly headlight: THREE.MeshStandardMaterial;
   readonly tailLight: THREE.MeshStandardMaterial;
-  readonly localMarker: THREE.MeshBasicMaterial;
   readonly blue: CarTeamMaterialSet;
   readonly orange: CarTeamMaterialSet;
 }
@@ -251,13 +257,6 @@ function createSharedMaterials(): CarSharedMaterials {
       emissiveIntensity: VISUAL.CAR.LIGHTS.TAILLIGHT_GLOW,
       roughness: 0.28,
     }),
-    localMarker: new THREE.MeshBasicMaterial({
-      color: VISUAL.PALETTE.WHITE_LIGHT,
-      transparent: true,
-      opacity: 0.72,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    }),
     blue: teamMaterialSet('blue'),
     orange: teamMaterialSet('orange'),
   };
@@ -274,7 +273,6 @@ function disposeSharedMaterials(materials: CarSharedMaterials): void {
     materials.glass,
     materials.headlight,
     materials.tailLight,
-    materials.localMarker,
     ...teams.flatMap((team) => [team.body, team.accent]),
   ];
   for (const material of values) material.dispose();
@@ -435,7 +433,6 @@ function createGeometrySet(): CarGeometrySet {
       { z: -length * 0.05, width: width * 0.34, bottom: 0, top: height * 0.028 },
       { z: length * 0.09, width: width * 0.1, bottom: 0, top: height * 0.012 },
     ]),
-    localMarker: new THREE.TorusGeometry(width * 0.3, width * 0.035, 4, 16),
   };
 }
 
@@ -654,17 +651,6 @@ export function createCarVisualRig(
     boostTrails.push(trail);
   }
 
-  const localMarker = addMesh(
-    group,
-    geometry.localMarker,
-    shared.materials.localMarker,
-    'local-player-marker',
-    false,
-  );
-  localMarker.position.y = height * 0.62;
-  localMarker.rotation.x = Math.PI / 2;
-  localMarker.visible = false;
-
   const presentationRoot = new THREE.Group();
   presentationRoot.name = 'car-presentation-root';
   presentationRoot.position.y = CAR_PRESENTATION_Y_OFFSET;
@@ -700,7 +686,6 @@ export function createCarVisualRig(
     setLocal(next: boolean): void {
       if (disposed) return;
       isLocal = next;
-      localMarker.visible = next;
     },
     resetTemporalState(): void {
       motion.wheelSpeed = 0;
