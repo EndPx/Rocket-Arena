@@ -1,4 +1,4 @@
-# Design Document: Rocket Arena Mechanics Fidelity and Expanded Multiplayer
+# Design Document — Rocket Arena
 
 ## Overview
 

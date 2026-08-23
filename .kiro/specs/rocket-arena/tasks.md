@@ -1,4 +1,4 @@
-# Implementation Plan: Rocket Arena Client Presentation Completion
+# Task Plan — Rocket Arena
 
 ## Overview
 
