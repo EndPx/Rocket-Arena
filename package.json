@@ -2,7 +2,7 @@
   "name": "rocket-arena",
   "version": "0.1.0",
   "private": true,
-  "description": "Browser-based 2v2 multiplayer car-ball game (Rocket League-style)",
+  "description": "Authoritative browser multiplayer car-ball game, 3v3 Quick Match and up to 4v4 Custom Rooms (Rocket League-style)",
   "workspaces": [
     "shared",
     "server",
@@ -13,10 +13,13 @@
     "dev:server": "npm run dev -w server",
     "dev:client": "npm run dev -w client",
     "build": "tsc -b shared && npm run build -w server && npm run build -w client",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "test": "tsx --test \"shared/tests/*.test.ts\" \"server/src/**/*.test.ts\" \"client/tests/*.test.ts\"",
+    "test:physics": "tsx server/src/physics/test-ball.ts && tsx server/src/physics/test-car.ts && tsx server/src/physics/test-controller.ts && tsx server/src/physics/test-goal-tunnel.ts && tsx server/src/physics/test-grounding.ts && tsx server/src/physics/test-impact.ts && tsx server/src/physics/test-jump-sequence.ts"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
+    "tsx": "^4.19.2",
     "typescript": "^5.7.3"
   }
 }

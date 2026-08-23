@@ -11,18 +11,21 @@
 </p>
 
 > [!IMPORTANT]
-> The current repository contains a playable 2v2 baseline. The expanded 3v3/4v4 mechanics-fidelity slice described below has completed requirements, design, and implementation planning, but implementation and validation are still in progress. This README separates shipped behavior from the finalized target so the project does not claim unfinished features.
+> Quick Match at 3v3, Custom Rooms up to 4v4, the full regulation and overtime ruleset, eight-car transport, full-surface driving, both boost-pad classes, cameras, HUD, and audio are implemented and playable. What is still outstanding is listed under [Staging and Fidelity Boundaries](#staging-and-fidelity-boundaries), so the project does not claim what it has not finished.
 
 ## Project Status
 
-| Area | Current playable baseline | Finalized implementation target |
-|------|---------------------------|---------------------------------|
-| Quick Match | Up to four players using the existing shared 2v2 limits | Exactly six humans, balanced as 3 Blue vs 3 Orange |
-| Custom Room | Existing room-code and host flow with shared 2v2 limits | Up to eight humans, maximum four per team, host-controlled start |
-| Match flow | Five-minute match with golden-goal overtime when tied | Five-minute regulation, above-zero first-to-6 win-by-2, hard cutoff at `0:00`, then sudden-death OT only when tied |
-| Transport | Authoritative server state and client interpolation | Versioned, validated snapshots carrying as many as eight unique cars |
-| Mechanics | Playable authoritative Rapier driving, ball, arena, scoring, HUD, audio, lobby, an ESC match menu, and all 34 authoritative boost pads | Metric arena and bodies, deterministic kickoff slots, expanded controls, cameras, and evidence-gated tuning |
-| Delivery phase | Playable locally | Requirements/design/task plan finalized; implementation and validation underway |
+| Area | Status |
+|------|--------|
+| Quick Match | Exactly six humans, balanced 3 Blue against 3 Orange, countdown gated on a complete roster |
+| Custom Room | Up to eight humans, at most four per team, room-code discovery and Host-controlled start |
+| Match flow | Five-minute regulation, above-zero first-to-6 win-by-2, atomic hard cutoff at `0:00`, sudden-death overtime only on a tie |
+| Transport | Versioned, validated snapshots carrying as many as eight unique cars |
+| Driving | Authoritative Rapier driving, jumps and flips, and full-surface driving across the walls, corners, ceiling transitions, and ceiling |
+| Boost | 24 authoritative pads, `6` Large granting `100` and `18` Small granting `12`, with authoritative cooldowns |
+| Presentation | Metric arena and goals, deterministic kickoff slots, Ball and Car cameras, accessible HUD, procedural audio, lobby, and an `Esc` match menu |
+| Validation | 373 unit, property, and integration tests, seven Rapier harnesses, and physics benches with recorded measurements |
+| Outstanding | Proximity-sensitive kickoff selection, demolition, and the evidence-gated promotion from Hackathon Staging to Mechanics Fidelity Release |
 
 ## Why Rocket Arena
 
@@ -39,9 +42,9 @@ Two teams drive physics-controlled cars in a closed arena and knock a ball into 
 - **Readable boundaries** — The arena shell is painted from the resolved geometry's own material roles and transition heights, so the paint cannot describe a curve the collider does not have. The containment wall is a tinted glass pane with frame mullions, a marked ramp band, and one solid team stripe running the full perimeter, which keeps the crowd visible while still giving a driver height and position to read. A floor disc under the ball reports where it is even when it is high in the air.
 - **Boost you can see from across the pitch** — The two pad classes are drawn as different objects because they are worth different amounts. A small pad is a plate set into the turf. A large pad adds a floating orb above that plate, so a full refill is visible at a distance and worth driving to.
 - **Evidence-gated tuning** — Confirmed values and unverified Rocket League-style tuning hypotheses are kept distinct; uncertain values remain configurable until deterministic and browser evidence is approved.
-- **Accessible presentation** — The target HUD exposes team, score, timer, boost, room capacity, camera mode, and match transitions without relying on color alone.
+- **Accessible presentation** — The HUD exposes team, score, timer, boost, room capacity, camera mode, and match transitions without relying on color alone.
 
-## Finalized Multiplayer Target
+## Multiplayer Rules
 
 ### Quick Match
 
@@ -60,9 +63,9 @@ Two teams drive physics-controlled cars in a closed arena and knock a ball into 
 - Only the Host can start a capacity-valid roster.
 - Host succession follows stable join order.
 
-Both modes use deterministic four-slot-per-team kickoff placement and the same regulation and overtime rules. Room mode changes capacity and start policy, not the win condition.
+Both modes place cars from the same deterministic kickoff-slot table, which defines four canonical slots per team and mirrors Orange from Blue exactly; Quick Match uses three of them. Room mode changes capacity and start policy, not the win condition.
 
-## Finalized Target Match Rules
+## Match Rules
 
 | Rule | Behavior |
 |------|----------|
@@ -102,7 +105,7 @@ This launches:
 - Colyseus server: `ws://localhost:2567`
 - Vite client: `http://localhost:3000`
 
-Open the client in **2–4 browser tabs** to exercise the current playable baseline. The six-player Quick Match and eight-player Custom Room targets should not be treated as shipped until their implementation tasks and validation gates land.
+One browser tab is enough to get on the pitch: choose **Custom**, create a room, and press **Start Match**, because a Custom Room's Host can start any capacity-valid roster including a roster of one. Open a tab per additional player to fill a room, up to eight. Quick Match deliberately does not start until a complete 3v3 roster is present, so it needs six tabs to see a kickoff.
 
 If PowerShell reports that `concurrently` is not recognized, run `npm install` from the repository root before retrying `npm run dev`.
 
@@ -128,6 +131,25 @@ real bindings rather than maintained by hand, and can be hidden in Settings.
 Air pitch and air roll are read from the ground axes: while airborne, W/S pitches
 the nose and A/D rolls the car. The inversion settings act on the airborne half
 only, so a player can fly nose-down without steering backwards on the ground.
+
+## Cameras
+
+`C` toggles the two cameras. Both hold the horizon level; neither rolls with the car.
+
+**Ball Camera** frames the car against the ball. The camera sits on the far side of the
+car from the ball, so the car is always between the viewer and the ball whichever way it
+happens to be pointing. Using the car's own heading instead looks identical while driving
+at the ball and fails the moment you turn away from it, because the camera then ends up
+between the ball and the car and aims away from your own car.
+
+**Car Camera** looks where the car is going, and follows it onto a wall. The chase offset
+normally lies in the world-horizontal plane, which stops meaning anything once the nose
+points at the sky, so while a car is climbing and measurably travelling the offset follows
+the direction of travel and takes its height from the chassis roof, the axis pointing away
+from whichever surface the car is on. Gating that on measured travel rather than on
+orientation alone is what stops an air roll or a flip from swinging the view.
+
+Both are measured by `bench/ball-cam-diagnostic.ts`.
 
 ## Match Menu and Settings
 
@@ -242,20 +264,21 @@ Boundary rules:
 
 ## Validation Strategy
 
-The finalized implementation plan uses layered evidence:
+Validation is layered, and every layer is runnable:
 
 - Pure unit tests for policies, reducers, validators, geometry, and controller math.
 - Deterministic generated property tests with recorded seeds and at least 100 cases per property.
 - Room and serialization integration tests for six-player Quick Match, eight-player Custom Rooms, and terminal snapshot coherence.
-- Rapier harnesses for body construction, arena containment, goal crossing, grounding, boost pads, finite recovery, and resource cleanup.
+- Rapier harnesses for body construction, arena containment, goal crossing, grounding, impacts, jump sequences, and resource cleanup.
 - Scheduler tests for exact countdown, regulation, same-step cutoff ordering, and suppression of post-cutoff regulation work.
-- Non-watch browser proof for lobby capacity, rendered cars, HUD, cameras, accessibility, audio deduplication, and finalized match-result presentation.
-
-Repository-level checks:
+- Physics benches under `bench/` that measure rather than assert, and print the numbers a claim rests on.
+- Browser observation for lobby capacity, rendered cars, HUD, cameras, accessibility, and match-result presentation.
 
 ```bash
-npm run typecheck
-npm run build
+npm run typecheck     # tsc -b across shared, server, and client
+npm test              # 373 unit, property, and integration tests
+npm run test:physics  # seven Rapier harnesses
+npm run build         # server and client production builds
 ```
 
 Browser observations are presentation evidence only. Reducer, scheduler, integration, and Rapier tests prove authoritative mechanics and timing.
@@ -303,17 +326,21 @@ Rocket-Arena/
 └── package.json        # Workspace scripts
 ```
 
-## Playtesting the Current Baseline
+## Playtesting
 
 1. Clone the repository and run `npm install`.
 2. Start both workspaces with `npm run dev`.
-3. Open `http://localhost:3000` in 2–4 browser tabs.
-4. Join through Quick Match or create and join a Custom Room.
+3. Open `http://localhost:3000`. One tab is enough to play; open a tab per extra player to fill a room.
+4. Choose **Custom**, create a room, and press **Start Match**. Quick Match instead waits for a complete 3v3.
 5. Drive, jump, boost, score, and verify synchronized timer and HUD behavior.
 6. Drive over a boost pad on an empty tank and watch the HUD gauge fill; a large
    pad fills it outright, a small one adds twelve.
 7. Press `Esc`, open Settings, flip an axis inversion, and confirm the car steers
    the other way once you resume.
+8. Build speed along the floor, drive straight into a side wall, and keep boosting:
+   the car climbs it. Press `Space` up there to jump off the wall.
+9. Press `C` while climbing to switch to Car Camera, which follows the climb from
+   below instead of watching it from the side.
 
 No external services, API keys, accounts, database, or runtime asset download are required.
 
