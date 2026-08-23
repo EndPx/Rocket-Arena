@@ -24,7 +24,7 @@
 | Driving | Authoritative Rapier driving, jumps and flips, and full-surface driving across the walls, corners, ceiling transitions, and ceiling |
 | Boost | 24 authoritative pads, `6` Large granting `100` and `18` Small granting `12`, with authoritative cooldowns |
 | Presentation | Metric arena and goals, deterministic kickoff slots, Ball and Car cameras, accessible HUD, procedural audio, lobby, and an `Esc` match menu |
-| Validation | 373 unit, property, and integration tests, seven Rapier harnesses, and physics benches with recorded measurements |
+| Validation | 382 unit, property, and integration tests, seven Rapier harnesses, and physics benches with recorded measurements |
 | Outstanding | Proximity-sensitive kickoff selection, demolition, and the evidence-gated promotion from Hackathon Staging to Mechanics Fidelity Release |
 
 ## Why Rocket Arena
@@ -276,7 +276,7 @@ Validation is layered, and every layer is runnable:
 
 ```bash
 npm run typecheck     # tsc -b across shared, server, and client
-npm test              # 373 unit, property, and integration tests
+npm test              # 382 unit, property, and integration tests
 npm run test:physics  # seven Rapier harnesses
 npm run build         # server and client production builds
 ```

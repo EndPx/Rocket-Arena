@@ -29,6 +29,10 @@ import {
   type AuthoritativeRoomWorldBundle,
 } from './authoritative-room-core.js';
 import { broadcastDueV2Snapshot } from './room-snapshot-transport.js';
+import {
+  devControlsEnabled,
+  sanitizePlayerName,
+} from './client-request-policy.js';
 
 const { Room } = colyseus;
 
@@ -187,15 +191,19 @@ export class ArenaRoom extends Room<GameState> {
     });
 
     // Temporary development transport retained until registry tooling is wired.
-    this.onMessage('dev-tune', (_client, data: { path: string; value: number }) => {
-      try {
-        setOverride(data.path, data.value);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.warn(`[Dev] Failed to override: ${message}`);
-      }
-    });
-    this.onMessage('dev-reset', () => { clearOverrides(); });
+    // Overrides live in module scope, so these stay unregistered in production
+    // rather than letting one client retune every room in the process.
+    if (devControlsEnabled()) {
+      this.onMessage('dev-tune', (_client, data: { path: string; value: number }) => {
+        try {
+          setOverride(data.path, data.value);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn(`[Dev] Failed to override: ${message}`);
+        }
+      });
+      this.onMessage('dev-reset', () => { clearOverrides(); });
+    }
 
     void this.core.initialize()
       .then(() => { this.synchronizeState(); })
@@ -211,9 +219,10 @@ export class ArenaRoom extends Room<GameState> {
 
   async onJoin(client: colyseus.Client, options: unknown): Promise<void> {
     const requested = isRecord(options) ? options : {};
-    const name = typeof requested.name === 'string'
-      ? requested.name
-      : `Player ${this.clients.length}`;
+    const name = sanitizePlayerName(
+      requested.name,
+      `Player ${this.clients.length}`,
+    );
     const result = await this.core.queueMutation({
       kind: 'join',
       sessionId: client.sessionId,
