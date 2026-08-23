@@ -82,11 +82,30 @@ function exposeDebugRoom(nextRoom: GameRoom | null): void {
   (window as DebugWindow).__debugRoom = nextRoom;
 }
 
+/** Local dev port for the standalone Colyseus process. */
+const DEV_SERVER_PORT = 2567;
+
+/**
+ * Path the reverse proxy forwards to the Colyseus process in production.
+ * Matchmaking (`/matchmake/...`) and room sockets both hang off this prefix,
+ * so the proxy can strip it and serve the built client from the site root.
+ */
+const PROXIED_SERVER_PATH = '/game';
+
 function getServerUrl(): string {
   if (typeof window === 'undefined') {
     throw new Error('The browser networking client requires a Window location.');
   }
-  return `ws://${window.location.hostname}:2567`;
+
+  const configured = import.meta.env.VITE_SERVER_URL;
+  if (configured) return configured;
+
+  // A page served over TLS may only open a TLS socket, and the proxy that
+  // terminates TLS is the only thing listening on the public port. Dev keeps
+  // talking to the game server directly on its own port.
+  const { protocol, host, hostname } = window.location;
+  if (protocol === 'https:') return `wss://${host}${PROXIED_SERVER_PATH}`;
+  return `ws://${hostname}:${DEV_SERVER_PORT}`;
 }
 
 export function getClient(): Client {
