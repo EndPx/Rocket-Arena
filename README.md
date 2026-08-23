@@ -7,11 +7,25 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/EndPx/Rocket-Arena"><strong>github.com/EndPx/Rocket-Arena</strong></a>
+  <a href="https://rocket-arena.endpx.cloud/"><strong>Play it now</strong></a>
+  ·
+  <a href="#getting-started">Run it locally</a>
+  ·
+  <a href="#contributing">Contribute</a>
+  ·
+  <a href="https://github.com/EndPx/Rocket-Arena">Source</a>
 </p>
 
-> [!IMPORTANT]
-> Quick Match at 3v3, Custom Rooms up to 4v4, the full regulation and overtime ruleset, eight-car transport, full-surface driving, both boost-pad classes, cameras, HUD, and audio are implemented and playable. What is still outstanding is listed under [Staging and Fidelity Boundaries](#staging-and-fidelity-boundaries), so the project does not claim what it has not finished.
+<p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg" /></a>
+  <img alt="TypeScript strict" src="https://img.shields.io/badge/TypeScript-strict-3178c6.svg" />
+  <img alt="Tests: 382 passing" src="https://img.shields.io/badge/tests-382%20passing-brightgreen.svg" />
+  <img alt="Node 22 or newer" src="https://img.shields.io/badge/node-%E2%89%A522-339933.svg" />
+  <a href="https://rocket-arena.endpx.cloud/"><img alt="Live demo" src="https://img.shields.io/badge/demo-live-orange.svg" /></a>
+</p>
+
+> [!NOTE]
+> **Status.** Quick Match at 3v3, Custom Rooms up to 4v4, the full regulation and overtime ruleset, eight-car transport, full-surface driving, both boost-pad classes, cameras, HUD, and audio are implemented and playable. Anything unfinished is listed under [Roadmap](#roadmap) rather than left to be discovered.
 
 ## Project Status
 
@@ -25,11 +39,13 @@
 | Boost | 24 authoritative pads, `6` Large granting `100` and `18` Small granting `12`, with authoritative cooldowns |
 | Presentation | Metric arena and goals, deterministic kickoff slots, Ball and Car cameras, accessible HUD, procedural audio, lobby, and an `Esc` match menu |
 | Validation | 382 unit, property, and integration tests, seven Rapier harnesses, and physics benches with recorded measurements |
-| Outstanding | Proximity-sensitive kickoff selection, demolition, and the evidence-gated promotion from Hackathon Staging to Mechanics Fidelity Release |
+| Roadmap | Proximity-sensitive kickoff selection and demolition, both tracked under [Roadmap](#roadmap) |
 
 ## Why Rocket Arena
 
-Rocket Arena aims to make an authoritative multiplayer car-ball game easy to inspect and run. A judge or developer can clone the repository, install one workspace, and launch the complete local stack without accounts, API keys, a database, or downloaded gameplay assets.
+Rocket Arena exists to make an authoritative multiplayer car-ball game easy to read, run, and change. Clone the repository, install one workspace, and the complete stack starts locally with no accounts, API keys, database, or downloaded gameplay assets.
+
+If you would rather look before you build, there is a [live instance](https://rocket-arena.endpx.cloud/).
 
 Two teams drive physics-controlled cars in a closed arena and knock a ball into the opposing goal. The server owns every gameplay outcome; clients send controls and render synchronized state.
 
@@ -86,12 +102,18 @@ Boundary examples during regulation while time remains:
 
 At the hard cutoff, unequal examples such as `5-4`, `5-3`, and `6-5` award the leader immediately. Only a tie enters overtime.
 
-## Quick Start
+## Getting Started
 
-Requirements:
+### Play the hosted build
 
-- Node.js with npm
-- A modern desktop browser with WebGL and WebSocket support
+A live instance runs at **[rocket-arena.endpx.cloud](https://rocket-arena.endpx.cloud/)**. There is nothing to install: open it, choose **Custom**, create a room, and press **Start Match**. Share the room code to play with someone else.
+
+### Run it locally
+
+Prerequisites:
+
+- Node.js 22 or newer, with npm
+- A desktop browser with WebGL and WebSocket support
 
 ```bash
 git clone https://github.com/EndPx/Rocket-Arena.git
@@ -109,7 +131,7 @@ One browser tab is enough to get on the pitch: choose **Custom**, create a room,
 
 If PowerShell reports that `concurrently` is not recognized, run `npm install` from the repository root before retrying `npm run dev`.
 
-## Current Controls
+## Controls
 
 | Key | Action |
 |-----|--------|
@@ -262,7 +284,7 @@ Boundary rules:
 | Build | Vite | Client development and production bundling |
 | Netcode | Fixed-step snapshots and interpolation | Stable authority with smooth client rendering |
 
-## Validation Strategy
+## Testing
 
 Validation is layered, and every layer is runnable:
 
@@ -311,7 +333,7 @@ The current requirements, design, and tasks cover exact 3v3 Quick Match, up-to-8
 
 ### Custom Agents and Skills
 
-The workspace includes specialized agents for physics tuning, headless room exercise, boundary checks, spec auditing, and submission support. Its project skills guide requirements clarification, dependency-aware planning, and task-by-task implementation.
+The workspace includes specialized agents for physics tuning, headless room exercise, boundary checks, and spec auditing. Its project skills guide requirements clarification, dependency-aware planning, and task-by-task implementation.
 
 ## Project Structure
 
@@ -326,39 +348,44 @@ Rocket-Arena/
 └── package.json        # Workspace scripts
 ```
 
-## Playtesting
+## Things to Try
 
-1. Clone the repository and run `npm install`.
-2. Start both workspaces with `npm run dev`.
-3. Open `http://localhost:3000`. One tab is enough to play; open a tab per extra player to fill a room.
-4. Choose **Custom**, create a room, and press **Start Match**. Quick Match instead waits for a complete 3v3.
-5. Drive, jump, boost, score, and verify synchronized timer and HUD behavior.
-6. Drive over a boost pad on an empty tank and watch the HUD gauge fill; a large
-   pad fills it outright, a small one adds twelve.
-7. Press `Esc`, open Settings, flip an axis inversion, and confirm the car steers
-   the other way once you resume.
-8. Build speed along the floor, drive straight into a side wall, and keep boosting:
-   the car climbs it. Press `Space` up there to jump off the wall.
-9. Press `C` while climbing to switch to Car Camera, which follows the climb from
+Once you are in a room, hosted or local:
+
+1. Drive, jump, boost, and score, and watch the timer and HUD stay in step.
+2. Drive over a boost pad on an empty tank: a Large pad fills it outright, a Small
+   one adds twelve, and a spent pad shows its cooldown sweep on the way back.
+3. Build speed along the floor, drive straight into a side wall, and keep boosting.
+   The car climbs it. Press `Space` up there to jump off the wall.
+4. Press `C` while climbing to switch to Car Camera, which follows the climb from
    below instead of watching it from the side.
+5. Press `Esc`, open Settings, flip an air-axis inversion, and confirm the car still
+   steers normally on the ground once you resume.
 
 No external services, API keys, accounts, database, or runtime asset download are required.
 
-## Staging and Fidelity Boundaries
+## Roadmap
 
-The required staging path includes expanded room capacity, eight-car transport, deterministic kickoff, scripted controller mechanics, full surface grounding, metric arena and goals, finalized match flow, six Large boost pads, cameras, HUD/accessibility, and baseline regression coverage.
+Shipped: expanded room capacity, eight-car transport, deterministic kickoff, scripted controller mechanics, full-surface grounding, metric arena and goals, the complete match flow, both boost-pad classes, cameras, HUD and accessibility, and the regression suite.
 
-The following remain optional final-fidelity increments until evidence is approved:
+What is left, and what is deliberately not implied to work anywhere else in this file:
 
-- Proximity-sensitive kickoff selection.
-- Final evidence/approval promotion from Hackathon Staging to Mechanics Fidelity Release.
+- **Proximity-sensitive kickoff selection.** Slots are assigned deterministically from roster order rather than from who is nearest to which slot.
+- **Demolition.** Deferred until it has a behavior contract worth testing against.
 
-Full Surface Driving has since landed. The walls, horizontal corners, wall-ceiling
-transitions, and ceiling now support a car exactly as the floor does, so you can
-drive up a wall, and jump while you are up there. Support stays earned rather than
-free: the speed-gated slope policy only widens the accepted surface angle while the
-car is above the engage speed and drops it again below the release speed, so a slow
-car cannot stand itself against a wall.
+Help with either is welcome. See [Contributing](#contributing).
+
+## Implementation Notes
+
+A few decisions are easier to trust with the reasoning attached.
+
+### Full-surface driving
+
+The walls, horizontal corners, wall-ceiling transitions, and ceiling support a car
+exactly as the floor does, so you can drive up a wall, and jump while you are up
+there. Support stays earned rather than free: the speed-gated slope policy only
+widens the accepted surface angle while the car is above the engage speed and drops
+it again below the release speed, so a slow car cannot stand itself against a wall.
 
 Both halves are measured rather than asserted, by `bench/wall-drive-diagnostic.ts`
 and `bench/wall-jump-diagnostic.ts`. Enabling the tier moved a boosted climb from
@@ -367,18 +394,29 @@ normal instead of letting it tumble to 90 degrees while momentum carried it. The
 jump probe reports support at 6.1 m up the wall and a velocity change of 3.15 m/s
 away from the surface against the 2.92 m/s the tuning registry specifies.
 
-Both boost-pad classes have since landed: the six Large pads and a Small-Boost-Pad
-layout are seeded, authoritative, and drawn. The Small layout carries `18` of
-Rocket League's `28` rather than all of them, by project decision, because the full
-set read as clutter at this arena's scale. The eighteen are a mirrored subset of the
-real positions, so both halves stay identical and the spacing stays Rocket League's.
+### Boost pad layout
 
-Demolition remains deferred until it receives a separately approved behavior contract.
+The Small layout carries `18` of Rocket League's `28` rather than all of them, by
+project decision, because the full set read as clutter at this arena's scale. The
+eighteen are a mirrored subset of the real positions, so both halves stay identical
+and the spacing stays Rocket League's.
 
 ## AI-Generated Brand Art
 
-The lobby wordmark, compact mark, and favicon are original 2D images generated with ChatGPT by OpenAI under participant direction, then human-selected, reviewed, and optimized for local use. They are presentation-only and never loaded from remote URLs at runtime. See [`docs/asset-provenance.md`](docs/asset-provenance.md) for per-asset provenance, dimensions, purpose, and review notes.
+The lobby wordmark, compact mark, and favicon are original 2D images generated with ChatGPT by OpenAI under maintainer direction, then human-selected, reviewed, and optimized for local use. They are presentation-only and never loaded from remote URLs at runtime. See [`docs/asset-provenance.md`](docs/asset-provenance.md) for per-asset provenance, dimensions, purpose, and review notes.
+
+## Contributing
+
+Issues and pull requests are welcome, whether that is a bug fix, a mechanic that needs tuning, or a documentation improvement. [`CONTRIBUTING.md`](CONTRIBUTING.md) covers the setup, the four checks to run before opening a pull request, and the import boundaries the codebase relies on.
+
+The short version: the server owns every gameplay outcome, `shared/` imports from neither workspace, and where a change comes down to "it feels right", bring a measurement from a bench under `bench/`.
+
+## Acknowledgements
+
+Built on [Rapier](https://rapier.rs), [Colyseus](https://colyseus.io), [Three.js](https://threejs.org), and [Vite](https://vitejs.dev), and developed with [Kiro](https://kiro.dev).
+
+Gameplay mechanics take Rocket League as a reference point for feel and layout. This project is unaffiliated with and unendorsed by Psyonix, and ships no Rocket League assets.
 
 ## License
 
-MIT
+[MIT](LICENSE) © EndPx
