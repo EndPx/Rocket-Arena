@@ -3,20 +3,64 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./config": "./src/config/index.ts",
-    "./config/*": "./src/config/*.ts",
-    "./constants": "./src/constants/index.ts",
-    "./constants/*": "./src/constants/*.ts",
-    "./geometry": "./src/geometry/index.ts",
-    "./geometry/*": "./src/geometry/*.ts",
-    "./schema": "./src/schema/index.ts",
-    "./tuning": "./src/tuning/index.ts",
-    "./tuning/*": "./src/tuning/*.ts",
-    "./types": "./src/types/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
+    "./config": {
+      "types": "./dist/config/index.d.ts",
+      "development": "./src/config/index.ts",
+      "default": "./dist/config/index.js"
+    },
+    "./config/*": {
+      "types": "./dist/config/*.d.ts",
+      "development": "./src/config/*.ts",
+      "default": "./dist/config/*.js"
+    },
+    "./constants": {
+      "types": "./dist/constants/index.d.ts",
+      "development": "./src/constants/index.ts",
+      "default": "./dist/constants/index.js"
+    },
+    "./constants/*": {
+      "types": "./dist/constants/*.d.ts",
+      "development": "./src/constants/*.ts",
+      "default": "./dist/constants/*.js"
+    },
+    "./geometry": {
+      "types": "./dist/geometry/index.d.ts",
+      "development": "./src/geometry/index.ts",
+      "default": "./dist/geometry/index.js"
+    },
+    "./geometry/*": {
+      "types": "./dist/geometry/*.d.ts",
+      "development": "./src/geometry/*.ts",
+      "default": "./dist/geometry/*.js"
+    },
+    "./schema": {
+      "types": "./dist/schema/index.d.ts",
+      "development": "./src/schema/index.ts",
+      "default": "./dist/schema/index.js"
+    },
+    "./tuning": {
+      "types": "./dist/tuning/index.d.ts",
+      "development": "./src/tuning/index.ts",
+      "default": "./dist/tuning/index.js"
+    },
+    "./tuning/*": {
+      "types": "./dist/tuning/*.d.ts",
+      "development": "./src/tuning/*.ts",
+      "default": "./dist/tuning/*.js"
+    },
+    "./types": {
+      "types": "./dist/types/index.d.ts",
+      "development": "./src/types/index.ts",
+      "default": "./dist/types/index.js"
+    }
   },
   "dependencies": {
     "@colyseus/schema": "^2.0.4"

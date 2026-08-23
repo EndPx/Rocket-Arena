@@ -6,8 +6,8 @@ import {
   TUNING_IDS,
   getScalarTuningValue,
 } from '@rocket-arena/shared';
-import { getConstant } from '../../../shared/src/constants/index.js';
-import type { InputPayload } from '../../../shared/src/types/input.js';
+import { getConstant } from '@rocket-arena/shared/constants';
+import type { InputPayload } from '@rocket-arena/shared/types';
 import { createArenaColliders } from './arena.js';
 import {
   BALL_LINEAR_SPEED_TOLERANCE,

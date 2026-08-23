@@ -1,6 +1,6 @@
 import RAPIER from '@dimforge/rapier3d-compat';
-import { PHYSICS, getConstant } from '../../../shared/src/constants/index.js';
-import type { InputPayload } from '../../../shared/src/types/input.js';
+import { PHYSICS, getConstant } from '@rocket-arena/shared/constants';
+import type { InputPayload } from '@rocket-arena/shared/types';
 import {
   createCarBody,
   recoverCarBodyAfterStep,

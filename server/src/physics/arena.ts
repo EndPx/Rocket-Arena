@@ -6,7 +6,7 @@ import {
   type ResolvedArenaGeometry,
   type ResolvedArenaSurface,
 } from '@rocket-arena/shared';
-import { getConstant } from '../../../shared/src/constants/index.js';
+import { getConstant } from '@rocket-arena/shared/constants';
 import { ArenaSurfaceRegistry } from './grounding.js';
 
 export type ArenaConstructionStage =
