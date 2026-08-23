@@ -9,6 +9,12 @@ const { WebSocketTransport } = wsTransport;
 
 const PORT = Number(process.env.PORT) || 2567;
 
+/**
+ * Loopback by default so a deployment cannot accidentally publish the raw,
+ * un-TLS'd game port. Set HOST=0.0.0.0 to bind every interface on purpose.
+ */
+const HOST = process.env.HOST ?? '127.0.0.1';
+
 async function main() {
   const server = http.createServer();
 
@@ -19,8 +25,8 @@ async function main() {
   gameServer.define('arena', ArenaRoom);       // Quick Match
   gameServer.define('custom', CustomRoom);     // Custom Room
 
-  gameServer.listen(PORT);
-  console.log(`[Rocket Arena] Server listening on ws://localhost:${PORT}`);
+  gameServer.listen(PORT, HOST);
+  console.log(`[Rocket Arena] Server listening on ws://${HOST}:${PORT}`);
   console.log(`[Rocket Arena] Rooms: arena (quick match), custom (custom room)`);
 }
 
