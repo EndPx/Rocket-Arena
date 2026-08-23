@@ -575,9 +575,12 @@ test(
       'the generated seed must exercise every exhaustive mode/team-size/order shape once',
     );
 
+    // Training stays empty on purpose: the exhaustive shape catalogue enumerates
+    // the competitive team-order shapes, and a solo room has exactly one.
     const slotCoverage: SlotCoverage = {
       quick: { blue: new Set(), orange: new Set() },
       custom: { blue: new Set(), orange: new Set() },
+      training: { blue: new Set(), orange: new Set() },
     };
     let sameTeamPairs = 0;
     let crossTeamPairs = 0;

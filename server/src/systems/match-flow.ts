@@ -392,6 +392,55 @@ export function beginInitialCountdown(
 }
 
 /**
+ * Enter endless free roam.
+ *
+ * Training has no clock, no score, and no ending, and the reducer already owns a
+ * phase with exactly those properties. Overtime runs with controls and physics
+ * enabled, and without a goal `reduceMatchFlowStep` returns the state unchanged,
+ * step after step, forever. No counter advances, so the 18,000-step regulation
+ * partition is never spent and never has to be special-cased, and no second
+ * ruleset is needed to keep that invariant true.
+ *
+ * The regulation budget is therefore recorded as already complete with its
+ * cutoff resolved, which is the same shape overtime is legitimately reached with
+ * after a tied regulation. Free roam just starts there instead of playing
+ * through five minutes to get there.
+ *
+ * There is deliberately no countdown. A solo player is not waiting for anyone,
+ * and skipping it means the kickoff epoch has to advance here, because no later
+ * countdown completion will do it.
+ */
+export function beginFreePlay(
+  state: MatchFlowState,
+  config: MatchFlowConfig,
+): Readonly<MatchFlowState> {
+  assertMatchFlowState(state, config);
+  if (state.phase !== 'waiting') {
+    throw new Error('Free roam can begin only from Waiting_State.');
+  }
+  if (state.blueScore !== 0 || state.orangeScore !== 0) {
+    throw new Error('Free roam cannot begin from a scored match.');
+  }
+
+  return freezeState({
+    ...state,
+    phase: 'overtime',
+    countdownKind: null,
+    countdownStepsRemaining: 0,
+    goalResetStepsRemaining: 0,
+    regulationStepsRemaining: 0,
+    regulationActivePlayStepsCompleted: config.rules.regulationActivePlaySteps,
+    regulationStarted: true,
+    regulationCutoffResolved: true,
+    kickoffEpoch: incrementSafeInteger(state.kickoffEpoch, 'kickoffEpoch'),
+    winner: null,
+    latestGoal: null,
+    terminalResult: null,
+    pendingOutcome: null,
+  }, config);
+}
+
+/**
  * Cancel only a pre-regulation initial countdown. Quick Match uses this when
  * its exact 3+3 gate becomes false before Active_Play; no partial progress is
  * retained, so a later eligible roster must start from all 180 steps again.

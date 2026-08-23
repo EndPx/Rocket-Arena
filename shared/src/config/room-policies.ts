@@ -1,8 +1,9 @@
 import { ROOM_MODES, type RoomMode } from '../types/room.js';
 
 export type RoomPolicyVersion = 1;
-export type RoomTotalCapacity = 6 | 8;
-export type RoomTeamCapacity = 3 | 4;
+/** Training is solo, so one seat is a real capacity alongside Quick's 6 and Custom's 8. */
+export type RoomTotalCapacity = 1 | 6 | 8;
+export type RoomTeamCapacity = 1 | 3 | 4;
 export type TeamAssignmentTieBreak = 'blue';
 export type RoomStartRule = 'full-balanced' | 'host-request';
 
@@ -36,10 +37,30 @@ const CUSTOM_POLICY = Object.freeze({
   allowWaitingTeamSwitch: true,
 } satisfies RoomPolicy);
 
+/**
+ * Free roam for one player. The seat count is the policy, so the transport and
+ * every capacity predicate agree that a second identity can never be admitted.
+ *
+ * `host-request` is reused rather than given a rule of its own: the sole
+ * occupant is the room's Host, and the host-request branch of the start gate
+ * already accepts a roster of one, so training needs no new start semantics.
+ * Waiting-team switches are pointless with a single seat.
+ */
+const TRAINING_POLICY = Object.freeze({
+  version: 1,
+  mode: 'training',
+  totalCapacity: 1,
+  teamCapacity: 1,
+  assignmentTieBreak: 'blue',
+  startRule: 'host-request',
+  allowWaitingTeamSwitch: false,
+} satisfies RoomPolicy);
+
 /** Canonical, runtime-immutable capacity and start policy for each room mode. */
 export const ROOM_POLICIES: Readonly<Record<RoomMode, RoomPolicy>> = Object.freeze({
   quick: QUICK_POLICY,
   custom: CUSTOM_POLICY,
+  training: TRAINING_POLICY,
 });
 
 export class InvalidRoomPolicyError extends Error {

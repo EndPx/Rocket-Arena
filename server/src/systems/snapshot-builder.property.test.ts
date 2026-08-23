@@ -729,7 +729,9 @@ function assertTerminalStability(generated: GeneratedSnapshotCase): void {
 function assertGeneratedCoverage(
   generatedCases: readonly GeneratedCase<GeneratedSnapshotCase>[],
 ): void {
-  const modeCounts: Record<RoomMode, number> = { quick: 0, custom: 0 };
+  // Training contributes nothing to any of these: this property is about
+  // terminal outcomes, and free roam has none to reach.
+  const modeCounts: Record<RoomMode, number> = { quick: 0, custom: 0, training: 0 };
   const terminalCounts: Record<TerminalVariant, number> = {
     'target-and-margin': 0,
     'hard-cutoff': 0,
@@ -738,10 +740,12 @@ function assertGeneratedCoverage(
   const modeTerminalCounts: Record<RoomMode, Record<TerminalVariant, number>> = {
     quick: { 'target-and-margin': 0, 'hard-cutoff': 0, 'overtime-goal': 0 },
     custom: { 'target-and-margin': 0, 'hard-cutoff': 0, 'overtime-goal': 0 },
+    training: { 'target-and-margin': 0, 'hard-cutoff': 0, 'overtime-goal': 0 },
   };
   const occupancies: Record<RoomMode, Set<number>> = {
     quick: new Set<number>(),
     custom: new Set<number>(),
+    training: new Set<number>(),
   };
 
   for (const { value } of generatedCases) {
@@ -751,7 +755,7 @@ function assertGeneratedCoverage(
     occupancies[value.mode].add(value.occupancy);
   }
 
-  assert.deepEqual(modeCounts, { quick: 63, custom: 63 });
+  assert.deepEqual(modeCounts, { quick: 63, custom: 63, training: 0 });
   assert.deepEqual(terminalCounts, {
     'target-and-margin': 42,
     'hard-cutoff': 42,
@@ -760,6 +764,7 @@ function assertGeneratedCoverage(
   assert.deepEqual(modeTerminalCounts, {
     quick: { 'target-and-margin': 21, 'hard-cutoff': 21, 'overtime-goal': 21 },
     custom: { 'target-and-margin': 21, 'hard-cutoff': 21, 'overtime-goal': 21 },
+    training: { 'target-and-margin': 0, 'hard-cutoff': 0, 'overtime-goal': 0 },
   });
 
   for (const mode of ['quick', 'custom'] as const) {

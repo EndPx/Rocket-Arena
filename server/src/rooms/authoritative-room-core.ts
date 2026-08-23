@@ -26,6 +26,7 @@ import {
   type KickoffAssignmentSet,
 } from '../systems/kickoff-slots.js';
 import {
+  beginFreePlay,
   beginGoalReset,
   beginInitialCountdown,
   beginOvertimeCountdown,
@@ -1208,7 +1209,14 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
     for (const command of commands) command.commit();
     bundle.afterFixedStep?.(stepContext);
 
-    const matchFlowInput = bundle.extractMatchFlowInput(stepContext);
+    const extractedMatchFlowInput = bundle.extractMatchFlowInput(stepContext);
+    // Free roam never scores. The extractor still runs so goal crossing keeps its
+    // own state coherent, but the goal is dropped before the reducer sees it,
+    // because the free-roam phase is Overtime and Overtime treats the first goal
+    // as sudden death and would end the session on it.
+    const matchFlowInput = this.policy.mode === 'training'
+      ? Object.freeze({ ...extractedMatchFlowInput, validGoal: null })
+      : extractedMatchFlowInput;
     if (!this.initialCountdownStartedAtBoundary) {
       this.advanceMatchFlowStep(matchFlowInput);
     }
@@ -1615,7 +1623,7 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
       if (committed.effect.kind === 'joined') this.acceptedAnIdentity = true;
 
       if (committed.effect.kind === 'start-validated') {
-        const started = this.beginInitialCountdownAtBoundary();
+        const started = this.beginMatchAtBoundary();
         if (!started.ok) {
           if (!started.fatal && this.lifecycleValue === 'ready') {
             this.stateValue = state;
@@ -1691,6 +1699,55 @@ export class AuthoritativeRoomCore<TWorld, TCar, TBall> {
 
     const nextFlow = beginInitialCountdown(flow, this.matchFlowConfig);
     const placement = this.placeKickoff(flow.kickoffEpoch + 1);
+    if (!placement.ok) return placement;
+
+    this.commitMatchFlowState(nextFlow);
+    this.initialCountdownStartedAtBoundary = true;
+    return placement;
+  }
+
+  /**
+   * Begin whatever this mode's accepted start means.
+   *
+   * Competitive modes open a kickoff countdown. Training goes straight to endless
+   * free roam, because a solo player has nobody to be counted down with.
+   */
+  private beginMatchAtBoundary(): AuthoritativeKickoffPlacementResult {
+    return this.policy.mode === 'training'
+      ? this.beginFreePlayAtBoundary()
+      : this.beginInitialCountdownAtBoundary();
+  }
+
+  /**
+   * Place the sole car and commit endless free roam in one boundary step.
+   *
+   * `beginFreePlay` has already advanced the kickoff epoch, because free roam has
+   * no countdown completion to advance it later. Placement therefore targets that
+   * epoch directly rather than the next one.
+   */
+  private beginFreePlayAtBoundary(): AuthoritativeKickoffPlacementResult {
+    const flow = this.matchFlowStateValue;
+    if (this.lifecycleValue !== 'ready' || this.stateValue === null || flow === null) {
+      return Object.freeze({
+        ok: false,
+        code: 'physics-not-ready',
+        message: 'Free roam requires a ready room and match-flow state.',
+        fatal: this.lifecycleValue === 'fatal',
+        retained: this.kickoffAssignmentService.current,
+      });
+    }
+    if (flow.phase !== 'waiting') {
+      return Object.freeze({
+        ok: false,
+        code: 'invalid-roster',
+        message: 'Free roam can begin only while the room is waiting.',
+        fatal: false,
+        retained: this.kickoffAssignmentService.current,
+      });
+    }
+
+    const nextFlow = beginFreePlay(flow, this.matchFlowConfig);
+    const placement = this.placeKickoff(nextFlow.kickoffEpoch);
     if (!placement.ok) return placement;
 
     this.commitMatchFlowState(nextFlow);

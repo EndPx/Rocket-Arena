@@ -553,9 +553,11 @@ test(
           counts[generatedCase.value.mode] += 1;
           return counts;
         },
-        { quick: 0, custom: 0 },
+        { quick: 0, custom: 0, training: 0 },
       ),
-      { quick: CASES_PER_MODE, custom: CASES_PER_MODE },
+      // Training generates no cases here: this property is about team-capacity
+      // boundaries, and a one-seat solo room has no team boundary to cross.
+      { quick: CASES_PER_MODE, custom: CASES_PER_MODE, training: 0 },
     );
 
     const coverage: CapacityCaseCoverage[] = [];

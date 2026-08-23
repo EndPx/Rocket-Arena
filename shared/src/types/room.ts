@@ -1,4 +1,4 @@
-export const ROOM_MODES = Object.freeze(['quick', 'custom'] as const);
+export const ROOM_MODES = Object.freeze(['quick', 'custom', 'training'] as const);
 export type RoomMode = (typeof ROOM_MODES)[number];
 
 export const TEAMS = Object.freeze(['blue', 'orange'] as const);

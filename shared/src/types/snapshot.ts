@@ -7,6 +7,7 @@ import {
 import {
   COUNTDOWN_KINDS,
   MATCH_PHASES,
+  ROOM_MODES,
   TEAMS,
   createGoalResult,
   createTerminalResult,
@@ -432,7 +433,9 @@ export function parseSnapshotEnvelopeV2(value: unknown): Readonly<SnapshotEnvelo
     fail('snapshot.protocolVersion', `expected ${SNAPSHOT_PROTOCOL_VERSION}`);
   }
 
-  const roomMode = enumAt(record.roomMode, ['quick', 'custom'] as const, 'snapshot.roomMode');
+  // Read from the canonical mode list rather than a literal copy, so a new mode
+  // cannot be accepted by the policy tables while the wire still rejects it.
+  const roomMode = enumAt(record.roomMode, ROOM_MODES, 'snapshot.roomMode');
   const policy = ROOM_POLICIES[roomMode];
   if (record.policyVersion !== policy.version) fail('snapshot.policyVersion', `expected ${policy.version}`);
   if (record.totalCapacity !== policy.totalCapacity) {

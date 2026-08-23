@@ -32,10 +32,17 @@ export const MATCH_RULES: SharedMatchRules = Object.freeze({
   Regulation_Win_Margin,
 });
 
-/** Both modes intentionally reference the exact same immutable rules object. */
+/**
+ * Every mode intentionally references the exact same immutable rules object.
+ *
+ * Training carries the regulation budget without ever spending it: free roam
+ * sits in the clock-free phase, so the 18,000-step partition stays untouched
+ * rather than needing a second ruleset to keep it consistent.
+ */
 export const MATCH_RULES_BY_MODE: Readonly<Record<RoomMode, SharedMatchRules>> = Object.freeze({
   quick: MATCH_RULES,
   custom: MATCH_RULES,
+  training: MATCH_RULES,
 });
 
 export function getMatchRules(_mode: RoomMode): SharedMatchRules {
