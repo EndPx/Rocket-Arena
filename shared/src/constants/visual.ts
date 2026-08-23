@@ -312,7 +312,7 @@ export const VISUAL = {
 
   /** Renderer and lighting budget for typical desktop integrated graphics. */
   RENDER: {
-    MAX_PIXEL_RATIO: 1.75,
+    MAX_PIXEL_RATIO: 1.25,
     EXPOSURE: 1.1,
     CAMERA_NEAR: 0.1,
     CAMERA_FAR: 190,
